@@ -79,6 +79,11 @@ class TestCaseUpdated(_NotificationsTestCase):
 
 class TestNoteUpdated(_NotificationsTestCase):
 
+    def setUp(self):
+        super().setUp()
+        # Every mentioned user can open the case: see test_mention_case_access
+        self._patch('_readers_of_case').side_effect = lambda user_ids, _case_id: set(user_ids)
+
     def _note(self, content):
         return SimpleNamespace(note_id=5, note_case_id=4, note_title='note', note_content=content)
 

@@ -54,6 +54,43 @@ def _actor_id() -> Optional[int]:
         return None
 
 
+def _readers_of_case(user_ids, case_id) -> set:
+    """The mentioned users who can open the case. A mention is free text
+    — anybody can be named — and the notification carries the note title
+    or the comment text, so it must not reach someone the case is closed to."""
+    if not user_ids or not case_id:
+        return set()
+    # Late import: business.access_controls imports back into iris_engine
+    from app.business.access_controls import ac_fast_check_user_has_case_access
+    from app.models.authorization import CaseAccessLevel
+    levels = [CaseAccessLevel.read_only, CaseAccessLevel.full_access]
+    return {uid for uid in user_ids if ac_fast_check_user_has_case_access(uid, case_id, levels)}
+
+
+def _readers_of_alert(user_ids, customer_id) -> set:
+    """The mentioned users who can read the alert: the alerts_read
+    permission plus the alert's customer, as on the alert routes."""
+    if not user_ids or not customer_id:
+        return set()
+    from app.datamgmt.manage.manage_access_control_db import user_has_client_access
+    from app.datamgmt.manage.manage_users_db import get_user
+    from app.iris_engine.access_control.utils import ac_get_effective_permissions_of_user
+    from app.models.authorization import Permissions
+    from app.models.authorization import ac_flag_match_mask
+    readers = set()
+    for uid in user_ids:
+        user = get_user(uid)
+        if user is None:
+            continue
+        permissions = ac_get_effective_permissions_of_user(user)
+        if not ac_flag_match_mask(permissions, Permissions.alerts_read.value):
+            continue
+        if ac_flag_match_mask(permissions, Permissions.server_administrator.value) \
+                or user_has_client_access(uid, customer_id):
+            readers.add(uid)
+    return readers
+
+
 def _safe(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Wrap a listener so exceptions never bubble into the caller."""
     def wrapped(*args, **kwargs):
@@ -96,12 +133,13 @@ def notifications_note_updated(note, previous_content: Optional[str]) -> None:
 
 
 def _notify_note_mentions(note, user_ids) -> None:
+    case_id = getattr(note, 'note_case_id', None)
+    user_ids = _readers_of_case(user_ids, case_id)
     if not user_ids:
         return
 
     title = 'You were mentioned in a note'
     body = getattr(note, 'note_title', None) or ''
-    case_id = getattr(note, 'note_case_id', None)
     note_id = getattr(note, 'note_id', None)
     link = f'/case/{case_id}/notes/{note_id}' if case_id and note_id else None
 
@@ -154,6 +192,13 @@ _COMMENT_HOOK_LINKS = {
 }
 
 
+def _comment_readers(kind: str, payload, user_ids) -> set:
+    if kind == 'alert':
+        return _readers_of_alert(user_ids, getattr(payload['alert'], 'alert_customer_id', None))
+    _, _, _, case_id = _COMMENT_HOOK_LINKS[kind](payload)
+    return _readers_of_case(user_ids, case_id)
+
+
 def _make_comment_listener(kind: str):
     @_safe
     def _listener(payload) -> None:
@@ -167,7 +212,10 @@ def _make_comment_listener(kind: str):
         builder = _COMMENT_HOOK_LINKS.get(kind)
         if builder is None:
             return
-        link, source_type, _, _case_id = builder(payload)
+        user_ids = _comment_readers(kind, payload, user_ids)
+        if not user_ids:
+            return
+        link, source_type, _, _ = builder(payload)
 
         notify_many(
             user_ids=user_ids,
