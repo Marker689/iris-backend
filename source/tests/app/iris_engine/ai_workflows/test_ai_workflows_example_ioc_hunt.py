@@ -18,8 +18,8 @@
 
 """The IOC hunt example: it validates, its scripts build the SIEM search
 (Elasticsearch or Splunk) and sort the hosts it answers into known and
-new, and a run suggests adding each new host to the case and tells the
-case owner."""
+new, and a run asks the analysts whether to search, then suggests adding
+each new host to the case and tells the case owner."""
 
 import json
 import os
@@ -28,6 +28,7 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from app.iris_engine.ai_workflows.engine import ai_workflows_engine_expire_wait
+from app.iris_engine.ai_workflows.engine import ai_workflows_engine_resume_wait
 from app.iris_engine.ai_workflows.engine import ai_workflows_engine_start_run
 from app.iris_engine.ai_workflows.engine import ai_workflows_engine_step
 from app.iris_engine.ai_workflows.graph import ai_workflows_graph_validate
@@ -90,6 +91,10 @@ class TestsIocHuntDocument(TestCase):
 
     def test_workflow_should_only_suggest_writes(self):
         self.assertEqual([], _DOCUMENT['workflow']['write_tool_allowlist'])
+
+    def test_waiting_run_should_not_hold_back_the_other_iocs_of_the_case(self):
+        config = _DOCUMENT['workflow']['trigger_config']
+        self.assertEqual((False, 60), (config['skip_if_active'], config['dedup_minutes']))
 
     def test_requirements_should_match_the_graph(self):
         nodes = list(_NODES.values())
@@ -297,6 +302,9 @@ class TestsIocHuntRun(EngineTestCase):
         self.resolver = _SiemResolver()
         self.requests = []
         self.notified = []
+        # The analyst's answer to "search the SIEM?"; None leaves it unanswered
+        self.answer = {'search': True}
+        self.questions = []
         self.response = {'success': True, 'status_code': 200, 'response_headers': {}, 'response_body': json.dumps(
             _answer(_bucket('ws-001', 4, 'windows'), _bucket('srv-db', 10, 'linux', '10.0.0.9'),
                     _bucket('mac-7', 2, 'macos')))}
@@ -338,7 +346,12 @@ class TestsIocHuntRun(EngineTestCase):
                 ai_workflows_engine_step(run.id)
             elif run.status == 'waiting':
                 [wait] = self.store.pending_waits(run.id)
-                ai_workflows_engine_expire_wait(wait)
+                if wait.kind == 'user_input' and self.answer is not None:
+                    self.questions.append(wait.node_id)
+                    ai_workflows_engine_resume_wait(wait, {'answer': self.answer, 'answered_by': 'analyst'},
+                                                    resolved_by_id=OWNER_ID)
+                else:
+                    ai_workflows_engine_expire_wait(wait)
             else:
                 break
         return run
@@ -346,6 +359,7 @@ class TestsIocHuntRun(EngineTestCase):
     def test_hosts_outside_the_case_should_be_suggested_and_notified(self):
         run = self._run(_ioc('evil.example.org', 'domain'))
         self.assertEqual('succeeded', run.status, run.error)
+        self.assertEqual(['ask'], self.questions)
         [request] = self.requests
         self.assertEqual(('POST', 'https://siem.example.org:9200/logs-*/_search'),
                          (request['method'], request['url']))
@@ -357,7 +371,13 @@ class TestsIocHuntRun(EngineTestCase):
         self.assertEqual([OWNER_ID], users)
         self.assertIn('seen on 2 host(s) outside the case', args[1])
         self.assertIn('| srv-db | 10 | linux | - |', kwargs['body'])
-        first, second = self.store.suggestions
+        question, first, second = self.store.suggestions
+        self.assertEqual(('info_request', 'Search the SIEM for IOC evil.example.org?'), (question.kind, question.title))
+        self.assertIn('IOC `evil.example.org` (domain) was added to case #42. Search the SIEM for it over the last '
+                      '30 days?', question.body)
+        self.assertEqual([{'name': 'search', 'label': 'Search the SIEM for this IOC', 'type': 'boolean',
+                           'required': True, 'help': 'Leave unchecked to skip the search.'}],
+                         question.form_schema['fields'])
         self.assertEqual('Add srv-db to the case: it saw IOC evil.example.org', first.title)
         self.assertEqual({'tool': 'iris_case_assets_create', 'arguments': {
             'payload': {'asset_name': 'srv-db', 'asset_type_id': 3, 'asset_ip': '10.0.0.9', 'asset_tags': 'ioc-hunt',
@@ -374,12 +394,25 @@ class TestsIocHuntRun(EngineTestCase):
         run = self._run(_ioc('evil.example.org', 'domain'))
         self.assertEqual('succeeded', run.status, run.error)
         self.assertEqual('contained', self.steps(run)[-1].node_id)
-        self.assertEqual(([], []), (self.store.suggestions, self.notified))
+        self.assertEqual((['info_request'], []), ([s.kind for s in self.store.suggestions], self.notified))
 
     def test_unsupported_ioc_should_end_without_any_request(self):
         run = self._run(_ioc('HKLM\\Run', 'regkey'))
         self.assertEqual('succeeded', run.status, run.error)
-        self.assertEqual(('nothing_to_do', []), (self.steps(run)[-1].node_id, self.requests))
+        self.assertEqual(('nothing_to_do', [], []), (self.steps(run)[-1].node_id, self.requests, self.questions))
+
+    def test_declined_search_should_end_without_any_request(self):
+        self.answer = {'search': False}
+        run = self._run(_ioc('evil.example.org', 'domain'))
+        self.assertEqual('succeeded', run.status, run.error)
+        self.assertEqual(('declined', []), (self.steps(run)[-1].node_id, self.requests))
+        self.assertEqual(['info_request'], [s.kind for s in self.store.suggestions])
+
+    def test_unanswered_question_should_end_without_any_request(self):
+        self.answer = None
+        run = self._run(_ioc('evil.example.org', 'domain'))
+        self.assertEqual('succeeded', run.status, run.error)
+        self.assertEqual(('unanswered', [], []), (self.steps(run)[-1].node_id, self.requests, self.notified))
 
     def test_siem_failure_should_fail_the_run(self):
         self.response = {'success': False, 'status_code': 401, 'error': 'HTTP 401', 'response_body': '{}',
@@ -387,7 +420,7 @@ class TestsIocHuntRun(EngineTestCase):
         run = self._run(_ioc('evil.example.org', 'domain'))
         self.assertEqual('failed', run.status)
         self.assertIn('401', run.error)
-        self.assertEqual([], self.store.suggestions)
+        self.assertEqual(['info_request'], [s.kind for s in self.store.suggestions])
 
     def test_splunk_should_be_searched_when_chosen(self):
         self.response['response_body'] = json.dumps(_splunk(('WS-001', 4, 'Windows', None),
@@ -403,7 +436,7 @@ class TestsIocHuntRun(EngineTestCase):
         self.assertEqual((['oneshot'], ['json'], ['-30d']),
                          (form['exec_mode'], form['output_mode'], form['earliest_time']))
         self.assertTrue(form['search'][0].startswith('search index=* (query="evil.example.org" OR '))
-        [suggestion] = self.store.suggestions
+        _question, suggestion = self.store.suggestions
         self.assertEqual({'asset_name': 'srv-db', 'asset_type_id': 3, 'asset_tags': 'ioc-hunt',
                           'asset_description': 'Seen with IOC evil.example.org in 10 SIEM event(s) over the last 30 '
                                                'days (last seen 2026-10-08T10:00:00+0000).'},

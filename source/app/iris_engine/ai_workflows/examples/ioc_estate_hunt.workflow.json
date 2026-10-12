@@ -4,7 +4,7 @@
   "category": "Hunting",
   "workflow": {
     "name": "IOC hunt across the estate",
-    "description": "When an IOC (IP, domain, URL, hash or file name) is added to a case, searches the SIEM for it over the last 30 days, counts the hits per host and, when hosts outside the case saw it, notifies the case owner and whoever added the IOC and suggests adding each of those hosts (up to 5, one a minute) to the case as an asset linked to the IOC. Works with Elasticsearch / OpenSearch (ECS fields) and Splunk (CIM fields): set the input siem of the \"SIEM query\" node to elastic or splunk, then the URL of the matching search node (your cluster and index, or your Splunk management port); adapt the field lists at the top of the \"SIEM query\" script to your data. Needs the keystore entry SIEM_API_KEY (an Elastic API key, or a Splunk authentication token of a user with read-only search rights, restricted to the SIEM host) and, for an internal SIEM, IRIS_AI_WORKFLOWS_ALLOW_PRIVATE_EGRESS. For long searches, switch the request to async mode.",
+    "description": "When an IOC (IP, domain, URL, hash or file name) is added to a case, asks the analysts of the case whether to look it up; when they say yes, searches the SIEM for it over the last 30 days, counts the hits per host and, when hosts outside the case saw it, notifies the case owner and whoever added the IOC and suggests adding each of those hosts (up to 5, one a minute) to the case as an asset linked to the IOC. Works with Elasticsearch / OpenSearch (ECS fields) and Splunk (CIM fields): set the input siem of the \"SIEM query\" node to elastic or splunk, then the URL of the matching search node (your cluster and index, or your Splunk management port); adapt the field lists at the top of the \"SIEM query\" script to your data. Needs the keystore entry SIEM_API_KEY (an Elastic API key, or a Splunk authentication token of a user with read-only search rights, restricted to the SIEM host) and, for an internal SIEM, IRIS_AI_WORKFLOWS_ALLOW_PRIVATE_EGRESS. A question left unanswered for a day, or dismissed, skips the search; to search every IOC without asking, link \"Something to hunt?\" straight to \"Splunk?\". For long searches, switch the request to async mode.",
     "trigger_type": "event",
     "trigger_config": {
       "hooks": [
@@ -12,7 +12,7 @@
       ],
       "condition": "",
       "dedup_minutes": 60,
-      "skip_if_active": true
+      "skip_if_active": false
     },
     "graph": {
       "nodes": [
@@ -95,12 +95,56 @@
           }
         },
         {
+          "id": "ask",
+          "type": "ask_analyst",
+          "label": "Look it up?",
+          "config": {
+            "title": "Search the SIEM for IOC {{ nodes.prepare.output.result.value | truncate(80) }}?",
+            "question": "IOC `{{ nodes.prepare.output.result.value }}` ({{ nodes.prepare.output.result.kind }}) was added to case #{{ trigger.entity_id }}. Search the SIEM for it over the last {{ nodes.prepare.output.result.days }} days? The hosts outside the case that saw it are then suggested as assets of the case.\n\nDismiss this request to skip the search.",
+            "fields": [
+              {
+                "name": "search",
+                "label": "Search the SIEM for this IOC",
+                "type": "boolean",
+                "required": true,
+                "help": "Leave unchecked to skip the search."
+              }
+            ],
+            "timeout_minutes": 1440
+          },
+          "position": {
+            "x": 0,
+            "y": 420
+          }
+        },
+        {
+          "id": "wanted",
+          "type": "condition",
+          "label": "Search wanted?",
+          "config": {
+            "mode": "rules",
+            "logic": "and",
+            "expression": "",
+            "rules": [
+              {
+                "path": "nodes.ask.output.answer.search",
+                "operator": "truthy",
+                "value": ""
+              }
+            ]
+          },
+          "position": {
+            "x": 0,
+            "y": 600
+          }
+        },
+        {
           "id": "which",
           "type": "condition",
           "label": "Splunk?",
           "position": {
             "x": 0,
-            "y": 420
+            "y": 780
           },
           "config": {
             "mode": "rules",
@@ -145,7 +189,7 @@
           },
           "position": {
             "x": 0,
-            "y": 540
+            "y": 900
           }
         },
         {
@@ -154,7 +198,7 @@
           "label": "Search Splunk",
           "position": {
             "x": -320,
-            "y": 540
+            "y": 900
           },
           "config": {
             "method": "POST",
@@ -193,7 +237,7 @@
           },
           "position": {
             "x": 0,
-            "y": 660
+            "y": 1020
           }
         },
         {
@@ -231,7 +275,7 @@
           },
           "position": {
             "x": 0,
-            "y": 780
+            "y": 1140
           }
         },
         {
@@ -252,7 +296,7 @@
           },
           "position": {
             "x": 0,
-            "y": 900
+            "y": 1260
           }
         },
         {
@@ -267,7 +311,7 @@
           },
           "position": {
             "x": 0,
-            "y": 1020
+            "y": 1380
           }
         },
         {
@@ -280,7 +324,7 @@
           },
           "position": {
             "x": 0,
-            "y": 1140
+            "y": 1500
           }
         },
         {
@@ -322,7 +366,7 @@
           },
           "position": {
             "x": 0,
-            "y": 1260
+            "y": 1620
           }
         },
         {
@@ -349,7 +393,7 @@
           },
           "position": {
             "x": 0,
-            "y": 1380
+            "y": 1740
           }
         },
         {
@@ -368,7 +412,7 @@
           },
           "position": {
             "x": 0,
-            "y": 1500
+            "y": 1860
           }
         },
         {
@@ -389,7 +433,7 @@
           },
           "position": {
             "x": 0,
-            "y": 1620
+            "y": 1980
           }
         },
         {
@@ -401,7 +445,7 @@
           },
           "position": {
             "x": 320,
-            "y": 1440
+            "y": 1800
           }
         },
         {
@@ -440,7 +484,7 @@
           },
           "position": {
             "x": 320,
-            "y": 540
+            "y": 900
           }
         },
         {
@@ -453,7 +497,7 @@
           },
           "position": {
             "x": 320,
-            "y": 660
+            "y": 1020
           }
         },
         {
@@ -466,7 +510,33 @@
           },
           "position": {
             "x": 320,
-            "y": 900
+            "y": 1260
+          }
+        },
+        {
+          "id": "declined",
+          "type": "stop",
+          "label": "Not looked up",
+          "config": {
+            "status": "succeeded",
+            "reason": "The analyst chose not to search the SIEM for this IOC"
+          },
+          "position": {
+            "x": 320,
+            "y": 600
+          }
+        },
+        {
+          "id": "unanswered",
+          "type": "stop",
+          "label": "No answer",
+          "config": {
+            "status": "succeeded",
+            "reason": "Nobody asked for the SIEM search (the question was dismissed or expired)"
+          },
+          "position": {
+            "x": 320,
+            "y": 420
           }
         }
       ],
@@ -496,10 +566,34 @@
           "source_port": "out"
         },
         {
-          "id": "supported-true-which",
+          "id": "supported-true-ask",
           "source": "supported",
+          "target": "ask",
+          "source_port": "true"
+        },
+        {
+          "id": "ask-answered-wanted",
+          "source": "ask",
+          "target": "wanted",
+          "source_port": "answered"
+        },
+        {
+          "id": "ask-timeout-unanswered",
+          "source": "ask",
+          "target": "unanswered",
+          "source_port": "timeout"
+        },
+        {
+          "id": "wanted-true-which",
+          "source": "wanted",
           "target": "which",
           "source_port": "true"
+        },
+        {
+          "id": "wanted-false-declined",
+          "source": "wanted",
+          "target": "declined",
+          "source_port": "false"
         },
         {
           "id": "which-true-splunk",
