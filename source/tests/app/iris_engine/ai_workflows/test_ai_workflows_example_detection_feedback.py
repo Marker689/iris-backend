@@ -38,7 +38,7 @@ from app.iris_engine.ai_workflows.portable import ai_workflows_portable_key_refe
 from app.iris_engine.ai_workflows.portable import ai_workflows_portable_literal_secrets
 from app.iris_engine.ai_workflows.portable import ai_workflows_portable_read_workflow
 from app.iris_engine.ai_workflows.portable import ai_workflows_portable_tools
-from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run
+from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run_unconfined
 from tests.app.iris_engine.ai_workflows.harness import OWNER_ID
 from tests.app.iris_engine.ai_workflows.harness import EngineTestCase
 from tests.app.iris_engine.ai_workflows.harness import text_turn
@@ -53,7 +53,7 @@ _NODES = {n['id']: n for n in _DOCUMENT['workflow']['graph']['nodes']}
 
 
 def _script(node_id, inputs):
-    outcome = ai_workflows_sandbox_run(_NODES[node_id]['config']['code'], {'inputs': inputs},
+    outcome = ai_workflows_sandbox_run_unconfined(_NODES[node_id]['config']['code'], {'inputs': inputs},
                                        max_steps=_NODES[node_id]['config']['max_steps'])
     if not outcome['ok']:
         raise AssertionError(outcome)
@@ -110,7 +110,7 @@ class TestsDetectionFeedbackWindowScript(TestCase):
         self.assertIn('resolved_at', sql)
 
     def test_unreadable_time_should_fail(self):
-        outcome = ai_workflows_sandbox_run(_NODES['window']['config']['code'], {'inputs': {'now': 'soon'}})
+        outcome = ai_workflows_sandbox_run_unconfined(_NODES['window']['config']['code'], {'inputs': {'now': 'soon'}})
         self.assertEqual(('failed', 'Unreadable time: soon'), (outcome['kind'], outcome['error']))
 
 
@@ -232,7 +232,7 @@ class TestsDetectionFeedbackRun(EngineTestCase):
         patches = {
             'app.iris_engine.ai_workflows.nodes.ai_workflows_sandbox_execute':
                 lambda source, variables, max_steps=None, timeout_seconds=None:
-                    ai_workflows_sandbox_run(source, variables, max_steps=max_steps, timeout_seconds=timeout_seconds),
+                    ai_workflows_sandbox_run_unconfined(source, variables, max_steps=max_steps, timeout_seconds=timeout_seconds),
             # A run about no entity notifies the active users of its audience
             'app.iris_engine.ai_workflows.nodes.ai_workflows_db_get_user':
                 lambda user_id: SimpleNamespace(id=user_id, active=True),

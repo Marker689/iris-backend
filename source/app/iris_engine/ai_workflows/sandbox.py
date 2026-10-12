@@ -34,8 +34,10 @@ size of strings, containers and integers is capped as they are built,
 and in production (`ai_workflows_sandbox_execute`) the interpreter runs
 in a short-lived child process — `python -I -S` running this very file,
 with an empty environment, CPU / memory / file-size rlimits and a wall
-clock timeout — so even a regex that backtracks forever, or a bug in this
-module, only costs that child.
+clock timeout — so a regex that backtracks forever only costs that child.
+The child also drops root and installs a seccomp filter before it reads
+the script (see `_confine_child`): were this module to have a hole, the
+script would still have no file, network, process or executable memory.
 
 This module imports nothing from `app`: the child process runs it alone.
 """
@@ -46,13 +48,18 @@ import datetime
 import hashlib
 import ipaddress
 import json
+import logging
 import math
 import os
 import re
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 from urllib.parse import urlsplit
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_STEPS = 200_000
 MAX_STEPS = 2_000_000
@@ -166,12 +173,16 @@ def _depth(node, limit) -> int:
     return deepest
 
 
-def _check_node(node, errors, callees):
+def _check_node(node, errors, callees, slices):
     line = getattr(node, 'lineno', None)
     if not isinstance(node, _ALLOWED_NODES):
         errors.append({'line': line, 'message': f'{type(node).__name__} is not allowed'})
         return
-    if isinstance(node, ast.Name) and node.id.startswith('_'):
+    if isinstance(node, ast.Slice) and id(node) not in slices:
+        # `d[1:2, 3]` would make a slice object a value (a dict key, from
+        # Python 3.12 on, where slices are hashable)
+        errors.append({'line': line, 'message': 'A slice is only allowed alone in brackets: x[1:2]'})
+    elif isinstance(node, ast.Name) and node.id.startswith('_'):
         errors.append({'line': line, 'message': f'Names starting with "_" are not allowed ({node.id})'})
     elif isinstance(node, ast.Attribute) and id(node) not in callees:
         errors.append({'line': line, 'message': f'Attribute access is not allowed (.{node.attr}); only method '
@@ -229,8 +240,9 @@ def ai_workflows_sandbox_parse(source):
     errors = []
     # An attribute is only allowed as the callee of a call: `text.lower()`
     callees = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+    slices = {id(n.slice) for n in ast.walk(tree) if isinstance(n, ast.Subscript)}
     for node in ast.walk(tree):
-        _check_node(node, errors, callees)
+        _check_node(node, errors, callees, slices)
         if len(errors) >= 20:
             break
     if errors:
@@ -729,6 +741,9 @@ class _Interpreter:
     def hashable(self, key):
         if not isinstance(key, (type(None), bool, int, float, str, tuple)):
             raise self.error(f'A {_type_name(key)} cannot be a key')
+        if isinstance(key, tuple):
+            for item in key:
+                self.hashable(item)
         return key
 
     # -- Expressions
@@ -1099,14 +1114,17 @@ def _clamp(value, default, low, high) -> int:
 
 # ---- Entry points -------------------------------------------------------------------
 
-def ai_workflows_sandbox_run(source, variables, max_steps=DEFAULT_MAX_STEPS, timeout_seconds=None) -> dict:
+def ai_workflows_sandbox_run_unconfined(source, variables, max_steps=DEFAULT_MAX_STEPS,
+                                        timeout_seconds=None) -> dict:
     """Run `source` in this process. `variables` (JSON-able data) are its
     globals. Returns `{ok, result, logs, steps}` or `{ok: False, error,
     line, kind}`; never raises on what the script does.
 
-    In-process runs are bounded by the step and size budgets only: the
-    worker must go through `ai_workflows_sandbox_execute`, which adds the
-    child process and its limits."""
+    Unconfined: only the step and size budgets bound the run, and work done
+    inside a single C call is not metered (a backtracking regex runs
+    forever, a deeply nested tuple used as a set item crashes the process).
+    For the confined child and tests only: the worker must go through
+    `ai_workflows_sandbox_execute`."""
     tree, errors = ai_workflows_sandbox_parse(source)
     if errors:
         first = errors[0]
@@ -1141,9 +1159,10 @@ def ai_workflows_sandbox_run(source, variables, max_steps=DEFAULT_MAX_STEPS, tim
 
 def ai_workflows_sandbox_execute(source, variables, max_steps=DEFAULT_MAX_STEPS,
                                  timeout_seconds=DEFAULT_TIMEOUT_SECONDS) -> dict:
-    """Run `source` in a child process (`python -I -S` on this file, empty
-    environment, rlimits set by the child before it reads the script),
-    killed at the timeout. Same result shape as `ai_workflows_sandbox_run`."""
+    """Run `source` in a confined child process (`python -I -S` on this
+    file, empty environment, locked down by `_confine_child` before it reads
+    the script), killed at the timeout. Same result shape as
+    `ai_workflows_sandbox_run_unconfined`."""
     timeout_seconds = _clamp(timeout_seconds, DEFAULT_TIMEOUT_SECONDS, 1, MAX_TIMEOUT_SECONDS)
     errors = ai_workflows_sandbox_check(source)
     if errors:
@@ -1152,47 +1171,217 @@ def ai_workflows_sandbox_execute(source, variables, max_steps=DEFAULT_MAX_STEPS,
     request = json.dumps({'source': source, 'variables': variables, 'max_steps': max_steps,
                           'timeout_seconds': timeout_seconds}, default=str)
     try:
-        completed = subprocess.run(
-            [sys.executable, '-I', '-S', os.path.abspath(__file__)],
-            input=request.encode('utf-8'), capture_output=True, timeout=timeout_seconds + 2,
-            env={'LANG': 'C.UTF-8'}, cwd='/', close_fds=True, check=False,
-        )
+        # The reply goes to a file, which the child's RLIMIT_FSIZE bounds:
+        # whatever the child does, the worker reads at most that much
+        with tempfile.TemporaryFile() as reply:
+            completed = subprocess.run(
+                [sys.executable, '-I', '-S', os.path.abspath(__file__)],
+                input=request.encode('utf-8'), stdout=reply, stderr=subprocess.DEVNULL,
+                timeout=timeout_seconds + 2, env={'LANG': 'C.UTF-8'}, cwd='/', close_fds=True, check=False,
+            )
+            reply.seek(0)
+            raw = reply.read(_MAX_REPLY_BYTES + 1)
     except subprocess.TimeoutExpired:
         return {'ok': False, 'kind': 'limit', 'error': 'The script ran out of time', 'line': None, 'logs': [],
                 'steps': 0}
     except OSError as e:
         return {'ok': False, 'kind': 'error', 'error': f'The sandbox could not start ({e.__class__.__name__})',
                 'line': None, 'logs': [], 'steps': 0}
+    oversized = len(raw) >= _MAX_REPLY_BYTES
     try:
-        outcome = json.loads(completed.stdout.decode('utf-8')) if completed.stdout else None
+        outcome = json.loads(raw.decode('utf-8')) if raw and not oversized else None
     except ValueError:
         outcome = None
     if not isinstance(outcome, dict) or 'ok' not in outcome:
-        # Killed by an rlimit (CPU: SIGXCPU / SIGKILL, memory: MemoryError
-        # before any output could be written)
-        return {'ok': False, 'kind': 'limit', 'error': 'The script was stopped (CPU time or memory limit)',
-                'line': None, 'logs': [], 'steps': 0}
+        return _stopped(completed.returncode, oversized)
     return outcome
 
 
-def _limit_child(timeout_seconds):
+def _stopped(returncode, oversized) -> dict:
+    """The outcome of a child that gave no reply: what stopped it."""
+    kind = 'limit'
+    if oversized:
+        message = 'The script output is too large'
+    elif returncode == -signal.SIGSYS:
+        # The seccomp filter killed it: the interpreter let the script reach
+        # a system call, which no script can do on purpose
+        logger.warning('A sandboxed script was killed by the seccomp filter (forbidden system call)')
+        kind = 'error'
+        message = 'The script was stopped: it attempted a forbidden operation'
+    elif returncode == -signal.SIGSEGV:
+        message = 'The script crashed the sandbox (data nested too deeply?)'
+    else:
+        # CPU: SIGXCPU / SIGKILL; memory: MemoryError before any reply
+        message = 'The script was stopped (CPU time or memory limit)'
+    return {'ok': False, 'kind': kind, 'error': message, 'line': None, 'logs': [], 'steps': 0}
+
+
+# ---- Child process -------------------------------------------------------------------
+#
+# The interpreter is the containment; the child process is what remains if
+# it ever has a hole. Before reading the script the child sets its rlimits,
+# drops root for `nobody`, then installs a seccomp-bpf filter that only lets
+# it compute, allocate non-executable memory, write its reply on stdout /
+# stderr and exit: no open, no socket, no execve, no fork, no ptrace. Any
+# step failing means the script is not run.
+
+_MAX_REPLY_BYTES = 4 * 1024 * 1024
+_UNPRIVILEGED_ID = 65534
+
+# machine: (AUDIT_ARCH_*, {syscall: number})
+_SYSCALLS = {
+    'x86_64': (0xC000003E, {'write': 1, 'mmap': 9, 'mprotect': 10, 'munmap': 11, 'brk': 12, 'rt_sigprocmask': 14,
+                            'rt_sigreturn': 15, 'mremap': 25, 'madvise': 28, 'exit': 60, 'futex': 202,
+                            'clock_gettime': 228, 'exit_group': 231, 'getrandom': 318}),
+    'aarch64': (0xC00000B7, {'write': 64, 'exit': 93, 'exit_group': 94, 'futex': 98, 'clock_gettime': 113,
+                             'rt_sigprocmask': 135, 'rt_sigreturn': 139, 'brk': 214, 'munmap': 215, 'mremap': 216,
+                             'mmap': 222, 'mprotect': 226, 'madvise': 233, 'getrandom': 278}),
+}
+_ALLOWED_SYSCALLS = ('brk', 'munmap', 'mremap', 'madvise', 'futex', 'rt_sigprocmask', 'rt_sigreturn',
+                     'clock_gettime', 'getrandom', 'exit', 'exit_group')
+
+_BPF_CODES = {'ld': 0x20, 'jeq': 0x15, 'jge': 0x35, 'jset': 0x45, 'ret': 0x06}
+_SECCOMP_DATA_NR = 0
+_SECCOMP_DATA_ARCH = 4
+_SECCOMP_DATA_ARG0 = 16
+_SECCOMP_DATA_ARG2 = 32
+_SECCOMP_RET_KILL_PROCESS = 0x80000000
+_SECCOMP_RET_ALLOW = 0x7FFF0000
+_X32_SYSCALL_BIT = 0x40000000
+_PROT_EXEC = 0x4
+_PR_SET_NO_NEW_PRIVS = 38
+_PR_SET_SECCOMP = 22
+_SECCOMP_MODE_FILTER = 2
+
+# Run once before the filter is installed, so that what the builtins load
+# lazily (OpenSSL providers, unicodedata, the time zone …) is loaded while
+# files can still be opened
+_WARM_UP = '\n'.join((
+    "x = [len('a'), str(1), repr([1]), int('1'), int('ff', 16), float('1'), bool(1), list('a'), tuple('a')]",
+    "x = [set('a'), dict(a=1), abs(-1), min(1, 2), max([1]), sum([1]), round(1.5, 1), sorted([2, 1])]",
+    "x = [reversed([1]), enumerate('a'), zip('a', 'b'), range(2), any([1]), all([1]), map(str, [1])]",
+    "x = [filter(None, [1]), type_of(1), is_str(''), is_number(1), is_list([]), is_dict({})]",
+    "x = [json_parse('{\"a\": [1.5]}'), json_dumps({'a': 'é'}, indent=2), base64_encode('a', urlsafe=True)]",
+    "x = [base64_decode('YQ'), sha256('a'), sha1('a'), md5('a'), re_search('(?P<n>a)', 'A', 'imsx')]",
+    "x = [re_match('a', 'a'), re_fullmatch('a', 'a'), re_findall('[[a]', 'a'), re_sub('(a)', '\\\\1', 'a')]",
+    "x = [re_split(',', 'a,b'), ip_info('10.0.0.1'), ip_info('::1'), url_parse('http://é.example:8/p?q#f')]",
+    "x = [iso_datetime(0), floor(1.5), ceil(1.5), sqrt(4.0), log(8, 2), 'É'.casefold(), 'é'.encode_hex()]",
+    "x = [f'{1:,.2f}{2:n}{0.5:%}{\"a\":>3}{[1]!r}', 'a b'.split(), {1: 2}.items(), {1}.union([2])]",
+    "for f in (lambda: int('x'), lambda: float('x'), lambda: json_parse('{'), lambda: re_search('(', '')):",
+    "    try:",
+    "        f()",
+    "    except Exception as e:",
+    "        print(e)",
+))
+
+
+def _seccomp_filter(machine) -> list:
+    """The BPF program of the filter, as `(code, jt, jf, k)` instructions."""
+    if machine not in _SYSCALLS:
+        raise RuntimeError(f'no seccomp filter for the {machine} architecture')
+    audit_arch, numbers = _SYSCALLS[machine]
+    # A string is a label; (op, k, jump if true, jump if false), None: the next instruction
+    program = [
+        ('ld', _SECCOMP_DATA_ARCH), ('jeq', audit_arch, None, 'kill'),
+        ('ld', _SECCOMP_DATA_NR), ('jge', _X32_SYSCALL_BIT, 'kill', None),
+        *(('jeq', numbers[name], 'allow', None) for name in _ALLOWED_SYSCALLS),
+        ('jeq', numbers['write'], 'write', None),
+        ('jeq', numbers['mmap'], 'not_executable', None),
+        ('jeq', numbers['mprotect'], 'not_executable', None),
+        ('ret', _SECCOMP_RET_KILL_PROCESS),
+        'write',
+        ('ld', _SECCOMP_DATA_ARG0), ('jeq', 1, 'allow', None), ('jeq', 2, 'allow', 'kill'),
+        'not_executable',
+        ('ld', _SECCOMP_DATA_ARG2), ('jset', _PROT_EXEC, 'kill', 'allow'),
+        'allow',
+        ('ret', _SECCOMP_RET_ALLOW),
+        'kill',
+        ('ret', _SECCOMP_RET_KILL_PROCESS),
+    ]
+    labels, position = {}, 0
+    for item in program:
+        if isinstance(item, str):
+            labels[item] = position
+        else:
+            position += 1
+    instructions = []
+    for item in (i for i in program if not isinstance(i, str)):
+        op, k, *jumps = item
+        offsets = [labels[j] - len(instructions) - 1 if j else 0 for j in jumps] or [0, 0]
+        if not all(0 <= o <= 255 for o in offsets):
+            raise RuntimeError('seccomp filter jump out of range')
+        instructions.append((_BPF_CODES[op], offsets[0], offsets[1], k))
+    return instructions
+
+
+def _install_seccomp():
+    import ctypes
+
+    class _Instruction(ctypes.Structure):
+        _fields_ = (('code', ctypes.c_ushort), ('jt', ctypes.c_ubyte), ('jf', ctypes.c_ubyte), ('k', ctypes.c_uint32))
+
+    class _Program(ctypes.Structure):
+        _fields_ = (('len', ctypes.c_ushort), ('filter', ctypes.POINTER(_Instruction)))
+
+    if not sys.platform.startswith('linux'):
+        raise RuntimeError('seccomp needs Linux')
+    instructions = _seccomp_filter(os.uname().machine)
+    program = _Program(len(instructions), (_Instruction * len(instructions))(*(_Instruction(*i) for i in instructions)))
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.prctl.argtypes = (ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong)
+    if libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), 'prctl(PR_SET_NO_NEW_PRIVS) failed')
+    if libc.prctl(_PR_SET_SECCOMP, _SECCOMP_MODE_FILTER, ctypes.addressof(program), 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), 'prctl(PR_SET_SECCOMP) failed')
+
+
+def _drop_privileges():
+    """Root (the worker container) becomes `nobody`: not the owner of the
+    worker, so `/proc/<worker>/environ` and its secrets are out of reach."""
+    if os.getuid() != 0 and os.geteuid() != 0:
+        return
+    os.setgroups([])
+    os.setresgid(_UNPRIVILEGED_ID, _UNPRIVILEGED_ID, _UNPRIVILEGED_ID)
+    os.setresuid(_UNPRIVILEGED_ID, _UNPRIVILEGED_ID, _UNPRIVILEGED_ID)
+    if os.getresuid() != (_UNPRIVILEGED_ID,) * 3 or os.getresgid() != (_UNPRIVILEGED_ID,) * 3 or os.getgroups():
+        raise RuntimeError('root privileges could not be dropped')
+
+
+def _confine_child(timeout_seconds):
+    """Lock the child down; raises when any step fails."""
     import resource
+    import warnings
     limits = (
-        (resource.RLIMIT_CPU, (timeout_seconds + 1, timeout_seconds + 1)),
-        (resource.RLIMIT_AS, (_MEMORY_LIMIT_BYTES, _MEMORY_LIMIT_BYTES)),
-        (resource.RLIMIT_FSIZE, (0, 0)),
-        (resource.RLIMIT_CORE, (0, 0)),
+        (resource.RLIMIT_CPU, timeout_seconds + 1),
+        (resource.RLIMIT_AS, _MEMORY_LIMIT_BYTES),
+        (resource.RLIMIT_FSIZE, _MAX_REPLY_BYTES),
+        (resource.RLIMIT_CORE, 0),
     )
-    for name, value in limits:
-        try:
-            resource.setrlimit(name, value)
-        except (ValueError, OSError):
-            pass
-    if hasattr(resource, 'RLIMIT_NPROC'):
-        try:
-            resource.setrlimit(resource.RLIMIT_NPROC, (0, 0))
-        except (ValueError, OSError):
-            pass
+    for name, limit in limits:
+        # Only ever lowered: a lower limit set on the worker stays
+        _soft, hard = resource.getrlimit(name)
+        if hard != resource.RLIM_INFINITY:
+            limit = min(limit, hard)
+        resource.setrlimit(name, (limit, limit))
+    _drop_privileges()
+    resource.setrlimit(resource.RLIMIT_NPROC, (0, 0))
+    # A warning (a regex with a nested set) is printed with its source line,
+    # read from a file
+    warnings.simplefilter('ignore')
+    warm_up = ai_workflows_sandbox_run_unconfined(_WARM_UP, {})
+    if not warm_up['ok']:
+        raise RuntimeError(f'the warm-up script failed: {warm_up["error"]}')
+    _install_seccomp()
+
+
+def _child_reply(outcome):
+    """Write the reply and leave at once: the interpreter shutdown would
+    make system calls the filter refuses."""
+    try:
+        sys.stdout.write(json.dumps(outcome, ensure_ascii=False))
+        sys.stdout.flush()
+    finally:
+        os._exit(0)
 
 
 def _child_main():
@@ -1200,13 +1389,22 @@ def _child_main():
         request = json.loads(sys.stdin.buffer.read(16 * 1024 * 1024 + 1).decode('utf-8'))
         timeout_seconds = _clamp(request.get('timeout_seconds'), DEFAULT_TIMEOUT_SECONDS, 1, MAX_TIMEOUT_SECONDS)
     except (ValueError, AttributeError):
-        sys.stdout.write(json.dumps({'ok': False, 'kind': 'error', 'error': 'Bad sandbox request', 'line': None,
-                                     'logs': [], 'steps': 0}))
-        return
-    _limit_child(timeout_seconds)
-    outcome = ai_workflows_sandbox_run(request.get('source'), request.get('variables'),
-                                       max_steps=request.get('max_steps'), timeout_seconds=timeout_seconds)
-    sys.stdout.write(json.dumps(outcome, ensure_ascii=False))
+        _child_reply({'ok': False, 'kind': 'error', 'error': 'Bad sandbox request', 'line': None, 'logs': [],
+                      'steps': 0})
+    try:
+        _confine_child(timeout_seconds)
+    except Exception as e:
+        _child_reply({'ok': False, 'kind': 'error', 'line': None, 'logs': [], 'steps': 0,
+                      'error': f'The sandbox could not be confined, the script was not run ({_short(e)})'})
+    try:
+        outcome = ai_workflows_sandbox_run_unconfined(request.get('source'), request.get('variables'),
+                                                      max_steps=request.get('max_steps'),
+                                                      timeout_seconds=timeout_seconds)
+    except BaseException as e:
+        # A bug of this module: a traceback would be read from the source files
+        outcome = {'ok': False, 'kind': 'error', 'error': f'The sandbox failed ({e.__class__.__name__})',
+                   'line': None, 'logs': [], 'steps': 0}
+    _child_reply(outcome)
 
 
 if __name__ == '__main__':

@@ -25,7 +25,7 @@ from unittest.mock import patch
 from app.iris_engine.ai_workflows.engine import ai_workflows_engine_replay_context
 from app.iris_engine.ai_workflows.engine import ai_workflows_engine_replay_step
 from app.iris_engine.ai_workflows.engine import ai_workflows_engine_step
-from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run
+from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run_unconfined
 from tests.app.iris_engine.ai_workflows.harness import OWNER_ID
 from tests.app.iris_engine.ai_workflows.harness import EngineTestCase
 from tests.app.iris_engine.ai_workflows.harness import chain
@@ -33,7 +33,7 @@ from tests.app.iris_engine.ai_workflows.harness import workflow
 
 
 def _in_process(source, variables, max_steps=None, timeout_seconds=None):
-    return ai_workflows_sandbox_run(source, variables, max_steps=max_steps, timeout_seconds=timeout_seconds)
+    return ai_workflows_sandbox_run_unconfined(source, variables, max_steps=max_steps, timeout_seconds=timeout_seconds)
 
 
 def _graph(code):

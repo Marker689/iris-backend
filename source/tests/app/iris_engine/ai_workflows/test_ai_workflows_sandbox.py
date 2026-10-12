@@ -19,15 +19,27 @@
 """The sandbox of the `python` node: what scripts may do, what they may
 not reach, and the budgets that stop them."""
 
+import io
+import json
+import os
+import signal
+import subprocess
+import sys
 from unittest import TestCase
+from unittest import skipUnless
+from unittest.mock import MagicMock
+from unittest.mock import patch
 
+from app.iris_engine.ai_workflows import sandbox
 from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_check
 from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_execute
-from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run
+from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run_unconfined
+
+_LINUX = sys.platform.startswith('linux')
 
 
 def _run(source, variables=None, **kwargs):
-    return ai_workflows_sandbox_run(source, variables or {}, **kwargs)
+    return ai_workflows_sandbox_run_unconfined(source, variables or {}, **kwargs)
 
 
 def _result(source, variables=None):
@@ -179,6 +191,16 @@ class TestsSandboxContainment(TestCase):
         outcome = _run('x = (-8) ** 0.5')
         self.assertEqual((False, 'error'), (outcome['ok'], outcome['kind']))
 
+    def test_slices_outside_brackets_should_be_refused(self):
+        # From Python 3.12 on a slice is hashable: `d[1:2, 3]` would make one a value
+        self._refused('d = {}\nd[1:2, 3] = 1')
+        self._refused('x = [1, 2][1:2, 0]')
+        self.assertEqual([[2], [1, 3]], _result('x = [1, 2, 3]\nresult = [x[1:2], x[::2]]'))
+
+    def test_keys_should_only_hold_plain_values(self):
+        self.assertFalse(_run('d = {}\nd[(1, len)] = 1')['ok'])
+        self.assertFalse(_run('x = {(1, (2, len))}')['ok'])
+
     def test_error_messages_should_be_bounded(self):
         outcome = _run("s = '<' * 100000\nx = f'{1:{s}}'")
         self.assertFalse(outcome['ok'])
@@ -221,6 +243,7 @@ class TestsSandboxBudgets(TestCase):
         self.assertTrue(ai_workflows_sandbox_check('x = 1\n' * 5000))
 
 
+@skipUnless(_LINUX, 'the confined child process needs Linux (seccomp)')
 class TestsSandboxProcess(TestCase):
 
     def test_execute_should_run_in_a_child_process(self):
@@ -236,3 +259,143 @@ class TestsSandboxProcess(TestCase):
         outcome = ai_workflows_sandbox_execute("x = re_search('(a+)+$', 'a' * 40 + 'b')", {}, timeout_seconds=1)
         self.assertFalse(outcome['ok'])
         self.assertEqual('limit', outcome['kind'])
+
+    def test_confined_child_should_still_run_every_builtin(self):
+        outcome = ai_workflows_sandbox_execute(f"{sandbox._WARM_UP}\nresult = re_findall('[[b]', 'b')", {})
+        self.assertEqual((True, ['b']), (outcome['ok'], outcome.get('result')), outcome)
+
+    def test_crash_of_the_interpreter_should_only_stop_the_child(self):
+        source = 't = ()\nfor i in range(99999):\n    t = (t,)\nresult = len(set([t]))'
+        outcome = ai_workflows_sandbox_execute(source, {}, max_steps=2_000_000, timeout_seconds=10)
+        self.assertEqual((False, 'limit'), (outcome['ok'], outcome['kind']), outcome)
+        self.assertIn('crashed', outcome['error'])
+
+
+def _confined(statement):
+    """Run `statement` as Python in a child confined like the sandbox one:
+    what would happen to a script that got out of the interpreter."""
+    code = '\n'.join((
+        'import mmap, os, socket, sys',
+        f'sys.path.insert(0, {os.path.dirname(sandbox.__file__)!r})',
+        'import sandbox',
+        'sandbox._confine_child(5)',
+        statement,
+        "sys.stdout.write('alive')",
+        'sys.stdout.flush()',
+        'os._exit(0)',
+    ))
+    return subprocess.run([sys.executable, '-I', '-S', '-c', code], capture_output=True, timeout=30, check=False)
+
+
+@skipUnless(_LINUX, 'seccomp needs Linux')
+class TestsSandboxConfinement(TestCase):
+
+    def test_confined_child_should_compute_and_write_its_reply(self):
+        completed = _confined("x = sorted(str(i) * 1000 for i in range(10000))")
+        self.assertEqual((0, b'alive'), (completed.returncode, completed.stdout))
+
+    def test_forbidden_system_calls_should_kill_the_child(self):
+        for statement in ("open('/etc/hostname').read()", 'socket.socket()', 'os.fork()',
+                          "os.execv('/bin/sh', ['sh'])", 'mmap.mmap(-1, 4096, prot=mmap.PROT_READ | mmap.PROT_EXEC)',
+                          "os.write(3, b'x')", 'os.kill(os.getppid(), 0)', 'os.getpid()'):
+            completed = _confined(statement)
+            self.assertEqual(-signal.SIGSYS, completed.returncode, statement)
+            self.assertEqual(b'', completed.stdout, statement)
+
+    def test_killed_child_should_be_reported_as_forbidden(self):
+        outcome = sandbox._stopped(-signal.SIGSYS, False)
+        self.assertEqual(('error', 'The script was stopped: it attempted a forbidden operation'),
+                         (outcome['kind'], outcome['error']))
+        self.assertEqual('The script output is too large', sandbox._stopped(0, True)['error'])
+
+
+def _verdict(instructions, arch, nr, arg0=0, arg2=0):
+    """What the BPF program decides for a system call."""
+    data = {sandbox._SECCOMP_DATA_ARCH: arch, sandbox._SECCOMP_DATA_NR: nr, sandbox._SECCOMP_DATA_ARG0: arg0,
+            sandbox._SECCOMP_DATA_ARG2: arg2}
+    pc, accumulator = 0, 0
+    while True:
+        code, jt, jf, k = instructions[pc]
+        if code == sandbox._BPF_CODES['ret']:
+            return k
+        if code == sandbox._BPF_CODES['ld']:
+            accumulator = data[k]
+            pc += 1
+            continue
+        taken = {sandbox._BPF_CODES['jeq']: accumulator == k, sandbox._BPF_CODES['jge']: accumulator >= k,
+                 sandbox._BPF_CODES['jset']: bool(accumulator & k)}[code]
+        pc += 1 + (jt if taken else jf)
+
+
+class TestsSandboxSeccompFilter(TestCase):
+
+    _OTHERS = {'x86_64': {'openat': 257, 'socket': 41, 'execve': 59, 'clone': 56, 'ptrace': 101, 'read': 0},
+               'aarch64': {'openat': 56, 'socket': 198, 'execve': 221, 'clone': 220, 'ptrace': 117, 'read': 63}}
+
+    def test_filter_should_allow_only_the_listed_calls(self):
+        allow, kill = sandbox._SECCOMP_RET_ALLOW, sandbox._SECCOMP_RET_KILL_PROCESS
+        for machine, (arch, numbers) in sandbox._SYSCALLS.items():
+            instructions = sandbox._seccomp_filter(machine)
+            for name in sandbox._ALLOWED_SYSCALLS:
+                self.assertEqual(allow, _verdict(instructions, arch, numbers[name]), (machine, name))
+            for name, nr in self._OTHERS[machine].items():
+                self.assertEqual(kill, _verdict(instructions, arch, nr), (machine, name))
+            self.assertEqual(allow, _verdict(instructions, arch, numbers['write'], arg0=1))
+            self.assertEqual(allow, _verdict(instructions, arch, numbers['write'], arg0=2))
+            self.assertEqual(kill, _verdict(instructions, arch, numbers['write'], arg0=3))
+            for name in ('mmap', 'mprotect'):
+                self.assertEqual(allow, _verdict(instructions, arch, numbers[name], arg2=0x3), (machine, name))
+                self.assertEqual(kill, _verdict(instructions, arch, numbers[name], arg2=0x5), (machine, name))
+            # Another ABI (i386, arm32), or the x32 one sharing the x86_64 arch
+            self.assertEqual(kill, _verdict(instructions, 0x40000003, numbers['write'], arg0=1))
+            self.assertEqual(kill, _verdict(instructions, arch, sandbox._X32_SYSCALL_BIT | numbers['write'], arg0=1))
+
+    def test_unknown_architecture_should_have_no_filter(self):
+        with self.assertRaises(RuntimeError):
+            sandbox._seccomp_filter('sparc64')
+
+
+class TestsSandboxChildFailClosed(TestCase):
+
+    def _child_main(self, confine):
+        request = json.dumps({'source': "result = 'ran'", 'variables': {}}).encode('utf-8')
+        stdout = io.StringIO()
+        with patch.object(sandbox, '_confine_child', confine), \
+                patch.object(sandbox.sys, 'stdin', io.TextIOWrapper(io.BytesIO(request))), \
+                patch.object(sandbox.sys, 'stdout', stdout), \
+                patch.object(sandbox.os, '_exit', side_effect=SystemExit):
+            with self.assertRaises(SystemExit):
+                sandbox._child_main()
+        return json.loads(stdout.getvalue())
+
+    def test_script_should_run_once_confined(self):
+        self.assertEqual('ran', self._child_main(MagicMock())['result'])
+
+    def test_script_should_not_run_when_the_confinement_fails(self):
+        outcome = self._child_main(MagicMock(side_effect=OSError(1, 'prctl(PR_SET_SECCOMP) failed')))
+        self.assertFalse(outcome['ok'])
+        self.assertIn('could not be confined', outcome['error'])
+
+    def test_root_should_become_nobody(self):
+        nobody = sandbox._UNPRIVILEGED_ID
+        fake_os = MagicMock(**{'getuid.return_value': 0, 'geteuid.return_value': 0,
+                               'getresuid.return_value': (nobody,) * 3, 'getresgid.return_value': (nobody,) * 3,
+                               'getgroups.return_value': []})
+        with patch.object(sandbox, 'os', fake_os):
+            sandbox._drop_privileges()
+        fake_os.setgroups.assert_called_once_with([])
+        fake_os.setresgid.assert_called_once_with(nobody, nobody, nobody)
+        fake_os.setresuid.assert_called_once_with(nobody, nobody, nobody)
+
+    def test_root_kept_should_fail(self):
+        fake_os = MagicMock(**{'getuid.return_value': 0, 'geteuid.return_value': 0,
+                               'getresuid.return_value': (0, 0, 0), 'getresgid.return_value': (0, 0, 0),
+                               'getgroups.return_value': []})
+        with patch.object(sandbox, 'os', fake_os), self.assertRaises(RuntimeError):
+            sandbox._drop_privileges()
+
+    def test_unprivileged_user_should_be_kept(self):
+        fake_os = MagicMock(**{'getuid.return_value': 1000, 'geteuid.return_value': 1000})
+        with patch.object(sandbox, 'os', fake_os):
+            sandbox._drop_privileges()
+        fake_os.setresuid.assert_not_called()

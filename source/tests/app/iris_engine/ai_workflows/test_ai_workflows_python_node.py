@@ -24,7 +24,7 @@ from unittest.mock import patch
 
 from app.iris_engine.ai_workflows.context import ai_workflows_context_render_arguments
 from app.iris_engine.ai_workflows.graph import ai_workflows_graph_validate
-from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run
+from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run_unconfined
 from tests.app.iris_engine.ai_workflows.harness import SECRET_NAME
 from tests.app.iris_engine.ai_workflows.harness import SECRET_VALUE
 from tests.app.iris_engine.ai_workflows.harness import EngineTestCase
@@ -39,7 +39,7 @@ def _python(node_id, code, inputs=None):
 
 
 def _in_process(source, variables, max_steps=None, timeout_seconds=None):
-    return ai_workflows_sandbox_run(source, variables, max_steps=max_steps, timeout_seconds=timeout_seconds)
+    return ai_workflows_sandbox_run_unconfined(source, variables, max_steps=max_steps, timeout_seconds=timeout_seconds)
 
 
 class TestsPythonNode(EngineTestCase):

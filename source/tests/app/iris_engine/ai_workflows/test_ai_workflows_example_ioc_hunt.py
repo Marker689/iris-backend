@@ -37,7 +37,7 @@ from app.iris_engine.ai_workflows.portable import ai_workflows_portable_key_refe
 from app.iris_engine.ai_workflows.portable import ai_workflows_portable_literal_secrets
 from app.iris_engine.ai_workflows.portable import ai_workflows_portable_read_workflow
 from app.iris_engine.ai_workflows.portable import ai_workflows_portable_tools
-from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run
+from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run_unconfined
 from tests.app.iris_engine.ai_workflows.harness import OWNER_ID
 from tests.app.iris_engine.ai_workflows.harness import EngineTestCase
 from tests.app.iris_engine.ai_workflows.harness import FakeResolver
@@ -55,7 +55,7 @@ _TYPES = [{'id': 1, 'name': 'Windows - Computer'}, {'id': 3, 'name': 'Linux - Co
 
 
 def _script(node_id, inputs):
-    outcome = ai_workflows_sandbox_run(_NODES[node_id]['config']['code'], {'inputs': inputs},
+    outcome = ai_workflows_sandbox_run_unconfined(_NODES[node_id]['config']['code'], {'inputs': inputs},
                                        max_steps=_NODES[node_id]['config']['max_steps'])
     if not outcome['ok']:
         raise AssertionError(outcome)
@@ -181,7 +181,7 @@ class TestsIocHuntPrepareScript(TestCase):
         self.assertEqual((False, 'The IOC value holds control characters'), (result['supported'], result['reason']))
 
     def test_unknown_siem_should_fail(self):
-        outcome = ai_workflows_sandbox_run(_NODES['prepare']['config']['code'], {'inputs': {
+        outcome = ai_workflows_sandbox_run_unconfined(_NODES['prepare']['config']['code'], {'inputs': {
             'siem': 'qradar', 'ioc': _ioc('10.1.2.3', 'ip')}})
         self.assertEqual(('failed', 'Unknown SIEM qradar: set the input siem to elastic or splunk'),
                          (outcome['kind'], outcome['error']))
@@ -268,7 +268,7 @@ class TestsIocHuntPickScript(TestCase):
         self.assertNotIn('asset_ip', result['payload'])
 
     def test_missing_asset_type_should_fail(self):
-        outcome = ai_workflows_sandbox_run(_NODES['pick']['config']['code'], {'inputs': {
+        outcome = ai_workflows_sandbox_run_unconfined(_NODES['pick']['config']['code'], {'inputs': {
             'hosts': self._HOSTS, 'types': [{'id': 5, 'name': 'Router'}], 'ioc': {}, 'index': 0,
             'default_type': 'Server'}})
         self.assertEqual('failed', outcome['kind'])
@@ -316,7 +316,7 @@ class TestsIocHuntRun(EngineTestCase):
         patches = {
             'app.iris_engine.ai_workflows.nodes.ai_workflows_sandbox_execute':
                 lambda source, variables, max_steps=None, timeout_seconds=None:
-                    ai_workflows_sandbox_run(source, variables, max_steps=max_steps, timeout_seconds=timeout_seconds),
+                    ai_workflows_sandbox_run_unconfined(source, variables, max_steps=max_steps, timeout_seconds=timeout_seconds),
             'app.iris_engine.ai_workflows.nodes.webhooks_send': _send,
             'app.iris_engine.ai_workflows.nodes.webhooks_db_proxies': lambda: None,
             'app.iris_engine.ai_workflows.nodes.ai_workflows_db_entity_owner_ids': lambda _type, _id: [OWNER_ID],

@@ -32,7 +32,7 @@ from app.iris_engine.ai_workflows.portable import ai_workflows_portable_key_refe
 from app.iris_engine.ai_workflows.portable import ai_workflows_portable_literal_secrets
 from app.iris_engine.ai_workflows.portable import ai_workflows_portable_read_workflow
 from app.iris_engine.ai_workflows.portable import ai_workflows_portable_tools
-from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run
+from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run_unconfined
 from tests.app.iris_engine.ai_workflows.harness import OWNER_ID
 from tests.app.iris_engine.ai_workflows.harness import EngineTestCase
 from tests.app.iris_engine.ai_workflows.harness import text_turn
@@ -60,7 +60,7 @@ _PLAN = {
 
 
 def _plan(plan=None, taxonomies=None, max_tasks=3):
-    return ai_workflows_sandbox_run(_NODES['plan']['config']['code'], {'inputs': {
+    return ai_workflows_sandbox_run_unconfined(_NODES['plan']['config']['code'], {'inputs': {
         'plan': _PLAN if plan is None else plan, 'taxonomies': _TAXONOMIES if taxonomies is None else taxonomies,
         'max_tasks': max_tasks}}, max_steps=_NODES['plan']['config']['max_steps'])
 
@@ -132,7 +132,7 @@ class TestsCaseKickoffRun(EngineTestCase):
         super().setUp()
         patcher = patch('app.iris_engine.ai_workflows.nodes.ai_workflows_sandbox_execute',
                         lambda source, variables, max_steps=None, timeout_seconds=None:
-                            ai_workflows_sandbox_run(source, variables, max_steps=max_steps,
+                            ai_workflows_sandbox_run_unconfined(source, variables, max_steps=max_steps,
                                                      timeout_seconds=timeout_seconds))
         patcher.start()
         self.addCleanup(patcher.stop)

@@ -35,7 +35,7 @@ from app.iris_engine.ai_workflows.portable import ai_workflows_portable_key_refe
 from app.iris_engine.ai_workflows.portable import ai_workflows_portable_literal_secrets
 from app.iris_engine.ai_workflows.portable import ai_workflows_portable_read_block
 from app.iris_engine.ai_workflows.portable import ai_workflows_portable_read_workflow
-from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run
+from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run_unconfined
 from tests.app.iris_engine.ai_workflows.harness import OWNER_ID
 from tests.app.iris_engine.ai_workflows.harness import EngineTestCase
 from tests.app.iris_engine.ai_workflows.harness import FakeResolver
@@ -83,7 +83,7 @@ def _vt_body(malicious=5, suspicious=0, item_id=_SHA256):
 
 def _script(node_id, inputs):
     code = _nodes(_WORKFLOW, 'workflow')[node_id]['config']['code']
-    outcome = ai_workflows_sandbox_run(code, {'inputs': inputs, 'entity': {}, 'trigger': {}, 'nodes': {},
+    outcome = ai_workflows_sandbox_run_unconfined(code, {'inputs': inputs, 'entity': {}, 'trigger': {}, 'nodes': {},
                                              'vars': {}, 'run': {}})
     if not outcome['ok']:
         raise AssertionError(outcome)
@@ -230,7 +230,7 @@ class _VirusTotalResolver(FakeResolver):
 
 
 def _in_process(source, variables, max_steps=None, timeout_seconds=None):
-    return ai_workflows_sandbox_run(source, variables, max_steps=max_steps, timeout_seconds=timeout_seconds)
+    return ai_workflows_sandbox_run_unconfined(source, variables, max_steps=max_steps, timeout_seconds=timeout_seconds)
 
 
 class _VirusTotalRunTestCase(EngineTestCase):
