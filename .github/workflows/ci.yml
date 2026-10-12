@@ -203,12 +203,14 @@ jobs:
           # the `Ran N tests` / `FAILED (...)` summary is lost. Keep the full
           # trace in the uploaded artifact and show only unittest's own lines
           # here. `pipefail` keeps unittest's exit code authoritative rather
-          # than grep's.
+          # than grep's. `--line-buffered`: writing to a pipe, grep would
+          # otherwise hold back up to a few KB, so the live log lags behind
+          # the test actually running.
           set -o pipefail
           PYTHONPATH="${{ runner.temp }}/deps-api" \
             PYTHONUNBUFFERED=true python3 -m unittest --verbose 2>&1 \
             | tee "${{ runner.temp }}/tests-api.log" \
-            | grep -vE '^(GET|POST|PUT|PATCH|DELETE) http'
+            | grep --line-buffered -vE '^(GET|POST|PUT|PATCH|DELETE) http'
       - name: Check the absence of errors/stack traces in logs
         run: |
           ! docker compose --file docker-compose.test.yml logs app | grep Traceback -A100

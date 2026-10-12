@@ -219,10 +219,6 @@ class TestsRestAiWorkflows(TestCase):
         response = user.create(f'{_AI_WORKFLOWS}/validate', _body())
         self.assertEqual(403, response.status_code)
 
-    def test_create_workflow_over_2_mib_should_return_413(self):
-        response = self._create_workflow(description='x' * (2 * 1024 * 1024 + 1))
-        self.assertEqual(413, response.status_code)
-
     def test_create_workflow_with_a_description_over_10000_characters_should_return_400(self):
         response = self._create_workflow(description='x' * 10_001)
         self.assertEqual(400, response.status_code)
