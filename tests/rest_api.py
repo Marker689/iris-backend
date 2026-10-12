@@ -19,7 +19,11 @@
 import requests
 from requests.exceptions import ConnectionError
 from requests.exceptions import JSONDecodeError
+from requests.exceptions import Timeout
 from urllib import parse
+
+# Seconds; a stalled request fails its test instead of hanging the whole run
+_TIMEOUT = 120
 
 
 class RestApi:
@@ -41,50 +45,50 @@ class RestApi:
 
     def post(self, path, payload, query_parameters=None):
         url = self._build_url(path)
-        response = requests.post(url, headers=self._headers, params=query_parameters, json=payload)
+        response = requests.post(url, headers=self._headers, params=query_parameters, json=payload, timeout=_TIMEOUT)
         response_as_string = self._convert_response_to_string(response)
         print(f'POST {url} {payload} => {response_as_string}')
         return response
 
     def get(self, path, query_parameters=None):
         url = self._build_url(path)
-        response = requests.get(url, headers=self._headers, params=query_parameters)
+        response = requests.get(url, headers=self._headers, params=query_parameters, timeout=_TIMEOUT)
         response_as_string = self._convert_response_to_string(response)
         print(f'GET {url} => {response_as_string}')
         return response
 
     def put(self, path, payload):
         url = self._build_url(path)
-        response = requests.put(url, headers=self._headers, json=payload)
+        response = requests.put(url, headers=self._headers, json=payload, timeout=_TIMEOUT)
         response_as_string = self._convert_response_to_string(response)
         print(f'PUT {url} {payload} => {response_as_string}')
         return response
 
     def patch(self, path, payload):
         url = self._build_url(path)
-        response = requests.patch(url, headers=self._headers, json=payload)
+        response = requests.patch(url, headers=self._headers, json=payload, timeout=_TIMEOUT)
         response_as_string = self._convert_response_to_string(response)
         print(f'PATCH {url} {payload} => {response_as_string}')
         return response
 
     def delete(self, path, query_parameters=None):
         url = self._build_url(path)
-        response = requests.delete(url, headers=self._headers, params=query_parameters)
+        response = requests.delete(url, headers=self._headers, params=query_parameters, timeout=_TIMEOUT)
         response_as_string = self._convert_response_to_string(response)
         print(f'DELETE {url} => {response_as_string}')
         return response
 
     def is_ready(self):
         try:
-            requests.head(self._url)
+            requests.head(self._url, timeout=_TIMEOUT)
             return True
-        except ConnectionError:
+        except (ConnectionError, Timeout):
             return False
 
     def post_multipart_encoded_files(self, path, data, files):
         headers = {'Authorization': f'Bearer {self._api_key}'}
         url = self._build_url(path)
-        response = requests.post(url, headers=headers, data=data, files=files)
+        response = requests.post(url, headers=headers, data=data, files=files, timeout=_TIMEOUT)
         response_as_string = self._convert_response_to_string(response)
         print(f'POST {url} {data} {list(files)} => {response_as_string}')
         return response

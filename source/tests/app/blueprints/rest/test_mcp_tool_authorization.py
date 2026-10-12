@@ -1,42 +1,48 @@
 #  IRIS Source Code
 #  Copyright (C) 2026 - DFIR-IRIS
 #  contact@dfir-iris.org
+#
+#  This program is free software; you can redistribute it and/or
+#  modify it under the terms of the GNU Lesser General Public
+#  License as published by the Free Software Foundation; either
+#  version 3 of the License, or (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+#  Lesser General Public License for more details.
+#
+#  You should have received a copy of the GNU Lesser General Public License
+#  along with this program; if not, write to the Free Software Foundation,
+#  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-"""MCP tool classification + authorization wiring — pure unit test.
-
-Runs inside the docker-compose IRIS backend container (imports live
-Flask modules) so `TOOL_REGISTRY` and the classification sets are the
-real ones dispatch runs against. Nothing here touches the database or
-needs an app context.
+"""MCP tool classification + authorization wiring. No DB.
 
 Two things are pinned:
-  * exhaustiveness — a new MCP tool that nobody classified fails here
+  * exhaustiveness: a new MCP tool that nobody classified fails here
     rather than at analyst-facing runtime (that's the safety hinge for
     the confirm-writes UX);
-  * the access level each tool resolves to — a mutating tool must
+  * the access level each tool resolves to: a mutating tool must
     demand `full_access` on its case / war room, matching the REST route
     that performs the same change.
 """
-import os
-import sys
+
 from unittest import TestCase
+
+from app.blueprints.rest.v2.mcp.classification import READ_ONLY_TOOLS
+from app.blueprints.rest.v2.mcp.classification import WRITE_TOOLS
+from app.blueprints.rest.v2.mcp.classification import mutates
+from app.blueprints.rest.v2.mcp.dispatch import required_case_levels
+from app.blueprints.rest.v2.mcp.dispatch import required_war_room_levels
+from app.blueprints.rest.v2.mcp.registry import TOOL_REGISTRY
+from app.models.authorization import CaseAccessLevel
+from app.models.authorization import Permissions
+from app.models.authorization import WarRoomAccessLevel
 
 
 class TestsMCPToolAuthorization(TestCase):
 
-    def setUp(self) -> None:
-        # These tests import the backend package directly rather than
-        # driving the app via HTTP, so we must extend sys.path to the
-        # deployed source root. Same trick the migration tests use.
-        source_root = '/iris_source'  # docker-compose test container mount
-        if os.path.isdir(source_root) and source_root not in sys.path:
-            sys.path.insert(0, source_root)
-
     def test_read_and_write_sets_are_disjoint(self):
-        from app.blueprints.rest.v2.mcp.classification import (
-            READ_ONLY_TOOLS,
-            WRITE_TOOLS,
-        )
         overlap = READ_ONLY_TOOLS & WRITE_TOOLS
         self.assertEqual(set(), overlap,
                          f'A tool cannot be both read and write: {overlap}')
@@ -46,12 +52,6 @@ class TestsMCPToolAuthorization(TestCase):
         READ_ONLY_TOOLS or WRITE_TOOLS. An unclassified tool is refused
         by the chatbot and gated on full_access by dispatch — the CI
         failure here catches it at merge time instead."""
-        from app.blueprints.rest.v2.mcp.classification import (
-            READ_ONLY_TOOLS,
-            WRITE_TOOLS,
-        )
-        from app.blueprints.rest.v2.mcp.registry import TOOL_REGISTRY
-
         classified = READ_ONLY_TOOLS | WRITE_TOOLS
         mvp_tools = {name for name, spec in TOOL_REGISTRY.items()
                      if getattr(spec, 'mvp', False)}
@@ -67,12 +67,6 @@ class TestsMCPToolAuthorization(TestCase):
         """A tool present in WRITE_TOOLS that isn't registered in
         TOOL_REGISTRY is dead code (or a typo). Reverse-check catches
         both."""
-        from app.blueprints.rest.v2.mcp.classification import (
-            READ_ONLY_TOOLS,
-            WRITE_TOOLS,
-        )
-        from app.blueprints.rest.v2.mcp.registry import TOOL_REGISTRY
-
         registered = set(TOOL_REGISTRY.keys())
         stale = (READ_ONLY_TOOLS | WRITE_TOOLS) - registered
         self.assertEqual(
@@ -84,8 +78,6 @@ class TestsMCPToolAuthorization(TestCase):
     def test_unknown_tool_counts_as_mutating(self):
         """Fail-closed: anything not explicitly read-only is a write, so
         a tool added without classification gets the strict gate."""
-        from app.blueprints.rest.v2.mcp.classification import mutates
-
         self.assertTrue(mutates('iris_not_a_real_tool'))
         self.assertTrue(mutates('iris_case_notes_create'))
         self.assertFalse(mutates('iris_case_notes_list'))
@@ -94,14 +86,6 @@ class TestsMCPToolAuthorization(TestCase):
         """Every mutating case-scoped tool resolves to full_access only —
         never read_only. This is the check that stops a read-only case
         member from driving a write through the LLM."""
-        from app.blueprints.rest.v2.mcp.classification import WRITE_TOOLS
-        from app.blueprints.rest.v2.mcp.dispatch import (
-            required_case_levels,
-            required_war_room_levels,
-        )
-        from app.blueprints.rest.v2.mcp.registry import TOOL_REGISTRY
-        from app.models.authorization import CaseAccessLevel, WarRoomAccessLevel
-
         for name in sorted(WRITE_TOOLS):
             spec = TOOL_REGISTRY[name]
             if spec.case_scoped:
@@ -119,13 +103,6 @@ class TestsMCPToolAuthorization(TestCase):
         """The converse — a read tool must not demand full_access, or a
         read-only case member loses the ability to ask about their own
         case."""
-        from app.blueprints.rest.v2.mcp.classification import READ_ONLY_TOOLS
-        from app.blueprints.rest.v2.mcp.dispatch import (
-            required_case_levels,
-            required_war_room_levels,
-        )
-        from app.models.authorization import CaseAccessLevel, WarRoomAccessLevel
-
         for name in sorted(READ_ONLY_TOOLS):
             self.assertIn(CaseAccessLevel.read_only, required_case_levels(name))
             self.assertIn(WarRoomAccessLevel.read_only,
@@ -136,10 +113,6 @@ class TestsMCPToolAuthorization(TestCase):
         `require_war_room_write`: the matching permission, or
         server_administrator. `standard_user` would let any authenticated
         account in."""
-        from app.blueprints.rest.v2.mcp.classification import mutates
-        from app.blueprints.rest.v2.mcp.registry import TOOL_REGISTRY
-        from app.models.authorization import Permissions
-
         war_room_tools = {
             name for name, spec in TOOL_REGISTRY.items()
             if spec.war_room_scoped or name.startswith('iris_war_room')

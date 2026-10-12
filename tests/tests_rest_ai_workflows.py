@@ -72,7 +72,7 @@ def _body(**overrides):
 
 
 def _post_raw(path, data, headers):
-    return requests.post(parse.urljoin(API_URL, path), data=data, headers=headers)
+    return requests.post(parse.urljoin(API_URL, path), data=data, headers=headers, timeout=120)
 
 
 def _signed_headers(token, signing_secret, raw_body, timestamp=None):

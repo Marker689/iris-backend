@@ -89,6 +89,24 @@ _READ = (Permissions.ai_workflows_read, Permissions.ai_workflows_write)
 _WRITE = (Permissions.ai_workflows_write,)
 # Workflow definitions (graph included) are small; refuse more early
 _MAX_DEFINITION_BYTES = 2 * 1024 * 1024
+# Of an oversized body, at most this much is read and dropped before the 413
+_MAX_DISCARDED_BYTES = 16 * 1024 * 1024
+_DISCARD_CHUNK_BYTES = 64 * 1024
+
+
+def _payload_too_large():
+    """413 for an oversized body. The unread body is drained (bounded) and
+    the connection closed: a client still uploading would otherwise block
+    on a socket nobody reads, or get a reset instead of the 413."""
+    remaining = _MAX_DISCARDED_BYTES
+    while remaining > 0:
+        chunk = request.stream.read(min(_DISCARD_CHUNK_BYTES, remaining))
+        if not chunk:
+            break
+        remaining -= len(chunk)
+    refused = response_api_error('Payload too large', status=413)
+    refused.headers['Connection'] = 'close'
+    return refused
 
 
 def _definition_body():
@@ -96,10 +114,10 @@ def _definition_body():
     is over the cap. At most cap + 1 bytes are read, so a body without
     Content-Length (chunked) is bounded too."""
     if (request.content_length or 0) > _MAX_DEFINITION_BYTES:
-        return None, response_api_error('Payload too large', status=413)
+        return None, _payload_too_large()
     raw = request.stream.read(_MAX_DEFINITION_BYTES + 1) or b''
     if len(raw) > _MAX_DEFINITION_BYTES:
-        return None, response_api_error('Payload too large', status=413)
+        return None, _payload_too_large()
     try:
         body = json.loads(raw) if raw else None
     except (ValueError, RecursionError):
