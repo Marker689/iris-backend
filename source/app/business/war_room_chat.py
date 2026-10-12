@@ -968,6 +968,9 @@ def create_reply(war_room_id, parent_message_id, author_id, body, kind='message'
     msg.body = body
     msg.kind = kind
     msg.parent_message_id = root.message_id
+    if _topics_supported():
+        # A reply belongs to the topic of its thread (trace log, exports)
+        msg.topic_id = root.topic_id
     if attachments is not None:
         # Same guard as `create_message` for a database that hasn't
         # applied the attachments migration yet.
