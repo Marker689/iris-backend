@@ -6,7 +6,8 @@
 #  Runs static checks (ruff, import-linter, vulture), then builds
 #  db + backend images to a tar artifact, loads them into the test
 #  runner, brings up docker-compose.test.yml, and runs the Python
-#  unittest + database migration suites against the live stack.
+#  unittest + database migration suites against the live stack. The
+#  pytest unit suite (source/tests/) runs inside the backend image.
 #
 #  End-to-end tests against the SvelteKit UI live in the iris-web
 #  meta-repo — see iris-web/.github/workflows/e2e.yml.
@@ -273,6 +274,38 @@ jobs:
           PYTHONPATH="${{ runner.temp }}/deps-migration" \
             PYTHONUNBUFFERED=true python3 -m unittest --verbose
 
+  unit-tests:
+    name: Unit tests
+    runs-on: self-hosted
+    permissions:
+      packages: read
+      contents: read
+    needs:
+      - build-docker-app
+    steps:
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull backend image
+        run: docker pull "${{ env.CI_APP_IMAGE }}"
+      - name: Check out iris-backend
+        uses: actions/checkout@v4
+      - name: Run unit tests
+        # In the backend image: source/tests imports the app in-process and
+        # needs every runtime dependency, which the runner cannot install
+        # (see static-checks). No DB or broker is needed, but
+        # `app/__init__.py` reads its configuration at import time, hence
+        # the env file. The image carries the source it was built from, so
+        # this tests exactly this commit.
+        run: |
+          docker run --rm --env-file .env.tests.model --entrypoint "" \
+            "${{ env.CI_APP_IMAGE }}" \
+            sh -c 'pip install --quiet --disable-pip-version-check pytest==8.4.2 \
+              && python -m pytest tests -q -p no:cacheprovider'
+
   cleanup-ci-images:
     name: Cleanup temporary CI images
     if: ${{ always() }}
@@ -283,6 +316,7 @@ jobs:
     needs:
       - test-api
       - test-database-migration
+      - unit-tests
     steps:
       # Deletes this run's two throwaway images through the GitHub packages
       # API rather than a registry CLI. The previous version of this step
