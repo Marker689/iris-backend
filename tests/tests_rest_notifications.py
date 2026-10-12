@@ -123,7 +123,10 @@ class TestsRestNotifications(TestCase):
         )
         note_body = f'<p>Hey {mention_span} please look</p>'
 
+        directory_identifier = self._subject.create(f'/api/v2/cases/{case_identifier}/notes-directories',
+                                                    {'name': 'directory_name'}).json()['id']
         self._subject.create(f'/api/v2/cases/{case_identifier}/notes', {
+            'directory_id': directory_identifier,
             'note_title': 'title',
             'note_content': note_body,
         })

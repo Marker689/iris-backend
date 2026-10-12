@@ -392,9 +392,10 @@ class TestsRestMcp(TestCase):
         import json as _json
         payload = _json.loads(read.json()['result']['contents'][0]['text'])
         self.assertIn('activities', payload)
-        # At least the mcp:iris_cases_get audit row is present.
+        # At least the mcp:iris_cases_get audit row is present. The activity
+        # log upper-cases the first letter of every entry.
         acts = payload['activities']
-        self.assertTrue(any('mcp:iris_cases_get' in str(a) for a in acts))
+        self.assertTrue(any(a['activity_desc'].startswith('Mcp:iris_cases_get') for a in acts))
 
     def test_mcp_resource_read_unknown_case_returns_access_denied(self):
         self._enable_mcp()

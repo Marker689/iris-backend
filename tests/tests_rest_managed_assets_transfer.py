@@ -123,7 +123,9 @@ class TestsRestManagedAssetsTransfer(TestCase):
         return '\r\n'.join([_CSV_HEADER, *rows]) + '\r\n'
 
     def _row(self, name=None, asset_type=_DEFAULT_ASSET_TYPE_NAME, criticality='high', owner='IT Ops'):
-        return f'{name or self._asset_name},{asset_type},{criticality},{owner}'
+        # `is None`, not `or`: an empty name is a case under test
+        name = self._asset_name if name is None else name
+        return f'{name},{asset_type},{criticality},{owner}'
 
     @staticmethod
     def _tagged_csv(*rows):
@@ -634,10 +636,8 @@ class TestsRestManagedAssetsTransfer(TestCase):
         # than trusting either the body or the earlier decision.
         writer = self._writer()
         token = self._stage(self._csv(self._row()), actor=writer)['staging_token']
-        self._subject.create(
-            f'/manage/users/{writer.get_identifier()}/customers/update',
-            {'customers_membership': []},
-        )
+        # The legacy /manage/users/<id>/customers/update refuses an empty list
+        self._subject.update(f'/api/v2/manage/users/{writer.get_identifier()}/customers', {'customers': []})
 
         response = self._apply(token, actor=writer)
 
@@ -646,10 +646,8 @@ class TestsRestManagedAssetsTransfer(TestCase):
     def test_import_should_not_write_anything_when_access_is_revoked_after_the_inspect(self):
         writer = self._writer()
         token = self._stage(self._csv(self._row()), actor=writer)['staging_token']
-        self._subject.create(
-            f'/manage/users/{writer.get_identifier()}/customers/update',
-            {'customers_membership': []},
-        )
+        # The legacy /manage/users/<id>/customers/update refuses an empty list
+        self._subject.update(f'/api/v2/manage/users/{writer.get_identifier()}/customers', {'customers': []})
 
         self._apply(token, actor=writer)
 

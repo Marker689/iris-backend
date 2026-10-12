@@ -132,7 +132,7 @@ class TestsRestManagedAssets(TestCase):
         self.assertEqual(400, response.status_code)
 
     def test_create_managed_asset_should_return_201_when_the_asset_type_differs(self):
-        types = self._subject.get('/api/v2/manage/asset-types', {'per_page': 100}).json()['data']
+        types = self._subject.get('/api/v2/manage/case-objects/asset-types', {'per_page': 100}).json()['data']
         other_type = next(
             asset_type['asset_id'] for asset_type in types
             if asset_type['asset_id'] != _DEFAULT_ASSET_TYPE_IDENTIFIER

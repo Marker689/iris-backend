@@ -40,6 +40,7 @@ sweep.
 from unittest import TestCase
 
 from iris import Iris
+from iris import IRIS_CASE_ACCESS_LEVEL_DENY_ALL
 from iris import IRIS_CASE_ACCESS_LEVEL_FULL_ACCESS
 from iris import IRIS_INITIAL_CUSTOMER_IDENTIFIER
 from iris import IRIS_PERMISSION_ALERTS_READ
@@ -117,12 +118,24 @@ class TestsRestManagedAssetsSightings(TestCase):
         self.fail(f'"{name}" was never registered')
 
     def _reader(self, cases=(), permissions=IRIS_PERMISSION_ASSET_MANAGER_READ):
-        """A non-admin who can read the registry for the initial customer."""
+        """A non-admin who can read the registry for the initial customer.
+
+        Customer membership opens every case of that customer, so the cases
+        existing at this point that are not in `cases` are explicitly denied:
+        a user-level access overrides the customer-level one.
+        """
         user = self._subject.create_dummy_user(permissions=permissions)
         self._subject.create(
             f'/manage/users/{user.get_identifier()}/customers/update',
             {'customers_membership': [IRIS_INITIAL_CUSTOMER_IDENTIFIER]},
         )
+        existing = self._subject.get('/api/v2/cases', query_parameters={'per_page': 1000000000}).json()
+        denied = [case['case_id'] for case in existing['data'] if case['case_id'] not in cases]
+        if denied:
+            self._subject.create(
+                f'/manage/users/{user.get_identifier()}/cases-access/update',
+                {'cases_list': denied, 'access_level': IRIS_CASE_ACCESS_LEVEL_DENY_ALL},
+            )
         if cases:
             self._subject.create(
                 f'/manage/users/{user.get_identifier()}/cases-access/update',

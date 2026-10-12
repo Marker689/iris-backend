@@ -37,5 +37,5 @@ class TestsRestModuleTasks(TestCase):
         self._subject.create(f'/api/v2/cases/{case_identifier}/assets', body)
         self._subject.create(f'/manage/modules/disable/{module_identifier}', {})
 
-        response = self._subject.get('/dim/tasks/list/1').json()
-        self.assertEqual(f'Case #{case_identifier}', response['data'][0]['case'])
+        task = self._subject.wait_for_module_task()
+        self.assertEqual(f'Case #{case_identifier}', task['case'])

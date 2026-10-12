@@ -58,24 +58,20 @@ class TestsAuth(TestCase):
                                  params={'next': 'https:///www.google.com'})
         self.assertEqual('/dashboard?cid=1', response.headers['Location'])
 
-    def test_login_should_return_authentication_cookie(self):
+    def test_login_should_return_authentication_tokens(self):
         user_name = f'user{uuid4()}'
         password = 'aA.1234567890'
         user = self._subject.create_user(user_name, password)
-        response = user.login(password)
-        self.assertIn('Set-Cookie', response.headers)
+        tokens = user.login(password).json()['tokens']
+        self.assertIn('access_token', tokens)
 
-    def test_login_should_return_authentication_cookie_which_allows_get_requests(self):
+    def test_login_should_return_an_access_token_which_allows_get_requests(self):
         user_name = f'user{uuid4()}'
         password = 'aA.1234567890'
         user = self._subject.create_user(user_name, password)
-        response = user.login(password)
+        tokens = user.login(password).json()['tokens']
         url = parse.urljoin(API_URL, '/api/v2/cases')
-        name, value = response.headers['Set-Cookie'].split('=', 1)
-        cookies = {
-            name: value
-        }
-        response = requests.get(url, cookies=cookies)
+        response = requests.get(url, headers={'Authorization': f'Bearer {tokens["access_token"]}'})
         self.assertEqual(200, response.status_code)
 
     def test_logout_with_bearer_token_should_not_crash(self):

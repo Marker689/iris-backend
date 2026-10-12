@@ -359,9 +359,10 @@ class TestsRestCaseTransfer(TestCase):
         imported = self._import(self._export(source['case_id']))
 
         ioc = self._first(imported['case_id'], 'iocs', 'ioc_value', '8.8.8.8')
+        asset = self._first(imported['case_id'], 'assets', 'asset_name', 'DC01')
         detail = self._subject.get(
-            f'/api/v2/cases/{imported["case_id"]}/iocs/{ioc["ioc_id"]}').json()
-        self.assertEqual(['DC01'], [asset['asset_name'] for asset in detail['link']])
+            f'/api/v2/cases/{imported["case_id"]}/assets/{asset["asset_id"]}').json()
+        self.assertEqual([ioc['ioc_id']], [linked['ioc_id'] for linked in detail['iocs']])
 
     def test_round_trip_should_keep_the_event_on_its_own_timeline(self):
         source = self._build_rich_case(self._subject.create_dummy_user())

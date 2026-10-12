@@ -55,10 +55,10 @@ class TestsRestCaseActivities(TestCase):
         response = self._subject.get(f'/api/v2/cases/{case_identifier}/activities').json()
         self.assertGreaterEqual(len(response), 1)
 
-    def test_list_case_activities_entries_should_include_user_name(self):
+    def test_list_case_activities_entries_should_include_the_name_of_the_user(self):
         case_identifier = self._subject.create_dummy_case()
         response = self._subject.get(f'/api/v2/cases/{case_identifier}/activities').json()
-        self.assertIn('user_name', response[0])
+        self.assertEqual('administrator', response[0]['name'])
 
     def test_list_case_activities_entries_should_include_activity_date(self):
         case_identifier = self._subject.create_dummy_case()

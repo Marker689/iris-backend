@@ -58,6 +58,7 @@ IRIS_PERMISSION_VULNERABILITIES_WRITE = 0x10000000
 IRIS_PERMISSION_VULNERABILITIES_READ = 0x20000000
 IRIS_PERMISSION_VULNERABILITIES_CREATE = 0x40000000
 
+IRIS_CASE_ACCESS_LEVEL_DENY_ALL = 0x1
 IRIS_CASE_ACCESS_LEVEL_READ_ONLY = 0x2
 IRIS_CASE_ACCESS_LEVEL_FULL_ACCESS = 0x4
 
@@ -226,12 +227,15 @@ class Iris:
             current_timestamp = timestamp
         return result
 
+    def get_latest_module_tasks(self):
+        return self.get('/api/v2/dim-tasks', query_parameters={'search': 'task_hook_wrapper', 'per_page': 1}).json()
+
     def wait_for_module_task(self):
-        response = self.get('/dim/tasks/list/1').json()
+        response = self.get_latest_module_tasks()
         attempts = 0
         while len(response['data']) == 0:
             sleep(1)
-            response = self.get('/dim/tasks/list/1').json()
+            response = self.get_latest_module_tasks()
             attempts += 1
             if attempts > 20:
                 logs = self.extract_logs('worker')

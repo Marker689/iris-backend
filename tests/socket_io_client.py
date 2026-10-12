@@ -27,7 +27,11 @@ class SocketIOClient:
         self._client = SimpleClient()
 
     def connect(self):
-        self._client.connect(self._url, headers={'Authorization': f'Bearer {self._api_key}'})
+        # Websocket only, as the frontend connects. Starting on polling and
+        # upgrading fails whenever gunicorn hands the upgrade to another
+        # worker than the one holding the session.
+        self._client.connect(self._url, headers={'Authorization': f'Bearer {self._api_key}'},
+                             transports=['websocket'])
 
     def emit(self, event, channel):
         print(f'==> {event}/{channel}')

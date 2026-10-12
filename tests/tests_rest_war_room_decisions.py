@@ -265,13 +265,17 @@ class TestsRestWarRoomDecisions(TestCase):
         room_id = self._room()
         outsider = self._subject.create_dummy_user()
         response = self._subject.create(f'/api/v2/war-rooms/{room_id}/chat',
-                                        {'body': f'/decision Block TOR exits @{outsider.get_login()}'})
+                                        {'body': f'/decision @{outsider.get_login()} Block TOR exits'})
         self.assertEqual(400, response.status_code)
         self.assertEqual(f'Unknown or non-member user @{outsider.get_login()}', response.json()['message'])
 
     def test_chat_decision_should_be_a_candidate_until_registered(self):
         room_id = self._room()
-        self._subject.create(f'/api/v2/war-rooms/{room_id}/chat', {'body': '/decision Block TOR exits'})
+        # A top-level /decision goes straight to the register; one posted in
+        # a thread stays a chat row, to be registered by hand
+        root = self._subject.create(f'/api/v2/war-rooms/{room_id}/chat', {'body': 'TOR traffic'}).json()
+        self._subject.create(f'/api/v2/war-rooms/{room_id}/chat/{root["message_id"]}/replies',
+                             {'body': '/decision Block TOR exits'})
         candidates = self._subject.get(f'/api/v2/war-rooms/{room_id}/decisions/chat-candidates').json()
         self.assertEqual(1, len(candidates))
         message_id = candidates[0]['message_id']

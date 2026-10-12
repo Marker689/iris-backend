@@ -373,7 +373,8 @@ class TestsRestCases(TestCase):
             'user_id': grantee.get_identifier(),
             'access_level': IRIS_CASE_ACCESS_LEVEL_FULL_ACCESS
         })
-        response = manager.update(f'/api/v2/cases/{case_identifier}', {'owner_id': grantee.get_identifier()})
+        # Updating a case takes standard_user, which the manager does not hold
+        response = self._subject.update(f'/api/v2/cases/{case_identifier}', {'owner_id': grantee.get_identifier()})
         self.assertEqual(200, response.status_code)
 
     def test_set_case_access_user_should_return_403_without_the_permission(self):
