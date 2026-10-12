@@ -39,6 +39,7 @@ from app.datamgmt.manage.manage_managed_assets_db import managed_assets_db_delet
 from app.datamgmt.manage.manage_managed_assets_db import managed_assets_db_diff
 from app.datamgmt.manage.manage_managed_assets_db import managed_assets_db_export_rows
 from app.datamgmt.manage.manage_managed_assets_db import managed_assets_db_filter
+from app.datamgmt.manage.manage_managed_assets_db import managed_assets_db_flush
 from app.datamgmt.manage.manage_managed_assets_db import managed_assets_db_get
 from app.datamgmt.manage.manage_managed_assets_db import managed_assets_db_get_by_identity
 from app.datamgmt.manage.manage_managed_assets_db import managed_assets_db_is_integrity_error
@@ -264,6 +265,8 @@ def managed_assets_create(asset, user, source='api'):
     asset.created_by = getattr(user, 'id', None)
     asset.updated_by = getattr(user, 'id', None)
     managed_assets_db_add(asset)
+    # The audit entry points at the new row, which has no id until flushed
+    _write_or_conflict(managed_assets_db_flush)
     managed_assets_db_add_audit(asset, 'create', None, user, source=source)
     _commit_or_conflict()
     register_db_tags_from_string(asset.tags)
@@ -286,6 +289,8 @@ def managed_assets_update(asset, user, source='api'):
     if not asset.normalized_name:
         raise BusinessProcessingError('Asset name must not be empty')
 
+    changes = managed_assets_db_diff(asset)
+
     collision = managed_assets_db_get_by_identity(
         asset.client_id, asset.normalized_name, asset.asset_type_id
     )
@@ -294,7 +299,6 @@ def managed_assets_update(asset, user, source='api'):
             'An asset with this name and type already exists for this customer'
         )
 
-    changes = managed_assets_db_diff(asset)
     if not changes:
         # Nothing actually moved — do not manufacture an audit entry that
         # says a change happened.
@@ -327,8 +331,12 @@ def managed_assets_delete(asset, user, source='api'):
 
 
 def _commit_or_conflict():
+    _write_or_conflict(managed_assets_db_commit)
+
+
+def _write_or_conflict(write):
     try:
-        managed_assets_db_commit()
+        write()
     except Exception as exception:
         managed_assets_db_rollback()
         if managed_assets_db_is_integrity_error(exception):

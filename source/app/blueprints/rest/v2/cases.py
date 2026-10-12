@@ -330,6 +330,8 @@ class CasesOperations:
             return response_api_not_found()
 
     def update(self, identifier):
+        if not cases_exists(identifier):
+            return response_api_not_found()
         if not ac_fast_check_current_user_has_case_access(identifier, [CaseAccessLevel.full_access]):
             return ac_api_return_access_denied(caseid=identifier)
 

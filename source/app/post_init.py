@@ -1427,8 +1427,10 @@ class PostInit:
             for store_fullpath in source_paths:
 
                 filename = store_fullpath.split(os.path.sep)[-1]
-                show_fullpath = os.path.join(self._configuration['APP_PATH'], 'app',
+                # Same location as the upload, which is what Flask serves as /static
+                show_fullpath = os.path.join(self._configuration['APP_PATH'],
                                              self._configuration['ASSET_SHOW_PATH'].strip(os.path.sep), filename)
+                os.makedirs(os.path.dirname(show_fullpath), exist_ok=True)
                 if not os.path.islink(show_fullpath):
                     os.symlink(store_fullpath, show_fullpath)
                     self._logger.info(f"Created assets img symlink {store_fullpath} -> {show_fullpath}")

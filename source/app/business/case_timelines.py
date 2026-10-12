@@ -187,19 +187,10 @@ def _default_timeline_id(case_id):
     return row.timeline_id if row else None
 
 
-def set_event_timelines(event_id, case_id, timeline_ids):
-    """Replace the timeline-set attached to an event.
-
-    Passing `None` is a no-op (caller didn't specify timelines — keep
-    whatever's already on the row). Passing an empty list intentionally
-    clears the event off every named timeline.
-
-    Every id in `timeline_ids` must belong to `case_id` — cross-case
-    membership is rejected to keep filter queries safe.
+def check_event_timeline_ids(case_id, timeline_ids):
+    """Return `timeline_ids` as a list, or raise if any of them is not an
+    integer or not a timeline of `case_id`.
     """
-    if timeline_ids is None:
-        return
-
     if not isinstance(timeline_ids, (list, tuple)):
         raise BusinessProcessingError('timeline_ids must be a list of integers')
 
@@ -222,6 +213,24 @@ def set_event_timelines(event_id, case_id, timeline_ids):
             raise BusinessProcessingError(
                 'One or more timeline_ids do not belong to this case'
             )
+
+    return cleaned
+
+
+def set_event_timelines(event_id, case_id, timeline_ids):
+    """Replace the timeline-set attached to an event.
+
+    Passing `None` is a no-op (caller didn't specify timelines — keep
+    whatever's already on the row). Passing an empty list intentionally
+    clears the event off every named timeline.
+
+    Every id in `timeline_ids` must belong to `case_id` — cross-case
+    membership is rejected to keep filter queries safe.
+    """
+    if timeline_ids is None:
+        return
+
+    cleaned = check_event_timeline_ids(case_id, timeline_ids)
 
     CaseEventTimeline.query.filter_by(event_id=event_id).delete(
         synchronize_session=False

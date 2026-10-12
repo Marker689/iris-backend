@@ -185,6 +185,8 @@ def store_icon(file):
         show_fullpath = os.path.join(current_app.config['APP_PATH'],
                                      current_app.config['ASSET_SHOW_PATH'].strip(os.path.sep), filename)
         file.save(store_fullpath)
+        # The image ships no static/ tree since the UI moved out
+        os.makedirs(os.path.dirname(show_fullpath), exist_ok=True)
         os.symlink(store_fullpath, show_fullpath)
 
     except Exception as e:

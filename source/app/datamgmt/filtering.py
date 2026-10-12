@@ -214,12 +214,12 @@ def apply_custom_conditions(query, model, custom_conditions, relationship_model_
         operator = cond.get('operator')
         value = cond.get('value')
 
-        # Skip conditions with an empty-string value: the frontend sends
-        # these when a filter row exists but hasn't been filled in yet.
-        # Passing '' to a non-text column (e.g. bigint) causes a
-        # DataError: invalid input syntax for type bigint.
-        if value == '':
-            continue
+        # Empty-string values are skipped below, once the field is known to
+        # exist: the frontend sends these when a filter row exists but hasn't
+        # been filled in yet, and passing '' to a non-text column (e.g. bigint)
+        # causes a DataError: invalid input syntax for type bigint. An unknown
+        # field is still an error, whatever the value.
+        skip = value == ''
 
         if '.' in field_path:
             head, tail = field_path.split('.', 1)
@@ -240,6 +240,8 @@ def apply_custom_conditions(query, model, custom_conditions, relationship_model_
             )
 
             if head_is_json_column:
+                if skip:
+                    continue
                 condition = build_json_condition(head_attr, tail, operator, value)
                 conditions.append(condition)
                 continue
@@ -247,16 +249,19 @@ def apply_custom_conditions(query, model, custom_conditions, relationship_model_
             if head not in relationship_model_map:
                 raise ValueError(f"Unknown relationship or JSON column: {head}")
             related_model = relationship_model_map[head]
+            related_field = get_field_from_model(related_model, tail)
+            if skip:
+                continue
             if head not in joined_relationships:
                 query = query.join(getattr(model, head))
                 joined_relationships.add(head)
-
-            related_field = get_field_from_model(related_model, tail)
 
             condition = build_condition(related_field, operator, value)
             conditions.append(condition)
         else:
             field = get_field_from_model(model, field_path)
+            if skip:
+                continue
 
             condition = build_condition(field, operator, value)
             conditions.append(condition)

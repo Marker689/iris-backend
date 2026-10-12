@@ -261,7 +261,7 @@ def get_dashboard(dashboard_uuid: str):
     except DashboardNotFoundError:
         return response_api_not_found()
     except DashboardAccessError:
-        return response_api_error('Dashboard is not accessible.')
+        return response_api_error('Dashboard is not accessible.', status=403)
     return response_api_success(data=serialize_dashboard(dashboard))
 
 
@@ -302,7 +302,7 @@ def update_dashboard(dashboard_uuid: str):
     except DashboardSystemReadOnlyError:
         return response_api_error('System dashboards cannot be modified through the API.')
     except DashboardAccessError:
-        return response_api_error('Dashboard is not accessible.')
+        return response_api_error('Dashboard is not accessible.', status=403)
     return response_api_success(data=serialize_dashboard(dashboard))
 
 
@@ -318,7 +318,7 @@ def delete_dashboard(dashboard_uuid: str):
     except DashboardSystemReadOnlyError:
         return response_api_error('System dashboards cannot be deleted through the API.')
     except DashboardAccessError:
-        return response_api_error('Dashboard is not accessible.')
+        return response_api_error('Dashboard is not accessible.', status=403)
     return response_api_deleted()
 
 
@@ -331,7 +331,7 @@ def render_dashboard(dashboard_uuid: str):
     except DashboardNotFoundError:
         return response_api_not_found()
     except DashboardAccessError:
-        return response_api_error('Dashboard is not accessible.')
+        return response_api_error('Dashboard is not accessible.', status=403)
 
     payload = request.get_json(silent=True) or {}
     definition = payload.get('definition') or {}

@@ -116,6 +116,8 @@ class Events:
 
         except ValidationError as e:
             return response_api_error('Data error', data=e.normalized_messages())
+        except BusinessProcessingError as e:
+            return response_api_error(e.get_message(), data=e.get_data())
 
     def read(self, case_identifier, identifier):
         if not cases_exists(case_identifier):

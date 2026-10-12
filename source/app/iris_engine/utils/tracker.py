@@ -55,7 +55,9 @@ def track_activity(message, caseid=None, war_room_id=None, ctx_less=False, user_
         pass
 
     ua.activity_date = datetime.utcnow()
-    ua.activity_desc = message.capitalize()
+    # Upper-case the first letter only: str.capitalize() also lower-cases the
+    # rest, mangling the names and values quoted in the message
+    ua.activity_desc = message[:1].upper() + message[1:]
 
     scope = f"Case {caseid}" if caseid else (f"War room {war_room_id}" if war_room_id else "-")
     try:

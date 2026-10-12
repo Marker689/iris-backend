@@ -200,11 +200,15 @@ def managed_assets_db_get(identifier):
 
 
 def managed_assets_db_get_by_identity(client_id, normalized_name, asset_type_id):
-    return ManagedAsset.query.filter(
-        ManagedAsset.client_id == client_id,
-        ManagedAsset.normalized_name == normalized_name,
-        ManagedAsset.asset_type_id == asset_type_id,
-    ).first()
+    # Without autoflush: the caller checks a pending rename against this
+    # lookup, and flushing it first would hit the identity UNIQUE (a 500
+    # instead of the conflict) and reset the history the audit diff reads.
+    with db.session.no_autoflush:
+        return ManagedAsset.query.filter(
+            ManagedAsset.client_id == client_id,
+            ManagedAsset.normalized_name == normalized_name,
+            ManagedAsset.asset_type_id == asset_type_id,
+        ).first()
 
 
 def _registry_visibility_clause(scope):

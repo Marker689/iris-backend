@@ -133,6 +133,7 @@ class TestUpdateBuildsItsOwnSchema(_SchemaIsolationTestCase):
 
     def setUp(self):
         super().setUp()
+        patch(f'{_CASES_MODULE}.cases_exists', return_value=True).start()
         patch(f'{_CASES_MODULE}.cases_get_by_identifier', return_value=self.case).start()
         patch(f'{_CASES_MODULE}.ac_fast_check_current_user_has_case_access',
               return_value=CaseAccessLevel.full_access.value).start()

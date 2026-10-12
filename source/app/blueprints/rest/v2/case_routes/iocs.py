@@ -34,6 +34,7 @@ from app.blueprints.rest.parsing import parse_pagination_parameters
 from app.blueprints.rest.parsing import parse_fields_parameters
 from app.models.errors import BusinessProcessingError
 from app.models.errors import ObjectNotFoundError
+from app.business.cases import cases_exists
 from app.business.iocs import iocs_create
 from app.business.iocs import iocs_get
 from app.business.iocs import iocs_delete
@@ -63,6 +64,8 @@ class IocsOperations:
         return ioc
 
     def search(self, case_identifier):
+        if not cases_exists(case_identifier):
+            return response_api_not_found()
         try:
             if not ac_fast_check_current_user_has_case_access(case_identifier,
                                                               [CaseAccessLevel.read_only, CaseAccessLevel.full_access]):
@@ -86,6 +89,8 @@ class IocsOperations:
             return response_api_error(e.get_message())
 
     def create(self, case_identifier):
+        if not cases_exists(case_identifier):
+            return response_api_not_found()
         if not ac_fast_check_current_user_has_case_access(case_identifier, [CaseAccessLevel.full_access]):
             return ac_api_return_access_denied(caseid=case_identifier)
 
@@ -104,6 +109,8 @@ class IocsOperations:
             return response_api_error(e.get_message())
 
     def read(self, case_identifier, identifier):
+        if not cases_exists(case_identifier):
+            return response_api_not_found()
         if not ac_fast_check_current_user_has_case_access(case_identifier,
                                                           [CaseAccessLevel.read_only, CaseAccessLevel.full_access]):
             return ac_api_return_access_denied(caseid=case_identifier)
@@ -117,6 +124,8 @@ class IocsOperations:
             return response_api_not_found()
 
     def update(self, case_identifier, identifier):
+        if not cases_exists(case_identifier):
+            return response_api_not_found()
         if not ac_fast_check_current_user_has_case_access(case_identifier, [CaseAccessLevel.full_access]):
             return ac_api_return_access_denied(caseid=case_identifier)
 
@@ -146,6 +155,8 @@ class IocsOperations:
             return response_api_error(e.get_message(), data=e.get_data())
 
     def delete(self, case_identifier, identifier):
+        if not cases_exists(case_identifier):
+            return response_api_not_found()
         if not ac_fast_check_current_user_has_case_access(case_identifier, [CaseAccessLevel.full_access]):
             return ac_api_return_access_denied(caseid=case_identifier)
 

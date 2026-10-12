@@ -45,10 +45,14 @@ from app.iris_engine.utils.collab import collab_notify
 from app.iris_engine.module_handler.module_handler import call_modules_hook
 from app.business.case_timelines import attach_event_to_default_timeline_if_unset
 from app.business.case_timelines import set_event_timelines
+from app.business.case_timelines import check_event_timeline_ids
 
 
 def events_create(case_identifier, event: CasesEvent, event_category_id, event_assets,
                   event_iocs, sync_iocs_assets, timeline_ids=None) -> CasesEvent:
+    # Checked before the event is written, so a rejected request leaves no event behind
+    if timeline_ids is not None:
+        check_event_timeline_ids(case_identifier, timeline_ids)
 
     event.case_id = case_identifier
     event.event_added = datetime.utcnow()

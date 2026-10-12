@@ -260,7 +260,9 @@ def _record_provenance(case, manifest, principal_report):
     case uuid and the identities that were collapsed onto the importer here,
     there is nowhere left to look it up.
     """
-    history = case.modification_history if isinstance(case.modification_history, dict) else {}
+    # A copy: the column is plain JSON, so assigning back the same dict
+    # mutated in place is not seen as a change and never written.
+    history = dict(case.modification_history) if isinstance(case.modification_history, dict) else {}
     timestamp = datetime.datetime.now(datetime.timezone.utc).timestamp()
 
     collapsed = [entry for entry in principal_report if entry['action'] == 'importer']

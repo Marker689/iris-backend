@@ -29,6 +29,7 @@ import json
 import logging
 import threading
 import time
+from functools import wraps
 from typing import Any
 
 from flask import Response, current_app, jsonify, request
@@ -107,8 +108,31 @@ def _http_json(status: int, payload: Any) -> Response:
 
 # ---- Route ---------------------------------------------------------------
 
+def _mcp_requires_credentials(f):
+    """Reject session-cookie-only callers. See module docstring.
+
+    Runs before `ac_api_requires`, so a caller with no credentials at all
+    also gets the JSON-RPC error an MCP client can read rather than the
+    generic 401.
+    """
+    @wraps(f)
+    def wrap(*args, **kwargs):
+        has_api_key = bool(request.headers.get('X-IRIS-AUTH'))
+        has_bearer = (request.headers.get('Authorization', '').lower()
+                      .startswith('bearer '))
+        if not has_api_key and not has_bearer:
+            return _http_json(401, _rpc_error(
+                None, protocol.IRIS_UNAUTHENTICATED,
+                'MCP requires an API key (X-IRIS-AUTH header) or a Bearer '
+                'token. Get your API key from Profile → API Key in IRIS.',
+            ))
+        return f(*args, **kwargs)
+    return wrap
+
+
 @mcp_blueprint.route('', methods=['POST'])
 @mcp_blueprint.route('/', methods=['POST'])
+@_mcp_requires_credentials
 @ac_api_requires(Permissions.standard_user)
 def mcp_endpoint():
     """Single POST endpoint handling every MCP JSON-RPC method.
@@ -117,16 +141,7 @@ def mcp_endpoint():
     a single request object; we accept both. `notifications/*` methods
     return no response per JSON-RPC 2.0 semantics.
     """
-    # 1. Reject session-cookie-only callers. See module docstring.
-    has_api_key = bool(request.headers.get('X-IRIS-AUTH'))
-    has_bearer = (request.headers.get('Authorization', '').lower()
-                  .startswith('bearer '))
-    if not has_api_key and not has_bearer:
-        return _http_json(401, _rpc_error(
-            None, protocol.IRIS_UNAUTHENTICATED,
-            'MCP requires an API key (X-IRIS-AUTH header) or a Bearer '
-            'token. Get your API key from Profile → API Key in IRIS.',
-        ))
+    # 1. Session-cookie-only callers: rejected by `_mcp_requires_credentials`.
 
     # 2. Toggle check.
     settings = get_srv_settings()
