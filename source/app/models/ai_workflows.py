@@ -26,7 +26,8 @@ worker.
 
 Runs act as a real user — the workflow owner, whatever the trigger (a
 manual run by someone else still acts as the owner, whose permissions the
-results are written under) — so the permission
+results are written under), except a run started from an object menu,
+which acts as the analyst who clicked — so the permission
 and case / war room / customer boundaries of that user bound everything
 the run can read or change. Write tools outside the workflow allowlist
 never execute: they become `AiSuggestion` rows an analyst accepts (the
@@ -105,6 +106,20 @@ ENTITY_CASE = 'case'
 ENTITY_WAR_ROOM = 'war_room'
 ENTITY_TYPES = (ENTITY_ALERT, ENTITY_ALERT_CLUSTER, ENTITY_CASE, ENTITY_WAR_ROOM)
 
+# Object menus (`on_manual_trigger_<type>`) a manual workflow can show in,
+# and the entity its run is on: case objects run on their case
+MENU_ENTITY_TYPES = {
+    'alert': ENTITY_ALERT,
+    'case': ENTITY_CASE,
+    'asset': ENTITY_CASE,
+    'ioc': ENTITY_CASE,
+    'note': ENTITY_CASE,
+    'event': ENTITY_CASE,
+    'evidence': ENTITY_CASE,
+    'task': ENTITY_CASE,
+}
+MENU_LABEL_MAX_LENGTH = 64
+
 SUGGESTION_CREATE_CASE = 'create_case'
 SUGGESTION_MERGE_INTO_CASE = 'merge_into_case'
 SUGGESTION_RELATED_ALERTS = 'related_alerts'
@@ -144,6 +159,7 @@ class AiWorkflow(db.Model):
     trigger_type = Column(String(16), nullable=False, default=TRIGGER_MANUAL)
     # event: {hooks: [...], condition, dedup_window_seconds, skip_if_active}
     # cron: {cron, target: none|war_rooms|open_cases, max_targets}
+    # manual: {entity_types, menus, menu_label}
     # webhook: {hmac_keystore_entry}
     trigger_config = Column(JSONB, nullable=False, default=dict)
     # Customer ids the workflow is limited to; null/empty = every customer

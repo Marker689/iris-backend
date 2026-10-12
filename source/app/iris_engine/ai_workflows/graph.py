@@ -62,6 +62,8 @@ from app.iris_engine.webhooks.render import webhooks_check_template
 from app.models.ai_workflows import AUDIENCE_ENTITY
 from app.models.ai_workflows import AUDIENCE_OWNER
 from app.models.ai_workflows import ENTITY_TYPES
+from app.models.ai_workflows import MENU_ENTITY_TYPES
+from app.models.ai_workflows import MENU_LABEL_MAX_LENGTH
 from app.models.ai_workflows import RUN_FAILED
 from app.models.ai_workflows import RUN_SUCCEEDED
 from app.models.ai_workflows import SUGGESTION_KINDS
@@ -215,13 +217,34 @@ def _cron_config_errors(config) -> list:
     return errors
 
 
+def _menu_config_errors(config, entity_types) -> list:
+    """`menus`: the object menus the workflow shows in; each runs on an
+    entity type the trigger must accept. `menu_label`: the entry text."""
+    errors = []
+    menus = config.get('menus')
+    if menus is not None:
+        if not isinstance(menus, list) or any(m not in MENU_ENTITY_TYPES for m in menus):
+            errors.append(_error(None, 'trigger_config.menus', f'Menus are {", ".join(MENU_ENTITY_TYPES)}'))
+        elif len(set(menus)) != len(menus):
+            errors.append(_error(None, 'trigger_config.menus', 'A menu is listed twice'))
+        else:
+            missing = sorted({MENU_ENTITY_TYPES[m] for m in menus} - set(entity_types))
+            if missing:
+                errors.append(_error(None, 'trigger_config.menus',
+                                     f'The trigger must accept {", ".join(missing)} for these menus'))
+    label = config.get('menu_label')
+    if label is not None and (not isinstance(label, str) or len(label) > MENU_LABEL_MAX_LENGTH):
+        errors.append(_error(None, 'trigger_config.menu_label',
+                             f'Must be a string of at most {MENU_LABEL_MAX_LENGTH} characters'))
+    return errors
+
+
 def _manual_config_errors(config) -> list:
     entity_types = config.get('entity_types')
-    if entity_types is None:
-        return []
-    if not isinstance(entity_types, list) or any(t not in ENTITY_TYPES for t in entity_types):
+    if entity_types is not None and (not isinstance(entity_types, list)
+                                     or any(t not in ENTITY_TYPES for t in entity_types)):
         return [_error(None, 'trigger_config.entity_types', f'Entity types are {", ".join(ENTITY_TYPES)}')]
-    return []
+    return _menu_config_errors(config, entity_types or [])
 
 
 def _webhook_config_errors(config) -> list:

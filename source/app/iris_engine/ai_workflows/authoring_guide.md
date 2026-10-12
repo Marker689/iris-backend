@@ -74,7 +74,7 @@ A block is a reusable fragment of graph (for example "look a hash up on VirusTot
 |---|---|
 | `event` | `hooks`: list of `on_postload_*` event names (see the catalogue) or `["*"]`. Optional `condition`: a Jinja expression over `event`, `data`, `hook`, `entity_type`, `entity_id`; e.g. `data.alert_severity_id >= 4`. Optional `dedup_minutes`: ignore the same entity again for that long. Optional `skip_if_active` (default `true`): don't start while a run on the same entity is active. |
 | `cron` | `cron`: 5-field expression (`*/15 * * * *`). `target`: `none`, `war_rooms` or `cases` (one run per open target the owner can access), and `max_targets`. |
-| `manual` | Optional `entity_types`: restricts and requires the entity it runs on (`alert`, `alert_cluster`, `case`, `war_room`). |
+| `manual` | Optional `entity_types`: restricts and requires the entity it runs on (`alert`, `alert_cluster`, `case`, `war_room`). Optional `menus` (`alert`, `case`, `asset`, `ioc`, `note`, `event`, `evidence`, `task`) and `menu_label`: shows the workflow in those object menus; a click runs it as the analyst who clicked (their access and personal keys), with the object as `trigger.payload`. The menus need `entity_types` to accept `alert` (alert menu) or `case` (the others). |
 | `webhook` | Inbound HTTP endpoint (the token is created after import). Optional `require_signature`, `entity_type` with `entity_id_path`. |
 
 **What a run is about.**

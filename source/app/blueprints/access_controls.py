@@ -782,6 +782,13 @@ def _apply_api_key_scope_mask(perms: int) -> int:
     return perms & int(mask)
 
 
+def ac_current_api_key_scope_mask():
+    """Scope mask of the API key the request authenticated with (None:
+    session, or a key without a scope)."""
+    mask = getattr(getattr(g, 'api_key_row', None), 'scope_mask', None)
+    return int(mask) if mask is not None else None
+
+
 def ac_current_user_has_permission(permission):
     """
     Return True if current user has permission

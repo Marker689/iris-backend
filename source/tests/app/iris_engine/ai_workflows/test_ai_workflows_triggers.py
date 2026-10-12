@@ -22,11 +22,13 @@ count a skipped trigger on the workflow instead of starting a run, and
 the access refusal that records a minimal skipped run."""
 
 import datetime
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.iris_engine.ai_workflows.triggers import ai_workflows_triggers_cron_tick
 from app.iris_engine.ai_workflows.triggers import ai_workflows_triggers_entity
 from app.iris_engine.ai_workflows.triggers import ai_workflows_triggers_process_event
+from app.iris_engine.ai_workflows.triggers import ai_workflows_triggers_start_from_menu
 from tests.app.iris_engine.ai_workflows.harness import OWNER_ID
 from tests.app.iris_engine.ai_workflows.harness import EngineTestCase
 from tests.app.iris_engine.ai_workflows.harness import chain
@@ -189,6 +191,92 @@ class TestsEventTrigger(EngineTestCase):
         wf = self._workflow()
         wf.is_active = False
         self.assertEqual([], self._fire(wf))
+
+
+class TestsMenuTrigger(EngineTestCase):
+    """Runs started from an object menu act as the analyst who clicked."""
+
+    ANALYST_ID = 7
+
+    def setUp(self):
+        super().setUp()
+        self.wf = workflow(chain(), trigger_config={'entity_types': ['case', 'alert'], 'menus': ['ioc', 'alert']},
+                           skipped_count=0, last_skip_reason=None, last_skipped_at=None)
+        self.runs_last_hour = 0
+        self.can_access = {OWNER_ID: True, self.ANALYST_ID: True}
+        analyst = SimpleNamespace(id=self.ANALYST_ID, active=True, user='analyst', mcp_allowed=True)
+        owner = SimpleNamespace(id=OWNER_ID, active=True, user='owner')
+        for target, replacement in (
+                (f'{_TRIGGERS}.ai_workflows_db_get', lambda _id: self.wf),
+                (f'{_TRIGGERS}.ai_workflows_db_lock_workflow', lambda _id: self.wf),
+                (f'{_TRIGGERS}.ai_workflows_db_commit', lambda: None),
+                (f'{_TRIGGERS}.ai_workflows_db_count_runs_since', lambda *_args: self.runs_last_hour),
+                (f'{_ENGINE}.ai_workflows_db_get_user',
+                 lambda user_id: {OWNER_ID: owner, self.ANALYST_ID: analyst}.get(user_id)),
+                (f'{_ENGINE}.ai_workflows_entities_user_can_access',
+                 lambda user_id, _type, _id: self.can_access.get(user_id, False))):
+            patcher = patch(target, replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patch_skip_counter(self, lambda _id: self.wf)
+
+    def _click(self, event=None, scope_mask=None):
+        event = event or _event(hook='on_manual_trigger_ioc', object_type='ioc', action='manual_trigger',
+                                object_id=77, case={'id': 4, 'name': 'c'})
+        return ai_workflows_triggers_start_from_menu(self.wf.id, event, self.ANALYST_ID, scope_mask)
+
+    def test_click_should_run_as_the_analyst_on_the_case(self):
+        run, reason = self._click()
+        self.assertIsNone(reason)
+        self.assertEqual(('running', 'manual', self.ANALYST_ID, self.ANALYST_ID, OWNER_ID),
+                         (run.status, run.trigger_type, run.run_as_user_id, run.triggered_by_user_id, run.owner_id))
+        self.assertEqual(('case', 4, {'type': 'ioc', 'id': 77}), (run.entity_type, run.entity_id, run.sub_entity))
+        self.assertEqual('on_manual_trigger_ioc', run.trigger_payload['event'])
+        self.assertEqual([run.id], self.enqueued)
+
+    def test_alert_menu_should_run_on_the_alert(self):
+        run, _reason = self._click(_event(hook='on_manual_trigger_alert', action='manual_trigger'))
+        self.assertEqual(('alert', 5, self.ANALYST_ID), (run.entity_type, run.entity_id, run.run_as_user_id))
+
+    def test_access_is_the_analysts_not_the_owners(self):
+        self.can_access = {OWNER_ID: True, self.ANALYST_ID: False}
+        run, reason = self._click()
+        self.assertEqual(('skipped', self.ANALYST_ID), (run.status, run.run_as_user_id))
+        self.assertIn('cannot access case #4', reason)
+        self.assertEqual([], self.enqueued)
+        # The owner losing access does not stop the analyst
+        self.can_access = {OWNER_ID: False, self.ANALYST_ID: True}
+        self.assertEqual('running', self._click()[0].status)
+
+    def test_api_key_scope_should_bound_the_run(self):
+        alert = _event(hook='on_manual_trigger_alert', action='manual_trigger')
+        run, reason = self._click(alert, scope_mask=0)
+        self.assertEqual('skipped', run.status)
+        self.assertIn('may not read alert objects', reason)
+        # Kept on the run: every node acts within it
+        self.assertEqual(0, self._click(scope_mask=0)[0].scope_mask)
+
+    def test_menu_not_offered_should_not_start(self):
+        for config in ({'entity_types': ['case'], 'menus': ['asset']}, {'entity_types': ['case']}):
+            self.wf.trigger_config = config
+            self.assertEqual((None, 'This workflow is not offered on these objects'), self._click())
+        self.wf.trigger_config = {'entity_types': ['case'], 'menus': ['ioc']}
+        self.wf.is_active = False
+        self.assertEqual((None, 'This workflow is not offered on these objects'), self._click())
+        self.wf.is_active = True
+        self.wf.trigger_type = 'event'
+        self.assertEqual((None, 'This workflow is not offered on these objects'), self._click())
+        self.assertEqual({}, self.store.runs)
+
+    def test_hourly_cap_should_hold(self):
+        self.wf.max_runs_per_hour = 2
+        self.runs_last_hour = 2
+        self.assertEqual((None, 'Hourly run limit reached'), self._click())
+        self.assertEqual((1, 'Hourly run limit reached'), (self.wf.skipped_count, self.wf.last_skip_reason))
+
+    def test_disabled_workflows_should_not_start(self):
+        with patch.dict('app.app.config', {'AI_WORKFLOWS_ENABLED': False}):
+            self.assertEqual((None, 'This workflow is not offered on these objects'), self._click())
 
 
 class TestsCronTrigger(EngineTestCase):

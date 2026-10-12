@@ -46,7 +46,8 @@ def list_dim_hook_options():
     `target` type (e.g. `?target=ioc`).
 
     Naked JSON array of `{manual_hook_ui_name, hook_name, module_name}`;
-    native webhook entries also carry the `webhook_id` to invoke with.
+    native webhook entries also carry the `webhook_id` to invoke with,
+    manual AI workflow entries the `workflow_id`.
     """
     target = (request.args.get('target') or '').strip()
     if not target:

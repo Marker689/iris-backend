@@ -28,6 +28,8 @@ directly (import-linter contract). All DB access is delegated to
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
+from app.business.ai_workflow_menus import ai_workflow_menus_options
+from app.business.ai_workflow_menus import ai_workflow_menus_run
 from app.business.webhooks import webhooks_invoke_manual
 from app.business.webhooks import webhooks_manual_options
 from app.datamgmt.dim_hooks import list_manual_hook_options
@@ -48,8 +50,10 @@ class HookInvocationResult:
 
 def list_hook_options_for(hook_type: str) -> List[Dict[str, Any]]:
     """Registered manual hooks that target `hook_type` (e.g. `ioc`): the
-    modules', then the native webhooks' (those carry a `webhook_id`)."""
-    return list_manual_hook_options(hook_type) + webhooks_manual_options(hook_type)
+    modules', then the native webhooks' (those carry a `webhook_id`), then
+    the manual workflows' (those carry a `workflow_id`)."""
+    return (list_manual_hook_options(hook_type) + webhooks_manual_options(hook_type)
+            + ai_workflow_menus_options(hook_type))
 
 
 def invoke_hook_for_case(
@@ -60,10 +64,14 @@ def invoke_hook_for_case(
     data_type: str,
     targets: Sequence[Any],
     webhook_id: Optional[int] = None,
+    workflow_id: Optional[int] = None,
+    user_id: Optional[int] = None,
+    scope_mask: Optional[int] = None,
 ) -> HookInvocationResult:
     """Resolve `targets` to ORM rows and dispatch a manual hook against
     them via `call_modules_hook` — or, with `webhook_id`, to that native
-    webhook.
+    webhook, or with `workflow_id`, start that manual workflow on each,
+    acting as `user_id` bounded by `scope_mask`.
 
     Skips (with a log entry) targets that don't exist or that reference
     an unsupported `data_type`. Raises `BusinessProcessingError` for
@@ -80,7 +88,7 @@ def invoke_hook_for_case(
 
     if data_type not in supported_hook_target_types():
         raise BusinessProcessingError(f'Data type {data_type} not supported')
-    if webhook_id is not None and hook_name != f'on_manual_trigger_{data_type}':
+    if (webhook_id is not None or workflow_id is not None) and hook_name != f'on_manual_trigger_{data_type}':
         raise BusinessProcessingError(f'Hook {hook_name} does not apply to {data_type} objects')
 
     logs: List[str] = []
@@ -96,6 +104,11 @@ def invoke_hook_for_case(
             logs.append(f'Object ID {target_id} not found')
             continue
         obj_targets.append(obj)
+
+    if obj_targets and workflow_id is not None:
+        started, run_logs = ai_workflow_menus_run(workflow_id, hook_name, obj_targets, user_id, scope_mask,
+                                                  caseid=caseid)
+        return HookInvocationResult(queued=started, logs=logs + run_logs)
 
     if obj_targets:
         if webhook_id is not None:
@@ -119,6 +132,9 @@ def invoke_hook_for_alerts(
     alerts: Sequence[Any],
     logs: Sequence[str] = (),
     webhook_id: Optional[int] = None,
+    workflow_id: Optional[int] = None,
+    user_id: Optional[int] = None,
+    scope_mask: Optional[int] = None,
 ) -> HookInvocationResult:
     """Dispatch a manual hook against a batch of already-loaded alerts.
 
@@ -141,6 +157,10 @@ def invoke_hook_for_alerts(
 
     if not alerts:
         return HookInvocationResult(queued=0, logs=list(logs))
+
+    if workflow_id is not None:
+        started, run_logs = ai_workflow_menus_run(workflow_id, hook_name, list(alerts), user_id, scope_mask)
+        return HookInvocationResult(queued=started, logs=list(logs) + run_logs)
 
     if webhook_id is not None:
         webhooks_invoke_manual(webhook_id, hook_name, list(alerts))

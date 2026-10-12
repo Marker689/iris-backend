@@ -32,11 +32,13 @@ nothing else is pending. `ai_workflows_engine_resume_wait` (callback,
 answer, accepted suggestion, expiry) records a `resumed` step and
 continues the branch.
 
-Identity: a run always acts as the workflow owner (`run_as_user_id`),
-whoever triggered it, bounded by the API-key scope of the triggering
-credential (`scope_mask`). The owner's access to the run entity is
-checked before the run starts and again before every node, so a run
-whose owner lost access (or MCP rights) fails instead of going on.
+Identity: a run acts as the workflow owner (`run_as_user_id`), whoever
+triggered it, except a run started from an object menu, which acts as
+the analyst who clicked (`ai_workflows_triggers_start_from_menu`). Either
+way it is bounded by the API-key scope of the triggering credential
+(`scope_mask`). The run-as user's access to the run entity is checked
+before the run starts and again before every node, so a run whose user
+lost access (or MCP rights) fails instead of going on.
 
 Locks: always the run row first, then its waits
 (`ai_workflows_engine_lock_run_then_wait`).
@@ -316,15 +318,17 @@ def ai_workflows_engine_start_run(workflow, trigger_type, *, run_as_user_id, tri
 def ai_workflows_engine_insert_run(workflow, trigger_type, *, denial=None, triggered_by_user_id=None,
                                    entity_type=None, entity_id=None, sub_entity=None, payload=None, dry_run=False,
                                    dedup_key=None, chain_depth=0, parent_run_id=None, enqueue=True,
-                                   scope_mask=None, replay=None, tested_node=None) -> AiWorkflowRun:
+                                   scope_mask=None, replay=None, tested_node=None,
+                                   run_as_user_id=None) -> AiWorkflowRun:
     """Insert (and commit) the run once `ai_workflows_engine_access_denial`
     returned `denial`: the trigger path checks access before taking the
     workflow lock (the check may commit), then inserts under the lock.
     `replay` (`{step_id, node_id, context}`) starts the run at that node
     with that context instead of at the trigger; with `tested_node` the
-    run executes that node definition alone."""
+    run executes that node definition alone. `run_as_user_id` (the
+    owner when None) must be the user `denial` was computed for."""
     common = {
-        'run_as_user_id': workflow.owner_id,
+        'run_as_user_id': workflow.owner_id if run_as_user_id is None else run_as_user_id,
         'triggered_by_user_id': triggered_by_user_id,
         'entity_type': entity_type,
         'entity_id': entity_id,

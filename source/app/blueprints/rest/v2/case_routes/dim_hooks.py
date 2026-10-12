@@ -19,7 +19,8 @@
 """v2 case-scoped DIM hook invoker.
 
 `POST /api/v2/cases/<cid>/dim-hooks/invoke` queues a manual module hook
-against a batch of targets (assets, iocs, notes, tasks, events, ...).
+against a batch of targets (assets, iocs, notes, tasks, events, ...), or
+starts a manual AI workflow on them as the current user (`workflow_id`).
 Case access is verified via the standard `ac_fast_check_current_user_has_case_access`
 guard used by every other case-scoped v2 route.
 """
@@ -28,8 +29,10 @@ from flask import Blueprint
 from flask import request
 
 from app.blueprints.access_controls import ac_api_requires
+from app.blueprints.access_controls import ac_current_api_key_scope_mask
 from app.blueprints.access_controls import ac_api_return_access_denied
 from app.blueprints.access_controls import ac_fast_check_current_user_has_case_access
+from app.blueprints.iris_user import iris_current_user
 from app.blueprints.rest.api_doc import api_doc
 from app.blueprints.rest.endpoints import response_api_error
 from app.blueprints.rest.endpoints import response_api_success
@@ -63,6 +66,9 @@ def invoke_dim_hook(case_identifier):
             hook_ui_name=payload.get('hook_ui_name'),
             module_name=payload.get('module_name'),
             webhook_id=payload.get('webhook_id'),
+            workflow_id=payload.get('workflow_id'),
+            user_id=iris_current_user.id,
+            scope_mask=ac_current_api_key_scope_mask(),
             data_type=payload.get('type'),
             targets=payload.get('targets') or [],
         )

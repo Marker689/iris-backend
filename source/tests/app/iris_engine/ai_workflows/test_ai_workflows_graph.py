@@ -218,6 +218,22 @@ class TestsTriggerConfig(TestCase):
         errors = ai_workflows_graph_validate_trigger_config('webhook', {'entity_id_path': 'data.id'})
         self.assertEqual(['trigger_config.entity_type'], [e['field'] for e in errors])
 
+    def test_manual_menus_should_name_known_menus_the_trigger_accepts(self):
+        self.assertEqual([], ai_workflows_graph_validate_trigger_config(
+            'manual', {'entity_types': ['case', 'alert'], 'menus': ['alert', 'ioc'], 'menu_label': 'Enrich'}))
+        errors = ai_workflows_graph_validate_trigger_config('manual', {'entity_types': ['case'], 'menus': ['moon']})
+        self.assertEqual(['trigger_config.menus'], [e['field'] for e in errors])
+        errors = ai_workflows_graph_validate_trigger_config('manual', {'entity_types': ['case'],
+                                                                       'menus': ['ioc', 'ioc']})
+        self.assertEqual(['A menu is listed twice'], [e['message'] for e in errors])
+        errors = ai_workflows_graph_validate_trigger_config('manual', {'menus': ['alert', 'asset']})
+        self.assertEqual(['The trigger must accept alert, case for these menus'], [e['message'] for e in errors])
+
+    def test_manual_menu_label_should_be_a_short_string(self):
+        for label in (12, 'x' * 65):
+            errors = ai_workflows_graph_validate_trigger_config('manual', {'menu_label': label})
+            self.assertEqual(['trigger_config.menu_label'], [e['field'] for e in errors])
+
     def test_unknown_trigger_type(self):
         self.assertEqual(['trigger_type'],
                          [e['field'] for e in ai_workflows_graph_validate_trigger_config('telepathy', {})])

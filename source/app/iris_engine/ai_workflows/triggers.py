@@ -16,7 +16,7 @@
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-"""What starts runs: IRIS events and schedules.
+"""What starts runs: IRIS events, schedules and object menus.
 
 The hook listener runs inside the save flow that fired the hook, so it
 only builds the event envelope and hands it to Celery; the
@@ -69,8 +69,10 @@ from app.models.ai_workflows import ENTITY_ALERT_CLUSTER
 from app.models.ai_workflows import ENTITY_CASE
 from app.models.ai_workflows import ENTITY_TYPES
 from app.models.ai_workflows import ENTITY_WAR_ROOM
+from app.models.ai_workflows import MENU_ENTITY_TYPES
 from app.models.ai_workflows import TRIGGER_CRON
 from app.models.ai_workflows import TRIGGER_EVENT
+from app.models.ai_workflows import TRIGGER_MANUAL
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +97,7 @@ _SKIP_CHAIN = 'Chain depth limit reached'
 _SKIP_DUPLICATE = 'Duplicate within the dedup window'
 _SKIP_ACTIVE = 'A run is still active on the entity'
 _SKIP_HOURLY = 'Hourly run limit reached'
+_NOT_IN_MENU = 'This workflow is not offered on these objects'
 
 
 def _enabled() -> bool:
@@ -386,3 +389,57 @@ def ai_workflows_triggers_cron_tick(now=None) -> list:
             logger.exception(f'AI workflow #{candidate.id} schedule failed')
             ai_workflows_db_rollback()
     return run_ids
+
+
+# ---- Object menus -----------------------------------------------------------
+
+def ai_workflows_triggers_menu_types(workflow) -> list:
+    """Object menus (`on_manual_trigger_<type>`) an active manual workflow shows in."""
+    if workflow is None or not workflow.is_active or workflow.trigger_type != TRIGGER_MANUAL:
+        return []
+    menus = (workflow.trigger_config or {}).get('menus')
+    return [m for m in menus if m in MENU_ENTITY_TYPES] if isinstance(menus, list) else []
+
+
+def ai_workflows_triggers_start_from_menu(workflow_id, event, user_id, scope_mask=None) -> tuple:
+    """Start a run of a manual workflow from an object menu entry. It acts
+    as the clicking user `user_id` (their permissions, personal keys and
+    daily budget), bounded by `scope_mask`, on the entity of `event` (the
+    `on_manual_trigger_*` event of the clicked object).
+
+    Returns (run, reason): the run (a minimal `skipped` one when the user
+    may not run it on the entity, `reason` then saying why), or None and
+    why nothing started."""
+    workflow = ai_workflows_db_get(workflow_id)
+    if not _enabled() or event.get('object_type') not in ai_workflows_triggers_menu_types(workflow):
+        return None, _NOT_IN_MENU
+    entity_type, entity_id, sub_entity = ai_workflows_triggers_entity(event)
+    if entity_type is None or entity_id is None:
+        return None, _NOT_IN_MENU
+    common = {
+        'entity_type': entity_type,
+        'entity_id': entity_id,
+        'sub_entity': sub_entity,
+        'payload': event,
+        'triggered_by_user_id': user_id,
+        'run_as_user_id': user_id,
+        'scope_mask': scope_mask,
+    }
+    # Access first, unlocked (the check may commit)
+    denial = ai_workflows_engine_access_denial(workflow, user_id, entity_type, entity_id, scope_mask)
+    if denial is not None:
+        return ai_workflows_engine_insert_run(workflow, TRIGGER_MANUAL, denial=denial, **common), denial
+
+    # Under the workflow lock, like the other triggers, so the hourly cap
+    # holds against concurrent clicks. No dedup nor active-run rule: the
+    # analyst asked for this run.
+    workflow = ai_workflows_db_lock_workflow(workflow_id)
+    if not ai_workflows_triggers_menu_types(workflow):
+        ai_workflows_db_commit()
+        return None, _NOT_IN_MENU
+    if (workflow.max_runs_per_hour or 0) > 0 and ai_workflows_db_count_runs_since(
+            workflow.id, ai_workflows_db_utcnow() - datetime.timedelta(hours=1)) >= workflow.max_runs_per_hour:
+        # Commits, releasing the lock
+        ai_workflows_engine_skip_run(workflow, TRIGGER_MANUAL, _SKIP_HOURLY)
+        return None, _SKIP_HOURLY
+    return ai_workflows_engine_insert_run(workflow, TRIGGER_MANUAL, **common), None

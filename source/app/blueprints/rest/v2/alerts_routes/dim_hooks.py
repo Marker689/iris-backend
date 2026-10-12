@@ -19,7 +19,9 @@
 """v2 alert-scoped DIM hook invoker.
 
 `POST /api/v2/alerts/dim-hooks/invoke` queues the `on_manual_trigger_alert`
-hook against a batch of alerts — the buttons a module adds to an alert.
+hook against a batch of alerts — the buttons a module, a webhook or a
+manual AI workflow (`workflow_id`, run as the current user) adds to an
+alert.
 
 Alerts are not case objects, hence a route of their own rather than a
 `type: alert` branch on `/api/v2/cases/<cid>/dim-hooks/invoke`: there is
@@ -35,6 +37,7 @@ from flask import request
 from flask import session
 
 from app.blueprints.access_controls import ac_api_requires
+from app.blueprints.access_controls import ac_current_api_key_scope_mask
 from app.blueprints.access_controls import ac_current_user_has_customer_access
 from app.blueprints.iris_user import iris_current_user
 from app.blueprints.rest.api_doc import api_doc
@@ -87,6 +90,9 @@ def invoke_alerts_dim_hook():
             hook_ui_name=payload.get('hook_ui_name'),
             module_name=payload.get('module_name'),
             webhook_id=payload.get('webhook_id'),
+            workflow_id=payload.get('workflow_id'),
+            user_id=iris_current_user.id,
+            scope_mask=ac_current_api_key_scope_mask(),
             alerts=alerts,
             logs=logs,
         )

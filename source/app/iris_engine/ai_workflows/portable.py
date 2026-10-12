@@ -49,7 +49,8 @@ BLOCK_FIELDS = ('name', 'description', 'category', 'nodes', 'edges')
 
 # Keys the trigger types read (`graph._*_config_errors`, `triggers`)
 TRIGGER_CONFIG_FIELDS = ('hooks', 'condition', 'dedup_minutes', 'skip_if_active', 'cron', 'target', 'max_targets',
-                         'entity_types', 'require_signature', 'entity_type', 'entity_id_path')
+                         'entity_types', 'menus', 'menu_label', 'require_signature', 'entity_type',
+                         'entity_id_path')
 
 _KEY_CALL = re.compile(r'''\bkey\(\s*(['"])([^'"]{1,128})\1\s*\)''')
 _TEMPLATE_CLOSERS = {'{{': '}}', '{%': '%}', '{#': '#}'}
