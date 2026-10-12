@@ -220,7 +220,8 @@ _CATALOGUE = (
                 'wait_timeout_minutes': 60, 'verify_tls': True, 'use_proxy': True, 'response_format': 'json'}),
     _node_spec(NODE_ASK_ANALYST, 'Ask an analyst', 'Asks the audience a question with a form and waits for '
                'the answer.', 'human', (PORT_ANSWERED, PORT_TIMEOUT),
-               {'title': '', 'question': '', 'fields': [], 'fields_from': '', 'timeout_minutes': 1440}),
+               {'title': '', 'question': '', 'fields': [], 'fields_from': '', 'timeout_minutes': 1440,
+                'audience': AUDIENCE_ENTITY, 'user_ids': [], 'popup': True}),
     _node_spec(NODE_FIND_RELATED, 'Find related', 'Finds alerts and cases related to the alert of the run, '
                'or searches IRIS for a value.', 'iris', (PORT_OUT, PORT_ERROR),
                {'source': 'alert', 'days_back': 30, 'open_alerts': True, 'closed_alerts': False,
@@ -578,7 +579,9 @@ def _ask_analyst(ctx, config):
         'kind': SUGGESTION_INFO_REQUEST,
         'title': title,
         'body': question or None,
-        'form_schema': {'fields': _form_fields(ctx, config)},
+        # `popup`: the UI opens the form in a dialog for its audience,
+        # wherever they are in the app
+        'form_schema': {'fields': _form_fields(ctx, config), 'popup': config.get('popup', True) is not False},
     }
     minutes = _int(config.get('timeout_minutes'), 1440, 1, _MAX_WAIT_MINUTES)
     if ctx.run.is_dry_run:
@@ -586,7 +589,37 @@ def _ask_analyst(ctx, config):
         suggestion = ai_workflows_suggestions_create(ctx.run, ctx.step, **fields)
         return NodeResult(output={'answer': None, 'answered_by': None, 'dry_run': True,
                                   'suggestion_id': suggestion.id}, port=PORT_TIMEOUT)
-    return NodeResult(output={}, wait={'kind': WAIT_USER_INPUT, 'minutes': minutes, 'suggestion': fields})
+    users, note = _ask_audience(ctx, config)
+    if users:
+        fields['audience_user_ids'] = users
+    return NodeResult(output={'note': note} if note else {},
+                      wait={'kind': WAIT_USER_INPUT, 'minutes': minutes, 'suggestion': fields})
+
+
+def _ask_audience(ctx, config) -> tuple:
+    """(users, note): who the question goes to — None for the workflow's
+    suggestion audience — and why that is not the configured audience,
+    if so. `triggerer` is the user who started the run or whose action
+    fired the event. A question nobody configured can answer goes to
+    the workflow's suggestion audience rather than wait for nothing."""
+    run = ctx.run
+    audience = config.get('audience') or AUDIENCE_ENTITY
+    if audience == AUDIENCE_OWNER:
+        candidates = [ctx.snapshot.get('owner_id')]
+    elif audience == 'triggerer':
+        candidates = [run.triggered_by_user_id, _event_actor_id(run)]
+    elif audience == 'users':
+        candidates = [u for u in config.get('user_ids') or [] if isinstance(u, int) and not isinstance(u, bool)]
+    else:
+        return None, None
+    users = []
+    for user_id in candidates:
+        if user_id and user_id not in users and _notify_reachable(run, user_id):
+            users.append(user_id)
+    if users:
+        return users, None
+    return None, 'None of the users of the audience is active and can access the entity: the question went to ' \
+                 'the workflow suggestion audience instead'
 
 
 def _find_related(ctx, config):

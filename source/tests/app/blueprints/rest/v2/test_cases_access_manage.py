@@ -23,7 +23,7 @@ who have full access to that case. The permission decorator in front of
 the routes is `ac_api_requires`, covered by the REST suite; these tests
 drive the view bodies through `__wrapped__`, with the case-level gate and
 the guards real and everything they call patched at the `v2/cases.py`
-module boundary. No DB.
+and `v2/cases_access_guards.py` module boundaries. No DB.
 """
 
 import json
@@ -32,11 +32,11 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from app import app
-from app.blueprints.rest.v2.cases import _current_user_can_manage_case_access
 from app.blueprints.rest.v2.cases import get_case_access_me
 from app.blueprints.rest.v2.cases import list_case_access_groups
 from app.blueprints.rest.v2.cases import set_case_access_group
 from app.blueprints.rest.v2.cases import set_case_access_user
+from app.blueprints.rest.v2.cases_access_guards import cases_access_guards_can_manage
 from app.models.authorization import CaseAccessLevel
 from app.models.authorization import Permissions
 from app.models.errors import ObjectNotFoundError
@@ -48,6 +48,7 @@ _TARGET_IDENTIFIER = 23
 _GROUP_IDENTIFIER = 5
 
 _CASES_MODULE = 'app.blueprints.rest.v2.cases'
+_GUARDS_MODULE = 'app.blueprints.rest.v2.cases_access_guards'
 
 _FULL = CaseAccessLevel.full_access.value
 _READ = CaseAccessLevel.read_only.value
@@ -60,20 +61,23 @@ class _CaseAccessTestCase(TestCase):
         self.permissions = {Permissions.case_access_manage}
         self.case_level = _FULL
 
-        patch(f'{_CASES_MODULE}.iris_current_user', SimpleNamespace(id=_CALLER_IDENTIFIER)).start()
-        patch(f'{_CASES_MODULE}.ac_current_user_has_permission',
+        for module in (_CASES_MODULE, _GUARDS_MODULE):
+            patch(f'{module}.iris_current_user', SimpleNamespace(id=_CALLER_IDENTIFIER)).start()
+            patch(f'{module}.ac_fast_check_current_user_has_case_access',
+                  side_effect=lambda _identifier, levels: self.case_level
+                  if any(self.case_level & level.value for level in levels) else None).start()
+        patch(f'{_GUARDS_MODULE}.ac_current_user_has_permission',
               side_effect=lambda permission: permission in self.permissions).start()
-        patch(f'{_CASES_MODULE}.ac_fast_check_current_user_has_case_access',
-              side_effect=lambda _identifier, levels: self.case_level
-              if any(self.case_level & level.value for level in levels) else None).start()
         patch(f'{_CASES_MODULE}.cases_get_by_identifier', return_value=self.case).start()
         # `ac_api_return_access_denied` logs through the request's user.
         patch(f'{_CASES_MODULE}.ac_api_return_access_denied',
               side_effect=lambda **_kwargs: app.response_class(status=403)).start()
 
         self.target = SimpleNamespace(id=_TARGET_IDENTIFIER, name='target')
-        self.get_user = patch(f'{_CASES_MODULE}.cases_access_get_user', return_value=self.target).start()
-        self.sees_customer = patch(f'{_CASES_MODULE}.cases_access_user_sees_customer',
+        self.get_user = patch(f'{_CASES_MODULE}.cases_access_get_user',
+                              side_effect=lambda identifier: self.target if identifier == _TARGET_IDENTIFIER
+                              else SimpleNamespace(id=identifier, name='other')).start()
+        self.sees_customer = patch(f'{_GUARDS_MODULE}.cases_access_user_sees_customer',
                                    return_value=True).start()
         self.set_user = patch(f'{_CASES_MODULE}.cases_access_set_user',
                               side_effect=lambda _case, _user, level: CaseAccessLevel(level)).start()
@@ -106,28 +110,28 @@ class TestWhoMayManage(_CaseAccessTestCase):
 
     def test_permission_and_full_access_may_manage(self):
         with app.test_request_context('/'):
-            self.assertTrue(_current_user_can_manage_case_access(_CASE_IDENTIFIER))
+            self.assertTrue(cases_access_guards_can_manage(_CASE_IDENTIFIER))
 
     def test_permission_with_read_only_access_may_not_manage(self):
         self.case_level = _READ
         with app.test_request_context('/'):
-            self.assertFalse(_current_user_can_manage_case_access(_CASE_IDENTIFIER))
+            self.assertFalse(cases_access_guards_can_manage(_CASE_IDENTIFIER))
 
     def test_permission_without_case_access_may_not_manage(self):
         self.case_level = CaseAccessLevel.deny_all.value
         with app.test_request_context('/'):
-            self.assertFalse(_current_user_can_manage_case_access(_CASE_IDENTIFIER))
+            self.assertFalse(cases_access_guards_can_manage(_CASE_IDENTIFIER))
 
     def test_full_access_without_the_permission_may_not_manage(self):
         self.permissions = set()
         with app.test_request_context('/'):
-            self.assertFalse(_current_user_can_manage_case_access(_CASE_IDENTIFIER))
+            self.assertFalse(cases_access_guards_can_manage(_CASE_IDENTIFIER))
 
     def test_server_administrator_may_manage_without_case_access(self):
         self.permissions = {Permissions.server_administrator}
         self.case_level = CaseAccessLevel.deny_all.value
         with app.test_request_context('/'):
-            self.assertTrue(_current_user_can_manage_case_access(_CASE_IDENTIFIER))
+            self.assertTrue(cases_access_guards_can_manage(_CASE_IDENTIFIER))
 
     def test_read_only_caller_is_refused_and_nothing_is_written(self):
         self.case_level = _READ

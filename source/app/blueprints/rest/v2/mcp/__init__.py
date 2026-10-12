@@ -49,6 +49,7 @@ mcp_blueprint = Blueprint('rest_v2_mcp', __name__, url_prefix='/mcp')
 from app.blueprints.rest.v2.mcp import transport as _transport
 from app.blueprints.rest.v2.mcp import resources as _resources
 from app.blueprints.rest.v2.mcp.tools import cases as _tools_cases
+from app.blueprints.rest.v2.mcp.tools import case_access as _tools_case_access
 from app.blueprints.rest.v2.mcp.tools import alerts as _tools_alerts
 from app.blueprints.rest.v2.mcp.tools import iocs as _tools_iocs
 from app.blueprints.rest.v2.mcp.tools import assets as _tools_assets

@@ -17941,6 +17941,144 @@ paths:
                 $ref: '#/components/schemas/McpToolResult'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_case_access_list:
+    post:
+      operationId: mcp_tool_iris_case_access_list
+      summary: "List who can access the case: every user with an effective access level (from their own\
+        \ grants, their groups and their customer). When you may manage the access of the case, also lists\
+        \ every group with its explicit access level on it (null when it has none) \u2014 the ids to pass\
+        \ to iris_case_access_set_group."
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_case_access_list
+      x-mcp-mvp: false
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_case_access_list\"\
+        `. The request body schema below is the tool's `input_schema` (identical to what `tools/list`\
+        \ returns for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                case_identifier:
+                  type: integer
+                  description: Numeric ID of the IRIS case this call targets.
+              required:
+              - case_identifier
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_case_access_set_group:
+    post:
+      operationId: mcp_tool_iris_case_access_set_group
+      summary: Set one group's access level on the case, for all its members. Unless you are a server
+        administrator, every member must have access to the customer of the case and you cannot lower
+        the access of a group you belong to. Group ids are listed by iris_case_access_list.
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_case_access_set_group
+      x-mcp-mvp: false
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_case_access_set_group\"\
+        `. The request body schema below is the tool's `input_schema` (identical to what `tools/list`\
+        \ returns for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                group_id:
+                  type: integer
+                  description: Numeric ID of the group.
+                access_level:
+                  type: string
+                  description: full_access (read and write), read_only, or deny_all (explicitly denied,
+                    overriding what the user would get from their customer).
+                case_identifier:
+                  type: integer
+                  description: Numeric ID of the IRIS case this call targets.
+              required:
+              - group_id
+              - access_level
+              - case_identifier
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_case_access_set_user:
+    post:
+      operationId: mcp_tool_iris_case_access_set_user
+      summary: Set one user's access level on the case. You cannot change your own access, and unless
+        you are a server administrator the user must have access to the customer of the case.
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_case_access_set_user
+      x-mcp-mvp: false
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_case_access_set_user\"\
+        `. The request body schema below is the tool's `input_schema` (identical to what `tools/list`\
+        \ returns for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_id:
+                  type: integer
+                  description: Numeric ID of the user.
+                access_level:
+                  type: string
+                  description: full_access (read and write), read_only, or deny_all (explicitly denied,
+                    overriding what the user would get from their customer).
+                case_identifier:
+                  type: integer
+                  description: Numeric ID of the IRIS case this call targets.
+              required:
+              - user_id
+              - access_level
+              - case_identifier
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/v2/mcp/tools/iris_case_assets_create:
     post:
       operationId: mcp_tool_iris_case_assets_create
@@ -18950,6 +19088,140 @@ paths:
                 $ref: '#/components/schemas/McpToolResult'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_case_vulnerabilities_create:
+    post:
+      operationId: mcp_tool_iris_case_vulnerabilities_create
+      summary: "Record a vulnerability on one or more assets of the case, one finding per asset (assets\
+        \ that already carry it are skipped and reported). Identify it by catalogue vulnerability_id,\
+        \ or by identifier (CVE, GHSA\u2026): an unknown public identifier is added to the catalogue,\
+        \ with title when given. The remediation status defaults to under-analysis; risk-accepted and\
+        \ false-positive need a status_reason, not-affected a not_affected_justification or a reason."
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_case_vulnerabilities_create
+      x-mcp-mvp: true
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_case_vulnerabilities_create\"\
+        `. The request body schema below is the tool's `input_schema` (identical to what `tools/list`\
+        \ returns for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                asset_ids:
+                  type: array
+                  items:
+                    type: integer
+                  description: Assets of the case the vulnerability is found on.
+                vulnerability_id:
+                  type: integer
+                  description: Catalogue id.
+                identifier:
+                  type: string
+                  description: CVE / advisory identifier or alias.
+                title:
+                  type: string
+                  description: Title of a catalogue entry added on the fly.
+                remediation_status:
+                  type: string
+                exploitation_status:
+                  type: string
+                status_reason:
+                  type: string
+                not_affected_justification:
+                  type: string
+                component:
+                  type: string
+                  description: Affected package, service or component.
+                installed_version:
+                  type: string
+                fixed_version:
+                  type: string
+                detection_source:
+                  type: string
+                  description: "Scanner, EDR, manual review\u2026"
+                notes:
+                  type: string
+                due_date:
+                  type: string
+                  description: Remediation due date, YYYY-MM-DD.
+                ioc_ids:
+                  type: array
+                  items:
+                    type: integer
+                  description: IOCs of the case as evidence.
+                event_ids:
+                  type: array
+                  items:
+                    type: integer
+                  description: Timeline events of the case as evidence.
+                case_identifier:
+                  type: integer
+                  description: Numeric ID of the IRIS case this call targets.
+              required:
+              - asset_ids
+              - case_identifier
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_case_vulnerabilities_delete:
+    post:
+      operationId: mcp_tool_iris_case_vulnerabilities_delete
+      summary: Delete a vulnerability finding of the case (finding_id from iris_case_vulnerabilities_list),
+        with its history. To record that the asset is no longer affected, prefer iris_case_vulnerabilities_update
+        with a remediation status such as patched or not-affected.
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_case_vulnerabilities_delete
+      x-mcp-mvp: true
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_case_vulnerabilities_delete\"\
+        `. The request body schema below is the tool's `input_schema` (identical to what `tools/list`\
+        \ returns for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                finding_id:
+                  type: integer
+                  description: Numeric ID of the finding.
+                case_identifier:
+                  type: integer
+                  description: Numeric ID of the IRIS case this call targets.
+              required:
+              - finding_id
+              - case_identifier
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/v2/mcp/tools/iris_case_vulnerabilities_list:
     post:
       operationId: mcp_tool_iris_case_vulnerabilities_list
@@ -19015,6 +19287,85 @@ paths:
                   type: integer
                   description: Numeric ID of the IRIS case this call targets.
               required:
+              - case_identifier
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_case_vulnerabilities_update:
+    post:
+      operationId: mcp_tool_iris_case_vulnerabilities_update
+      summary: 'Change a vulnerability finding of the case (finding_id from iris_case_vulnerabilities_list):
+        remediation / exploitation status, versions, due date, notes, evidence. Fields left out keep their
+        value; ioc_ids and event_ids replace the previous evidence. Its asset and vulnerability cannot
+        change. risk-accepted and false-positive need a status_reason, not-affected a not_affected_justification
+        or a reason. The change is kept in the history of the finding.'
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_case_vulnerabilities_update
+      x-mcp-mvp: true
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_case_vulnerabilities_update\"\
+        `. The request body schema below is the tool's `input_schema` (identical to what `tools/list`\
+        \ returns for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                finding_id:
+                  type: integer
+                  description: Numeric ID of the finding.
+                remediation_status:
+                  type: string
+                exploitation_status:
+                  type: string
+                status_reason:
+                  type: string
+                not_affected_justification:
+                  type: string
+                component:
+                  type: string
+                  description: Affected package, service or component.
+                installed_version:
+                  type: string
+                fixed_version:
+                  type: string
+                detection_source:
+                  type: string
+                  description: "Scanner, EDR, manual review\u2026"
+                notes:
+                  type: string
+                due_date:
+                  type: string
+                  description: Remediation due date, YYYY-MM-DD.
+                ioc_ids:
+                  type: array
+                  items:
+                    type: integer
+                  description: IOCs of the case as evidence.
+                event_ids:
+                  type: array
+                  items:
+                    type: integer
+                  description: Timeline events of the case as evidence.
+                case_identifier:
+                  type: integer
+                  description: Numeric ID of the IRIS case this call targets.
+              required:
+              - finding_id
               - case_identifier
       responses:
         '200':
@@ -19622,6 +19973,124 @@ paths:
                 $ref: '#/components/schemas/McpToolResult'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_vulnerabilities_create:
+    post:
+      operationId: mcp_tool_iris_vulnerabilities_create
+      summary: "Add an entry to the vulnerability catalogue. A public entry names itself (CVE-\u2026,\
+        \ GHSA-\u2026, a vendor advisory id) and must not be in the catalogue yet; a private one (is_private,\
+        \ for an internal finding with no public identifier) gets the next IRIS-VULN-<year>-NNNN identifier.\
+        \ Severity is derived from the CVSS vector or score unless given. To record a vulnerability on\
+        \ assets of a case, use iris_case_vulnerabilities_create, which also adds unknown public identifiers\
+        \ on the fly."
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_vulnerabilities_create
+      x-mcp-mvp: true
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_vulnerabilities_create\"\
+        `. The request body schema below is the tool's `input_schema` (identical to what `tools/list`\
+        \ returns for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                identifier:
+                  type: string
+                  description: Public identifier; omit for a private entry.
+                is_private:
+                  type: boolean
+                  description: Private entry with an allocated identifier.
+                title:
+                  type: string
+                description:
+                  type: string
+                kind:
+                  type: string
+                severity:
+                  type: string
+                cvss_vector:
+                  type: string
+                  description: CVSS 2.0 to 4.0 vector; sets the version and score.
+                cvss_score:
+                  type: number
+                  description: 0 to 10.
+                cwes:
+                  type: array
+                  items:
+                    type: string
+                  description: e.g. ["CWE-79"].
+                tags:
+                  type: array
+                  items:
+                    type: string
+                reference_urls:
+                  type: array
+                  items:
+                    type: string
+                  description: http(s) URLs.
+                aliases:
+                  type: array
+                  items:
+                    type: string
+                  description: Other identifiers of the same vulnerability.
+              required:
+              - title
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_vulnerabilities_delete:
+    post:
+      operationId: mcp_tool_iris_vulnerabilities_delete
+      summary: 'Delete a catalogue entry that no finding uses (an entry still recorded on assets is refused:
+        merge it into another one in the UI instead). Server administrators only.'
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_vulnerabilities_delete
+      x-mcp-mvp: false
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_vulnerabilities_delete\"\
+        `. The request body schema below is the tool's `input_schema` (identical to what `tools/list`\
+        \ returns for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                vulnerability_id:
+                  type: integer
+                  description: Catalogue id of the entry.
+              required:
+              - vulnerability_id
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/v2/mcp/tools/iris_vulnerabilities_get:
     post:
       operationId: mcp_tool_iris_vulnerabilities_get
@@ -19721,6 +20190,47 @@ paths:
                 affected:
                   type: boolean
                   description: Only entries with an open finding in a readable case.
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_vulnerabilities_update:
+    post:
+      operationId: mcp_tool_iris_vulnerabilities_update
+      summary: Change a catalogue entry; fields left out keep their value, and a given list (cwes, tags,
+        reference_urls, aliases) replaces the previous one. Allowed on the entries you created, or on
+        any entry with the vulnerabilities_write permission. A public entry may be renamed to another
+        free identifier; a private one keeps its own, and is_private never changes.
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_vulnerabilities_update
+      x-mcp-mvp: true
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_vulnerabilities_update\"\
+        `. The request body schema below is the tool's `input_schema` (identical to what `tools/list`\
+        \ returns for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                vulnerability_id:
+                  type: integer
+                  description: Catalogue id of the entry.
+              required:
+              - vulnerability_id
       responses:
         '200':
           description: "Tool result \u2014 JSON-RPC content wrapper."

@@ -49,6 +49,9 @@ from app.blueprints.rest.v2.case_routes.reports import case_reports_blueprint
 from app.blueprints.rest.v2.case_routes.dim_hooks import case_dim_hooks_blueprint
 from app.blueprints.rest.v2.case_routes.vulnerabilities import case_vulnerabilities_blueprint
 from app.blueprints.rest.v2.case_transfer import case_transfer_blueprint
+from app.blueprints.rest.v2.cases_access_guards import cases_access_guards_can_manage
+from app.blueprints.rest.v2.cases_access_guards import cases_access_guards_check_group
+from app.blueprints.rest.v2.cases_access_guards import cases_access_guards_check_user
 from app.blueprints.iris_user import iris_current_user
 from app.business.cases import case_unlink_alert
 from app.business.cases import case_unlink_alert_cluster
@@ -64,7 +67,6 @@ from app.business.cases_access import cases_access_get_user
 from app.business.cases_access import cases_access_list_groups
 from app.business.cases_access import cases_access_set_group
 from app.business.cases_access import cases_access_set_user
-from app.business.cases_access import cases_access_user_sees_customer
 from app.business.users import get_users_list_restricted_from_case
 from app.business.access_controls import ac_fast_check_user_has_case_access
 from app.models.errors import BusinessProcessingError, ObjectNotFoundError
@@ -74,7 +76,6 @@ from app.schema.marshables import CaseDetailsSchema
 from app.schema.marshables import TaskLogSchema
 from app.blueprints.access_controls import ac_api_requires
 from app.blueprints.access_controls import ac_current_user_has_customer_access
-from app.blueprints.access_controls import ac_current_user_has_permission
 from app.blueprints.access_controls import ac_fast_check_current_user_has_case_access
 from app.blueprints.access_controls import ac_api_return_access_denied
 from app.blueprints.rest.api_doc import api_doc
@@ -611,22 +612,8 @@ def get_case_access_me(identifier):
         level = CaseAccessLevel.deny_all.value
     return response_api_success({
         'access_level': int(level),
-        'can_manage_access': _current_user_can_manage_case_access(identifier)
+        'can_manage_access': cases_access_guards_can_manage(identifier)
     })
-
-
-def _current_user_can_manage_case_access(identifier) -> bool:
-    """Whether the caller may change who can access this case.
-
-    Server administrators always may. Anyone else needs `case_access_manage`
-    *and* full access to this very case: the permission lets them share
-    cases they work on, never reach into ones they don't.
-    """
-    if ac_current_user_has_permission(Permissions.server_administrator):
-        return True
-    if not ac_current_user_has_permission(Permissions.case_access_manage):
-        return False
-    return ac_fast_check_current_user_has_case_access(identifier, [CaseAccessLevel.full_access]) is not None
 
 
 def _read_identifier(body: dict, key: str):
@@ -650,7 +637,7 @@ def list_case_access_groups(identifier):
         case = cases_get_by_identifier(identifier)
     except ObjectNotFoundError:
         return response_api_not_found()
-    if not _current_user_can_manage_case_access(identifier):
+    if not cases_access_guards_can_manage(identifier):
         return ac_api_return_access_denied(caseid=identifier)
 
     return response_api_success(cases_access_list_groups(case))
@@ -672,19 +659,13 @@ def set_case_access_user(identifier):
         case = cases_get_by_identifier(identifier)
     except ObjectNotFoundError:
         return response_api_not_found()
-    if not _current_user_can_manage_case_access(identifier):
+    if not cases_access_guards_can_manage(identifier):
         return ac_api_return_access_denied(caseid=identifier)
 
     body = request.get_json(silent=True) or {}
     try:
-        user_identifier = _read_identifier(body, 'user_id')
-        if user_identifier == iris_current_user.id:
-            raise BusinessProcessingError('You cannot change your own access to a case')
-
-        user = cases_access_get_user(user_identifier)
-        if not ac_current_user_has_permission(Permissions.server_administrator) \
-                and not cases_access_user_sees_customer(user.id, case.client_id):
-            raise BusinessProcessingError('This user has no access to the customer of the case')
+        user = cases_access_get_user(_read_identifier(body, 'user_id'))
+        cases_access_guards_check_user(case, user)
 
         level = cases_access_set_user(case, user, body.get('access_level'))
         return response_api_success({'user_id': user.id, 'access_level': level.value})
@@ -710,21 +691,13 @@ def set_case_access_group(identifier):
         case = cases_get_by_identifier(identifier)
     except ObjectNotFoundError:
         return response_api_not_found()
-    if not _current_user_can_manage_case_access(identifier):
+    if not cases_access_guards_can_manage(identifier):
         return ac_api_return_access_denied(caseid=identifier)
 
     body = request.get_json(silent=True) or {}
     try:
         group = cases_access_get_group(_read_identifier(body, 'group_id'))
-
-        if not ac_current_user_has_permission(Permissions.server_administrator):
-            member_identifiers = [member['id'] for member in group.group_members]
-            if iris_current_user.id in member_identifiers \
-                    and body.get('access_level') != CaseAccessLevel.full_access.value:
-                raise BusinessProcessingError('You cannot lower the access of a group you belong to')
-            if any(not cases_access_user_sees_customer(member_identifier, case.client_id)
-                   for member_identifier in member_identifiers):
-                raise BusinessProcessingError('Some members of this group have no access to the customer of the case')
+        cases_access_guards_check_group(case, group, body.get('access_level'))
 
         level = cases_access_set_group(case, group, body.get('access_level'))
         return response_api_success({'group_id': group.group_id, 'access_level': level.value})

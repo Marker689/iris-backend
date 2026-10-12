@@ -93,6 +93,8 @@ def _catalogue_markdown(catalogue) -> list:
               'entity. A `write` tool runs only when it is in `write_tool_allowlist`.', '']
     for tool in catalogue.get('tools') or []:
         disabled = '' if tool.get('enabled', True) else ' **(disabled on this instance)**'
+        if not tool.get('agent', True):
+            disabled += ' **(not for `ai_agent`)**'
         lines.append(f'- **`{tool["name"]}`** ({tool.get("classification")}){disabled} — '
                      f'{_sentence(tool.get("description"))} Arguments: {_arguments(tool.get("input_schema"))}')
     keystore = catalogue.get('keystore') or []

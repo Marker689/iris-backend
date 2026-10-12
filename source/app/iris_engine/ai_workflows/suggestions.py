@@ -233,8 +233,11 @@ def ai_workflows_suggestions_user_can_see(user_id, suggestion) -> bool:
 def ai_workflows_suggestions_create(run, step, **fields) -> AiSuggestion:
     """Persist (and commit) a suggestion of `run`; fields are the
     AiSuggestion columns `kind, title, body, proposed_action, form_schema,
-    related_refs, confidence, severity, status, wait_id`. Raises
-    AiWorkflowSuggestionLimitError past `MAX_SUGGESTIONS_PER_RUN`."""
+    related_refs, confidence, severity, status, wait_id`, and optionally
+    `audience_user_ids` to address it to those users rather than to the
+    workflow's suggestion audience (not for a dry run, which only goes
+    to whoever started it). Raises AiWorkflowSuggestionLimitError past
+    `MAX_SUGGESTIONS_PER_RUN`."""
     kind = fields.get('kind') if fields.get('kind') in SUGGESTION_KINDS else SUGGESTION_GENERIC_ACTION
     _check_limit(run, kind)
     status = fields.get('status') or SUGGESTION_OPEN
@@ -270,8 +273,11 @@ def ai_workflows_suggestions_create(run, step, **fields) -> AiSuggestion:
         wait_id=fields.get('wait_id'),
     )
     ai_workflows_db_add(suggestion)
-    suggestion.audience_user_ids = [user_id for user_id in _audience(run, entity_type, entity_id)
-                                    if _can_see_entities(user_id, suggestion)]
+    audience = fields.get('audience_user_ids')
+    if run.is_dry_run or not isinstance(audience, list):
+        audience = _audience(run, entity_type, entity_id)
+    suggestion.audience_user_ids = [user_id for user_id in dict.fromkeys(audience)
+                                    if user_id and _can_see_entities(user_id, suggestion)]
     ai_workflows_db_commit()
 
     if status in (SUGGESTION_OPEN, SUGGESTION_DRY_RUN):

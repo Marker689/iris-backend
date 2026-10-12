@@ -138,6 +138,15 @@ class TestsGraphNodeConfig(TestCase):
         self.assertEqual([('tools.0', 'Unknown tool nope')],
                          self._errors(_node('ai', 'ai_agent', prompt='x', tools=['nope'])))
 
+    def test_case_access_writes_should_be_refused_to_agents_only(self):
+        tool = 'iris_case_access_set_user'
+        self.assertEqual([('tools.0', f'{tool} cannot be given to an agent: use an Action node')],
+                         self._errors(_node('ai', 'ai_agent', prompt='x', tools=[tool]), allowlist=[tool]))
+        self.assertEqual([], self._errors(_node('ai', 'ai_agent', prompt='x', tools=['iris_case_access_list'])))
+        self.assertEqual([], self._errors(_node('a', 'action', tool=tool), allowlist=[tool]))
+        self.assertEqual([], self._errors(_node('s', 'suggest', title='Share',
+                                                proposed_action={'tool': tool, 'arguments': {}})))
+
     def test_allowlist_should_hold_write_tools_only(self):
         graph = _graph([], [])
         errors = ai_workflows_graph_validate(graph, 'manual', {}, [_READ_TOOL])
@@ -156,6 +165,16 @@ class TestsGraphNodeConfig(TestCase):
         errors = self._errors(_node('ask', 'ask_analyst', question='Is it real?'))
         self.assertEqual([('fields', 'Add at least one field, or a context path to read them from')], errors)
         self.assertEqual([], self._errors(_node('ask', 'ask_analyst', question='?', fields_from='vars.form')))
+
+    def test_ask_analyst_should_check_its_audience(self):
+        self.assertEqual('audience', self._errors(_node('ask', 'ask_analyst', question='?', fields=['x'],
+                                                        audience='everyone'))[0][0])
+        self.assertEqual([('user_ids', 'Select at least one user')],
+                         self._errors(_node('ask', 'ask_analyst', question='?', fields=['x'], audience='users')))
+        self.assertEqual([], self._errors(_node('ask', 'ask_analyst', question='?', fields=['x'], audience='users',
+                                                user_ids=[5], popup=False)))
+        self.assertEqual('popup', self._errors(_node('ask', 'ask_analyst', question='?', fields=['x'],
+                                                     popup='yes'))[0][0])
 
     def test_http_request_should_check_method_and_url(self):
         errors = dict(self._errors(_node('h', 'http_request', method='TRACE')))

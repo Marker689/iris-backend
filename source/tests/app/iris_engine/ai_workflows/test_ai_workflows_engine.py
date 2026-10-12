@@ -413,6 +413,40 @@ class TestsWaits(EngineTestCase):
         self.assertEqual('succeeded', run.status)
         self.assertEqual('out', self.steps(run)[2].port)
 
+    def test_question_should_pop_up_for_the_workflow_audience_by_default(self):
+        self._parked()
+        question = self.store.suggestions[0]
+        self.assertTrue(question.form_schema['popup'])
+        self.assertNotIn('audience_user_ids', vars(question))
+
+    def _ask(self, reachable, **config):
+        node = {'id': 'ask', 'type': 'ask_analyst', 'config': {'question': 'Real?', 'fields': ['verdict'], **config}}
+        with patch('app.iris_engine.ai_workflows.nodes.ai_workflows_entities_user_can_access',
+                   lambda user_id, *_args: user_id in reachable):
+            run = self.start(workflow(chain(node)))
+            run.triggered_by_user_id = None
+            run.trigger_payload = {'actor': {'id': 9}}
+            while run.id in self.enqueued:
+                self.enqueued.remove(run.id)
+                ai_workflows_engine_step(run.id)
+        step = [s for s in self.steps(run) if s.node_id == 'ask'][0]
+        return self.store.suggestions[0], step.output
+
+    def test_question_should_go_to_the_user_behind_the_event(self):
+        question, output = self._ask({9}, audience='triggerer', popup=False)
+        self.assertEqual([9], question.audience_user_ids)
+        self.assertFalse(question.form_schema['popup'])
+        self.assertNotIn('note', output)
+
+    def test_question_should_go_to_the_reachable_users_listed(self):
+        question, _output = self._ask({5}, audience='users', user_ids=[5, 6, 5])
+        self.assertEqual([5], question.audience_user_ids)
+
+    def test_question_nobody_listed_can_answer_should_go_to_the_workflow_audience(self):
+        question, output = self._ask(set(), audience='users', user_ids=[5])
+        self.assertNotIn('audience_user_ids', vars(question))
+        self.assertIn('workflow suggestion audience', output['note'])
+
     def test_cancel_should_close_the_waits(self):
         run, wait = self._parked()
         ai_workflows_engine_cancel_run(run, OWNER_ID, reason='Workflow deleted')

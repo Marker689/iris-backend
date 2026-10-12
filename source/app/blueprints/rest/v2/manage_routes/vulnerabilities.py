@@ -93,7 +93,9 @@ def _public(vulnerability):
     return vulnerabilities_get_public(vulnerability, *vulnerabilities_visibility())
 
 
-def _can_edit(vulnerability):
+def vulnerabilities_can_edit(vulnerability):
+    """Whether the caller may change (or force-delete) this catalogue entry:
+    its creator, `vulnerabilities_write`, or a server administrator."""
     return ((vulnerability.created_by_id == iris_current_user.id and ac_current_user_can_create_vulnerabilities())
             or ac_current_user_has_permission(Permissions.vulnerabilities_write)
             or ac_current_user_has_permission(Permissions.server_administrator))
@@ -178,7 +180,7 @@ def update_vulnerability_route(identifier):
         vulnerability = vulnerabilities_get(identifier)
     except ObjectNotFoundError:
         return response_api_not_found()
-    if not _can_edit(vulnerability):
+    if not vulnerabilities_can_edit(vulnerability):
         return ac_api_return_access_denied()
     body = _body()
     return _handle(lambda: _public(vulnerabilities_update(vulnerability, body, iris_current_user.id)))
@@ -199,7 +201,7 @@ def sync_vulnerability_route(identifier):
         return response_api_error('force must be a boolean')
     # A plain sync only fills what nobody edited, from the authoritative
     # record: any analyst may run it. Overwriting edits takes edit rights.
-    if force and not _can_edit(vulnerability):
+    if force and not vulnerabilities_can_edit(vulnerability):
         return ac_api_return_access_denied()
 
     def _sync():

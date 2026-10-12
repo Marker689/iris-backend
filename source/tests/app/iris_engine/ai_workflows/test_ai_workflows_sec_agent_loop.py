@@ -150,6 +150,19 @@ class TestsAgentScope(_AgentTestCase):
             self.assertIn(message, result['content'])
         self.assertEqual([], self.store.suggestions)
 
+    def test_case_access_tools_should_never_be_used_by_the_model(self):
+        tool = 'iris_case_access_set_group'
+        arguments = {'group_id': 3, 'access_level': 'full_access'}
+        provider = self.use_policy(tool_turn(tool, arguments),
+                                   tool_turn('propose_suggestion', {'title': 'Share', 'proposed_action':
+                                                                    {'tool': tool, 'arguments': arguments}}, 'tu2'),
+                                   text_turn('ok'))
+        self.run_agent(_agent(tools=[tool]), allowlist=[tool])
+        self.assertEqual([], self.executed)
+        self.assertIn('is not available', _tool_results(provider, 1)[0]['content'])
+        self.assertIn('cannot be proposed by an agent', _tool_results(provider, 2)[0]['content'])
+        self.assertEqual([], self.store.suggestions)
+
     def test_proposed_write_of_the_step_should_be_pinned_and_recorded(self):
         action = {'tool': _WRITE_TOOL, 'arguments': {'payload': {'note_title': 'x'}}}
         self.use_policy(tool_turn('propose_suggestion', {'title': 'Note', 'proposed_action': action}),

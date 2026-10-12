@@ -45,6 +45,14 @@ CLASSIFICATION_WRITE = 'write'
 # Arguments carrying the scope of a call, pinned to the run's entity
 SCOPE_ARGUMENTS = ('case_identifier', 'war_room_id')
 
+# Write tools a model never picks: an ai_agent node can neither be given
+# them nor propose them. Who can see a case is decided by the workflow
+# author, in an action or suggest node, not by text a model read.
+AGENT_EXCLUDED_TOOLS = frozenset({
+    'iris_case_access_set_user',
+    'iris_case_access_set_group',
+})
+
 _MAX_STORED_RESULT = 200_000
 
 
@@ -80,7 +88,7 @@ def ai_workflows_tools_input_schema(tool_name) -> dict:
 def ai_workflows_tools_catalogue() -> list:
     """Every classified, non-admin tool, for the editor. `enabled` tells
     whether the MCP settings currently expose it (a disabled tool fails
-    at run time)."""
+    at run time); `agent` whether an ai_agent node may use it."""
     from app.blueprints.rest.v2.mcp.registry import active_tool_names
     from app.business.server_settings import get_srv_settings
     try:
@@ -100,6 +108,7 @@ def ai_workflows_tools_catalogue() -> list:
             'classification': classification,
             'input_schema': ai_workflows_tools_input_schema(name),
             'enabled': name in active,
+            'agent': name not in AGENT_EXCLUDED_TOOLS,
         })
     return catalogue
 

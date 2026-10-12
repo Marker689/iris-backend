@@ -53,6 +53,7 @@ from app.iris_engine.ai_workflows.context import ai_workflows_context_render
 from app.iris_engine.ai_workflows.context import ai_workflows_context_untrusted
 from app.iris_engine.ai_workflows.suggestions import AiWorkflowSuggestionLimitError
 from app.iris_engine.ai_workflows.suggestions import ai_workflows_suggestions_create
+from app.iris_engine.ai_workflows.tools import AGENT_EXCLUDED_TOOLS
 from app.iris_engine.ai_workflows.tools import CLASSIFICATION_READ
 from app.iris_engine.ai_workflows.tools import CLASSIFICATION_WRITE
 from app.iris_engine.ai_workflows.tools import SCOPE_ARGUMENTS
@@ -604,7 +605,8 @@ class _Agent:
                                       _MAX_TIMEOUT_MINUTES)
         self.auto_read = True
         self.tool_names = [name for name in self.config.get('tools') or []
-                           if isinstance(name, str) and ai_workflows_tools_classification(name)]
+                           if isinstance(name, str) and name not in AGENT_EXCLUDED_TOOLS
+                           and ai_workflows_tools_classification(name)]
         self.scope = _RunScope(self.run)
         self.output = None
         self.output_set = False
@@ -805,6 +807,8 @@ class _Agent:
             return f'Unknown tool {str(tool)[:100]} in proposed_action', None
         if ai_workflows_tools_classification(tool) != CLASSIFICATION_WRITE:
             return f'proposed_action must be a write tool; {tool} is not', None
+        if tool in AGENT_EXCLUDED_TOOLS:
+            return f'{tool} cannot be proposed by an agent', None
         if tool not in self.tool_names and tool not in self.ctx.allowlist:
             return f'proposed_action can only use a write tool of this step; {tool} is not', None
         try:

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 READ_ONLY_TOOLS: frozenset[str] = frozenset({
     'iris_cases_list', 'iris_cases_filter', 'iris_cases_get',
+    'iris_case_access_list',
     'iris_alerts_list', 'iris_alerts_get', 'iris_alerts_related_get',
     # Alerts — lookup reads (needed before iris_alerts_update)
     'iris_alerts_status_list', 'iris_alerts_resolution_list',
@@ -63,6 +64,7 @@ WRITE_TOOLS: frozenset[str] = frozenset({
     # Cases
     'iris_cases_create', 'iris_cases_update',
     'iris_cases_close', 'iris_cases_reopen',
+    'iris_case_access_set_user', 'iris_case_access_set_group',
     # Alerts
     'iris_alerts_update',
     'iris_alerts_escalate', 'iris_alerts_merge',
@@ -80,6 +82,10 @@ WRITE_TOOLS: frozenset[str] = frozenset({
     'iris_war_room_tasks_create',
     'iris_war_room_decisions_create',
     'iris_war_room_vulnerabilities_track',
+    # Vulnerabilities
+    'iris_vulnerabilities_create', 'iris_case_vulnerabilities_create',
+    'iris_vulnerabilities_update', 'iris_case_vulnerabilities_update',
+    'iris_vulnerabilities_delete', 'iris_case_vulnerabilities_delete',
 })
 
 

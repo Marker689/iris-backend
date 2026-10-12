@@ -53,6 +53,7 @@ from app.iris_engine.ai_workflows.sandbox import MAX_STEPS
 from app.iris_engine.ai_workflows.sandbox import MAX_TIMEOUT_SECONDS
 from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_check
 from app.iris_engine.ai_workflows.suggestions import SEVERITIES
+from app.iris_engine.ai_workflows.tools import AGENT_EXCLUDED_TOOLS
 from app.iris_engine.ai_workflows.tools import CLASSIFICATION_WRITE
 from app.iris_engine.ai_workflows.tools import ai_workflows_tools_classification
 from app.iris_engine.webhooks.render import WebhookRenderError
@@ -334,7 +335,8 @@ def _check_ai_agent(check, allowlist):
         check.add('tools', 'Must be a list of tool names')
     else:
         for index, name in enumerate(tools):
-            check.tool(f'tools.{index}', name, allowlist)
+            if check.tool(f'tools.{index}', name, allowlist) and name in AGENT_EXCLUDED_TOOLS:
+                check.add(f'tools.{index}', f'{name} cannot be given to an agent: use an Action node')
     schema = check.config.get('output_schema')
     if schema not in (None, '', {}) and (not isinstance(schema, dict) or schema.get('type') not in (None, 'object')):
         check.add('output_schema', 'Must be a JSON schema of type object')
@@ -419,6 +421,17 @@ def _check_ask_analyst(check):
     if not fields and not check.config.get('fields_from'):
         check.add('fields', 'Add at least one field, or a context path to read them from')
     check.integer('timeout_minutes', 1, 60 * 24 * 30)
+    check.one_of('audience', (AUDIENCE_ENTITY, 'triggerer', AUDIENCE_OWNER, 'users'), AUDIENCE_ENTITY)
+    if check.config.get('audience') == 'users':
+        _check_user_ids(check)
+    if not isinstance(check.config.get('popup', True), bool):
+        check.add('popup', 'Must be true or false')
+
+
+def _check_user_ids(check):
+    user_ids = check.config.get('user_ids')
+    if not isinstance(user_ids, list) or not user_ids or not all(_int_in(u, 1, 2 ** 62) for u in user_ids):
+        check.add('user_ids', 'Select at least one user')
 
 
 def _check_find_related(check):
@@ -461,9 +474,7 @@ def _check_action(check, allowlist):
 def _check_notify(check):
     check.one_of('audience', (AUDIENCE_ENTITY, AUDIENCE_OWNER, 'users'), AUDIENCE_ENTITY)
     if check.config.get('audience') == 'users':
-        user_ids = check.config.get('user_ids')
-        if not isinstance(user_ids, list) or not user_ids or not all(_int_in(u, 1, 2 ** 62) for u in user_ids):
-            check.add('user_ids', 'Select at least one user')
+        _check_user_ids(check)
     if check.required('title'):
         check.template('title')
     check.template('body')

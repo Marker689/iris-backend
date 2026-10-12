@@ -119,6 +119,16 @@ class TestsSuggestionCreation(TestCase):
         self.assertEqual([3], suggestion.audience_user_ids)
         self.assertEqual([suggestion], self.published)
 
+    def test_suggestion_should_go_to_the_audience_given(self):
+        with patch(f'{_SUGGESTIONS}.ai_workflows_entities_user_can_access', lambda user_id, *_args: user_id != 8):
+            suggestion = ai_workflows_suggestions_create(_run(is_dry_run=False), None, kind='info_request',
+                                                         title='Real?', audience_user_ids=[7, 8, 7])
+        self.assertEqual([7], suggestion.audience_user_ids)
+
+    def test_dry_run_should_ignore_the_audience_given(self):
+        suggestion = ai_workflows_suggestions_create(_run(), None, title='Real?', audience_user_ids=[7])
+        self.assertEqual([9], suggestion.audience_user_ids)
+
 
 class TestsSuggestionPublication(TestCase):
 

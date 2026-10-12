@@ -158,10 +158,11 @@ The config fields are listed with their defaults in the catalogue. Highlights:
   - **Write tools** must be in `write_tool_allowlist`.
   - **Scoping.** The case / war room of the run is pinned automatically, so you never pass `case_identifier`.
   - Output: `ok`, `executed`, `result` and `tool_call_id`.
+  - **Case access.** `iris_case_access_list` reads who can access the case (and, for a run-as user who may manage its access, every group with its level). `iris_case_access_set_user` and `iris_case_access_set_group` set an access level (`full_access`, `read_only` or `deny_all`) for a user or group id. The run-as user needs `case_access_manage` and full access to the case, or to be a server administrator. Typical use: on `on_postload_case_create`, a `condition` with the expression `'restricted' in (trigger.payload.data.tags | map(attribute='tag_title') | list)` (the tags are `{id, tag_title}` objects), then a set-group `action`.
 - **`ai_agent`**: ports `out` and `error`. It runs the configured LLM.
   - Config:
     - `prompt` (a template)
-    - `tools`: tool names the agent may call
+    - `tools`: tool names the agent may call; `iris_case_access_set_user` and `iris_case_access_set_group` are refused, for `action` and `suggest` nodes only
     - `output_schema`: a JSON schema of type object; when set, the agent must answer in that shape
     - `max_turns` and `max_tool_calls`
     - `timeout_minutes`: 1 to 60, 10 by default; past it the node fails (its `error` port)
@@ -179,6 +180,8 @@ The config fields are listed with their defaults in the catalogue. Highlights:
 - **`ask_analyst`**: ports `answered` and `timeout`. It asks a question with a form and waits.
   - Config: `title` and `question`, plus `timeout_minutes`.
   - `fields`: a list of `{name, label, type, required, options}`. The types are `text textarea number boolean select multiselect date`.
+  - `audience` is who is asked: `entity` (the workflow's suggestion audience, the default), `triggerer` (the user who started the run or whose action fired the event), `owner` or `users` (with `user_ids`). Only active users who can see the entity are asked; when none of them can, the question goes to the workflow's suggestion audience and the output has a `note`.
+  - `popup` (default true) opens the question in a dialog for the users asked, wherever they are in IRIS, instead of only listing it on the entity and in the suggestions inbox.
   - Output: `answer` and `answered_by`.
 - **`notify`**: an in-app notification.
   - Config: `audience` is `entity`, `owner` or `users` (with `user_ids`), plus `title` and `body`.
