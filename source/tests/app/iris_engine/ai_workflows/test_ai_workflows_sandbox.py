@@ -265,13 +265,18 @@ class TestsSandboxProcess(TestCase):
         self.assertEqual((True, ['b']), (outcome['ok'], outcome.get('result')), outcome)
 
     def test_crash_of_the_interpreter_should_only_stop_the_child(self):
-        # Hashing recurses in C once per level. 99999 levels fitted the 8 MB
-        # stack of the CI image (no crash) but not of an arm64 host; 900000
-        # need over 8 MB on any build. 50 levels a statement: ~2 steps a
-        # level, which keeps the build under MAX_STEPS.
-        level = '(' * 50 + 't,' + '),' * 49 + ')'
-        source = f't = ()\nfor i in range(18000):\n    t = {level}\nresult = len(set([t]))'
-        outcome = ai_workflows_sandbox_execute(source, {}, max_steps=sandbox.MAX_STEPS, timeout_seconds=10)
+        # A real child killed by SIGSEGV, as one whose script overflowed the
+        # C stack. Not done with a script: how deep the data must be to
+        # overflow depends on the Python build and the stack limit.
+        run = subprocess.run
+
+        def _crashing_child(_command, **kwargs):
+            return run([sys.executable, '-I', '-S', '-c', 'import os, signal\nos.kill(os.getpid(), signal.SIGSEGV)'],
+                       **kwargs)
+
+        with patch.object(sandbox.subprocess, 'run', side_effect=_crashing_child) as child:
+            outcome = ai_workflows_sandbox_execute('result = 1', {})
+        child.assert_called_once()
         self.assertEqual((False, 'limit'), (outcome['ok'], outcome['kind']), outcome)
         self.assertIn('crashed', outcome['error'])
 
