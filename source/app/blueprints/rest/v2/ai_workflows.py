@@ -49,6 +49,10 @@ from app.business.ai_workflow_blocks import ai_workflow_blocks_get
 from app.business.ai_workflow_blocks import ai_workflow_blocks_import
 from app.business.ai_workflow_blocks import ai_workflow_blocks_list
 from app.business.ai_workflow_blocks import ai_workflow_blocks_update
+from app.business.ai_workflow_library import ai_workflow_library_delete
+from app.business.ai_workflow_library import ai_workflow_library_list
+from app.business.ai_workflow_library import ai_workflow_library_publish
+from app.business.ai_workflow_library import ai_workflow_library_update
 from app.business.ai_workflows import AiWorkflowsForbiddenError
 from app.business.ai_workflows import ai_workflows_authoring_guide
 from app.business.ai_workflows import ai_workflows_cancel
@@ -61,7 +65,6 @@ from app.business.ai_workflows import ai_workflows_get
 from app.business.ai_workflows import ai_workflows_get_run
 from app.business.ai_workflows import ai_workflows_get_version
 from app.business.ai_workflows import ai_workflows_import
-from app.business.ai_workflows import ai_workflows_library
 from app.business.ai_workflows import ai_workflows_list
 from app.business.ai_workflows import ai_workflows_list_inbound_events
 from app.business.ai_workflows import ai_workflows_list_runs
@@ -237,10 +240,48 @@ def get_ai_workflows_authoring_guide_route():
 @ai_workflows_blueprint.get('/library')
 @ac_api_requires(*_READ)
 @api_doc(tags=['AiWorkflows'],
-         summary='The workflow library: shipped workflows to add as they are or after an edit, with what the caller '
-                 'lacks to run each')
+         summary='The workflow library: shipped and user-published workflows to add as they are or after an edit, '
+                 'with what the caller lacks to run each')
 def get_ai_workflows_library_route():
-    return _handle(lambda: ai_workflows_library(iris_current_user.id))
+    return _handle(lambda: ai_workflow_library_list(iris_current_user.id, _is_admin()))
+
+
+@ai_workflows_blueprint.post('/library')
+@ac_api_requires(*_WRITE)
+@api_doc(response_shape='created', tags=['AiWorkflows'],
+         summary='Publish a workflow to the library, from one of the caller\'s workflows or a workflow document '
+                 '(exported: no secret, owner or customer scope)')
+def publish_ai_workflow_library_entry_route():
+    body, refused = _definition_body()
+    if refused is not None:
+        return refused
+    return _handle(lambda: ai_workflow_library_publish(body, iris_current_user.id, _is_admin()), created=True)
+
+
+@ai_workflows_blueprint.put('/library/<int:entry_id>')
+@ac_api_requires(*_WRITE)
+@api_doc(tags=['AiWorkflows'], summary='Update a published library entry (publisher or administrator)')
+def put_ai_workflow_library_entry_route(entry_id):
+    body, refused = _definition_body()
+    if refused is not None:
+        return refused
+    return _handle(lambda: ai_workflow_library_update(entry_id, body, iris_current_user.id, _is_admin()))
+
+
+@ai_workflows_blueprint.delete('/library/<int:entry_id>')
+@ac_api_requires(*_WRITE)
+@api_doc(response_shape='deleted', tags=['AiWorkflows'],
+         summary='Remove a published library entry (publisher or administrator)')
+def delete_ai_workflow_library_entry_route(entry_id):
+    try:
+        ai_workflow_library_delete(entry_id, iris_current_user.id, _is_admin())
+    except ObjectNotFoundError:
+        return response_api_not_found()
+    except AiWorkflowsForbiddenError as e:
+        return response_api_error(e.get_message(), data=e.get_data(), status=403)
+    except BusinessProcessingError as e:
+        return response_api_error(e.get_message(), data=e.get_data())
+    return response_api_deleted()
 
 
 @ai_workflows_blueprint.post('/import')

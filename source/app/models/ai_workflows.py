@@ -465,6 +465,28 @@ class AiWorkflowBlock(db.Model):
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
 
 
+class AiWorkflowLibraryEntry(db.Model):
+    """A workflow a user published to the library: a portable workflow
+    document (no secret, owner or customer scope) every user who may
+    read workflows can add as a copy."""
+    __tablename__ = 'ai_workflow_library_entry'
+    __table_args__ = (Index('ix_ai_workflow_library_entry_owner', 'owner_id'),
+                      Index('ix_ai_workflow_library_entry_name', 'name'))
+
+    id = Column(BigInteger, primary_key=True)
+    uuid = Column(UUID(as_uuid=True), nullable=False, unique=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    category = Column(String(64), nullable=True)
+    # The `iris-ai-workflow` document, as exported
+    document = Column(JSONB, nullable=False, default=dict)
+    # Only the owner (or an administrator) changes it; the entry stays
+    # when the owner is deleted
+    owner_id = Column(ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
+
 class AiWorkflowInboundEvent(db.Model):
     """Every inbound request on the public endpoints, accepted or not."""
     __tablename__ = 'ai_workflow_inbound_event'

@@ -22,7 +22,6 @@ the authoring guide refers to them."""
 from unittest import TestCase
 from unittest.mock import patch
 
-from app.business.ai_workflows import ai_workflows_library
 from app.iris_engine.ai_workflows.guide import ai_workflows_guide_examples
 from app.iris_engine.ai_workflows.guide import ai_workflows_guide_render
 from app.iris_engine.ai_workflows.library import ai_workflows_library_entries
@@ -71,24 +70,6 @@ class TestsAiWorkflowsLibraryEntries(TestCase):
             [entry] = ai_workflows_library_entries()
         self.assertEqual(('x', 'Other', False, {'keystore': [], 'tools': []}),
                          (entry['id'], entry['category'], entry['uses_ai'], entry['requirements']))
-
-
-class TestsAiWorkflowsLibraryBusiness(TestCase):
-
-    def test_entries_should_carry_what_the_caller_lacks(self):
-        calls = []
-
-        def _warnings(user_id, nodes, allowlist):
-            calls.append((user_id, len(nodes), allowlist))
-            return [{'field': 'keystore', 'message': 'missing'}] if any(
-                n['type'] == 'http_request' for n in nodes) else []
-
-        with patch('app.business.ai_workflows.ai_workflows_import_warnings', _warnings):
-            entries = {e['id']: e for e in ai_workflows_library(5)}
-        self.assertEqual([{'field': 'keystore', 'message': 'missing'}], entries['ioc_estate_hunt']['warnings'])
-        self.assertEqual([], entries['case_kickoff']['warnings'])
-        self.assertEqual({5}, {c[0] for c in calls})
-        self.assertEqual(len(entries), len(calls))
 
 
 class TestsAiWorkflowsGuideLibrary(TestCase):

@@ -865,8 +865,8 @@ paths:
   /api/v2/ai-workflows/library:
     get:
       operationId: get_ai_workflows_library_route_get
-      summary: 'The workflow library: shipped workflows to add as they are or after an edit, with what
-        the caller lacks to run each'
+      summary: 'The workflow library: shipped and user-published workflows to add as they are or after
+        an edit, with what the caller lacks to run each'
       tags:
       - AiWorkflows
       security:
@@ -878,6 +878,66 @@ paths:
           $ref: '#/components/responses/ApiError'
         '403':
           $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: publish_ai_workflow_library_entry_route_post
+      summary: 'Publish a workflow to the library, from one of the caller''s workflows or a workflow document
+        (exported: no secret, owner or customer scope)'
+      tags:
+      - AiWorkflows
+      security:
+      - ApiKey: []
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v2/ai-workflows/library/{entry_id}:
+    delete:
+      operationId: delete_ai_workflow_library_entry_route_delete
+      summary: Remove a published library entry (publisher or administrator)
+      tags:
+      - AiWorkflows
+      security:
+      - ApiKey: []
+      parameters:
+      - name: entry_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '204':
+          $ref: '#/components/responses/Deleted'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: put_ai_workflow_library_entry_route_put
+      summary: Update a published library entry (publisher or administrator)
+      tags:
+      - AiWorkflows
+      security:
+      - ApiKey: []
+      parameters:
+      - name: entry_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v2/ai-workflows/runs:
     get:
       operationId: list_ai_workflow_runs_route_get

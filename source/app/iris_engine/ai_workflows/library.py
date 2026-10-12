@@ -16,36 +16,48 @@
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-"""The workflow library: the workflow documents shipped in `examples/`,
-added to an instance by importing them as they are or after an edit.
-The shipped files are never modified; an added workflow is a copy."""
+"""The workflow library: the workflow documents shipped in `examples/`
+and the ones users published, added to an instance by importing them as
+they are or after an edit. A library document is never modified by an
+import; an added workflow is a copy."""
 
 from app.iris_engine.ai_workflows.guide import ai_workflows_guide_examples
 
 _DEFAULT_CATEGORY = 'Other'
 
 
+def ai_workflows_library_describe(document, default_name='') -> dict:
+    """`{name, description, category, trigger_type, trigger_config,
+    uses_ai, requirements, document}` of a workflow document."""
+    workflow = document.get('workflow') or {}
+    nodes = (workflow.get('graph') or {}).get('nodes') or []
+    return {
+        'name': workflow.get('name') or default_name,
+        'description': workflow.get('description') or '',
+        'category': document.get('category') or _DEFAULT_CATEGORY,
+        'trigger_type': workflow.get('trigger_type'),
+        'trigger_config': workflow.get('trigger_config') or {},
+        'uses_ai': any(isinstance(n, dict) and n.get('type') == 'ai_agent' for n in nodes),
+        'requirements': document.get('requirements') or {'keystore': [], 'tools': []},
+        'document': document,
+    }
+
+
+def ai_workflows_library_sort_key(entry) -> tuple:
+    return entry['category'].lower(), entry['name'].lower()
+
+
 def ai_workflows_library_entries() -> list:
-    """`[{id, file, name, description, category, trigger_type,
-    trigger_config, uses_ai, requirements, document}]`, by category then
-    name. `id` is the file name without its extensions."""
+    """The shipped workflows, `[{id, file, name, description, category,
+    trigger_type, trigger_config, uses_ai, requirements, document}]`, by
+    category then name. `id` is the file name without its extensions."""
     entries = []
     for example in ai_workflows_guide_examples():
         if example['kind'] != 'workflow':
             continue
-        document = example['document']
-        workflow = document.get('workflow') or {}
-        nodes = (workflow.get('graph') or {}).get('nodes') or []
         entries.append({
             'id': example['file'].split('.')[0],
             'file': example['file'],
-            'name': workflow.get('name') or example['file'],
-            'description': workflow.get('description') or '',
-            'category': document.get('category') or _DEFAULT_CATEGORY,
-            'trigger_type': workflow.get('trigger_type'),
-            'trigger_config': workflow.get('trigger_config') or {},
-            'uses_ai': any(isinstance(n, dict) and n.get('type') == 'ai_agent' for n in nodes),
-            'requirements': document.get('requirements') or {'keystore': [], 'tools': []},
-            'document': document,
+            **ai_workflows_library_describe(example['document'], default_name=example['file']),
         })
-    return sorted(entries, key=lambda e: (e['category'].lower(), e['name'].lower()))
+    return sorted(entries, key=ai_workflows_library_sort_key)
