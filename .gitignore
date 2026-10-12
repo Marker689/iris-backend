@@ -25,8 +25,8 @@ nohup.out
 celerybeat-schedule.db
 .scannerwork/
 source/app/static/assets/dist/
-source/app/static/assets/img/graph/*
-!source/app/static/assets/img/graph/*.png
+source/static/assets/img/graph/*
+!source/static/assets/img/graph/*.png
 run_nv_test.py
 certificates/web_certificates/*.pem
 certificates/web_certificates/*.key
