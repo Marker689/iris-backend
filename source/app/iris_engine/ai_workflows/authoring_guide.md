@@ -137,7 +137,7 @@ The config fields are listed with their defaults in the catalogue. Highlights:
 - **`http_request`**: ports `out`, `error`, `timeout`.
   - **Request fields:**
     - `method`: GET, POST, PUT, PATCH or DELETE.
-    - `url`: the scheme and host must be literal. Values interpolated in the path or query are percent-encoded.
+    - `url`: the scheme and host are literal or come from `{{ key("NAME") }}` (e.g. `https://{{ key("SPLUNK_HOST") }}:8089/...`, or a key holding a whole base URL: `{{ key("SPLUNK_URL") }}/services/...`); no other value may choose the host. Values interpolated in the path or query are percent-encoded.
     - `query_params` and `headers`: lists of `{name, value, secret}`.
     - Auth: `auth_type` is `none`, `basic` or `bearer`, with `auth_username` and `auth_secret`.
     - Body: `body_mode` is `default` (a JSON summary of the run), `template` (use `body_template`) or `none`. Also `content_type`.

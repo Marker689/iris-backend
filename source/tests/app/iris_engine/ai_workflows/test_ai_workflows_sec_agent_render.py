@@ -30,7 +30,8 @@ from app.iris_engine.ai_workflows.context import ai_workflows_context_render
 from app.iris_engine.ai_workflows.context import ai_workflows_context_render_arguments
 from app.iris_engine.ai_workflows.context import ai_workflows_context_template
 from app.iris_engine.ai_workflows.context import ai_workflows_context_untrusted
-from app.iris_engine.ai_workflows.context import ai_workflows_context_url_origin
+from app.iris_engine.ai_workflows.context import ai_workflows_context_render_url_base
+from app.iris_engine.ai_workflows.context import ai_workflows_context_split_url
 from app.iris_engine.webhooks.render import WebhookRenderError
 from app.iris_engine.webhooks.render import webhooks_eval_condition
 from app.iris_engine.webhooks.render import webhooks_render_request
@@ -149,21 +150,44 @@ class TestsKeyReveal(TestCase):
 
 class TestsUrlOrigin(TestCase):
 
-    def test_literal_origin_should_be_returned(self):
-        self.assertEqual('https://api.example.org:8443',
-                         ai_workflows_context_url_origin('HTTPS://API.example.org:8443/x/{{ id }}'))
+    def _base(self, url, keys=None):
+        base, _ = ai_workflows_context_split_url(url)
+        return ai_workflows_context_render_url_base(base, {'key': (keys or {}).get, 'host': 'evil.example'})
 
-    def test_templated_scheme_or_host_should_be_refused(self):
+    def test_literal_origin_should_be_split_from_the_path(self):
+        self.assertEqual(('HTTPS://API.example.org:8443', '/x/{{ id }}'),
+                         ai_workflows_context_split_url('HTTPS://API.example.org:8443/x/{{ id }}'))
+        self.assertEqual('https://api.example.org:8443', self._base('HTTPS://API.example.org:8443/x/{{ id }}'))
+
+    def test_scheme_and_host_may_come_from_keys(self):
+        keys = {'SPLUNK_HOST': 'splunk.corp', 'SPLUNK_URL': 'https://splunk.corp:8089/'}
+        self.assertEqual(('https://{{ key("SPLUNK_HOST") }}:8089', '/services/{{ id }}'),
+                         ai_workflows_context_split_url('https://{{ key("SPLUNK_HOST") }}:8089/services/{{ id }}'))
+        self.assertEqual('https://splunk.corp:8089', self._base('https://{{ key("SPLUNK_HOST") }}:8089/x', keys))
+        self.assertEqual(('{{ key(\'SPLUNK_URL\') }}', '/services'),
+                         ai_workflows_context_split_url("{{ key('SPLUNK_URL') }}/services"))
+        self.assertEqual('https://splunk.corp:8089', self._base('{{ key("SPLUNK_URL") }}/services', keys))
+        self.assertEqual('https://h.corp/api', self._base('{{ key("API") }}?q=1', {'API': 'https://h.corp/api/'}))
+
+    def test_other_templates_in_the_scheme_or_host_should_be_refused(self):
         for url in ('{{ url }}', '{{ s }}://h/', 'https://{{ host }}/', 'https://h{{ suffix }}/',
-                    'https://%68ost/', 'ftp://h/', 'https:///x'):
+                    'https://%68ost/', 'ftp://h/', 'https:///x', 'https://{{ key(name) }}/',
+                    'https://{{ key("H") ~ host }}/', 'https://{% if x %}a{% endif %}h/',
+                    'ftp://{{ key("H") }}/', '{{ key("S") }}://h/'):
             with self.assertRaises(AiWorkflowTemplateError, msg=url):
-                ai_workflows_context_url_origin(url)
+                ai_workflows_context_split_url(url)
+
+    def test_key_should_render_an_http_url_without_credentials_or_query(self):
+        for value in ('', 'ftp://h', 'h.corp', 'https://u:p@h.corp', 'https://h.corp?x=1', 'https://h.corp#f',
+                      'https://h corp', 'https://h.corp:99999'):
+            with self.assertRaises(AiWorkflowTemplateError, msg=value):
+                self._base('{{ key("U") }}/x', {'U': value})
 
     def test_rendered_url_should_keep_the_origin(self):
-        ai_workflows_context_check_url_origin('https://h.example/{{ p }}', 'https://h.example/a%2Fb')
+        ai_workflows_context_check_url_origin('https://h.example', 'https://h.example/a%2Fb')
         for rendered in ('https://h.example@evil.example/', 'http://h.example/', 'https://evil.example/'):
             with self.assertRaises(AiWorkflowTemplateError, msg=rendered):
-                ai_workflows_context_check_url_origin('https://h.example/{{ p }}', rendered)
+                ai_workflows_context_check_url_origin('https://h.example', rendered)
 
 
 class TestsDecodeScalars(TestCase):

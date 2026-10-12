@@ -55,6 +55,8 @@ from app.iris_engine.ai_workflows.agent import ai_workflows_agent_run
 from app.iris_engine.ai_workflows.context import MAX_RENDERED_CHARS
 from app.iris_engine.ai_workflows.context import AiWorkflowTemplateError
 from app.iris_engine.ai_workflows.context import ai_workflows_context_check_url_origin
+from app.iris_engine.ai_workflows.context import ai_workflows_context_render_url_base
+from app.iris_engine.ai_workflows.context import ai_workflows_context_split_url
 from app.iris_engine.ai_workflows.context import ai_workflows_context_eval_expression
 from app.iris_engine.ai_workflows.context import ai_workflows_context_eval_rules
 from app.iris_engine.ai_workflows.context import ai_workflows_context_get_path
@@ -468,10 +470,20 @@ def _http_request(ctx, config):
         'callback': extra.get('callback'),
     }
     try:
-        request = webhooks_render_request(_http_config(config, template), template, user_agent='IRIS-AI-Workflows',
-                                          quote_url_values=True, max_output=MAX_RENDERED_CHARS)
+        # The scheme and host render unquoted (literal or `key()` only),
+        # the path and query with their interpolated values percent-encoded
+        base_template, rest_template = ai_workflows_context_split_url(config.get('url'))
+        base = ai_workflows_context_render_url_base(base_template, template)
+    except AiWorkflowTemplateError as e:
+        raise AiWorkflowNodeError(ctx.mask(f'Invalid request URL: {e.message}'))
+    try:
+        request = webhooks_render_request(_http_config({**config, 'url': rest_template}, template), template,
+                                          user_agent='IRIS-AI-Workflows', quote_url_values=True,
+                                          max_output=MAX_RENDERED_CHARS)
     except AiWorkflowTemplateError as e:
         raise AiWorkflowNodeError(ctx.mask(f'Request could not be rendered — {e.field}: {e.message}'))
+    request['url'] = f'{base}{request["url"]}'
+    request['log_url'] = f'{base}{request["log_url"]}'
     logged = ctx.mask(_scrub_token({'method': request['method'], 'url': request['log_url'],
                                     'headers': request['log_headers']}, token))
     if request['errors']:
@@ -480,8 +492,8 @@ def _http_request(ctx, config):
     if not request['url']:
         raise AiWorkflowNodeError('The request URL is empty')
     try:
-        # Data rendered into the URL cannot change where it goes
-        ai_workflows_context_check_url_origin(config.get('url'), request['url'])
+        # Data rendered into the path or query cannot change where it goes
+        ai_workflows_context_check_url_origin(base, request['url'])
     except AiWorkflowTemplateError as e:
         raise AiWorkflowNodeError(ctx.mask(f'Invalid request URL: {e.message}'))
     _refuse_own_endpoints(request['url'])

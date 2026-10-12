@@ -31,7 +31,7 @@ from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_postload_h
 from app.iris_engine.ai_workflows.context import RULE_OPERATORS
 from app.iris_engine.ai_workflows.context import AiWorkflowTemplateError
 from app.iris_engine.ai_workflows.context import ai_workflows_context_path_reference
-from app.iris_engine.ai_workflows.context import ai_workflows_context_url_origin
+from app.iris_engine.ai_workflows.context import ai_workflows_context_split_url
 from app.iris_engine.ai_workflows.cron import ai_workflows_cron_parse
 from app.iris_engine.ai_workflows.nodes import FORM_FIELD_TYPES
 from app.iris_engine.ai_workflows.nodes import NODE_ACTION
@@ -378,7 +378,7 @@ def _check_http_request(check):
     if check.required('url'):
         check.template('url')
         try:
-            ai_workflows_context_url_origin(config['url'].strip())
+            ai_workflows_context_split_url(config['url'])
         except AiWorkflowTemplateError as e:
             check.add('url', e.message)
     for field in ('auth_username', 'auth_secret', 'body_template'):

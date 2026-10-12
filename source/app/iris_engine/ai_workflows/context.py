@@ -31,6 +31,7 @@ import datetime
 import json
 import re
 from urllib.parse import urlsplit
+from urllib.parse import urlunsplit
 
 from app.iris_engine.webhooks.render import WebhookRenderError
 from app.iris_engine.webhooks.render import webhooks_eval_condition
@@ -42,6 +43,12 @@ MAX_RENDERED_CHARS = 256 * 1024
 
 _SINGLE_EXPRESSION = re.compile(r'^\s*\{\{(?:(?!\{\{|\}\}|\{%|\{#).)*\}\}\s*$', re.DOTALL)
 _URL_ORIGIN = re.compile(r'^\s*(https?)://([^/?#\\]*)', re.IGNORECASE)
+_URL_SCHEME = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*://')
+_URL_SCHEME_HTTP = re.compile(r'^https?://', re.IGNORECASE)
+_TEMPLATE_TAG = re.compile(r'\{\{.*?\}\}|\{%.*?%\}|\{#.*?#\}', re.DOTALL)
+_TEMPLATE_OPENER = re.compile(r'\{[{%#]')
+# The one template allowed in the scheme and host of a URL
+_KEY_EXPRESSION = re.compile(r'''\{\{-?\s*key\(\s*(['"])([A-Za-z0-9_.-]{1,128})\1\s*\)\s*-?\}\}''')
 
 RULE_OPERATORS = ('eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'contains', 'not_contains', 'in', 'exists',
                   'not_exists', 'truthy', 'falsy')
@@ -113,36 +120,83 @@ def ai_workflows_context_render(source, context, field, for_llm=False) -> str:
         raise AiWorkflowTemplateError(field, e.message)
 
 
-def ai_workflows_context_url_origin(template):
-    """`scheme://host[:port]` written literally at the start of a URL
-    template, lower-cased. Raises `AiWorkflowTemplateError` when the
-    scheme or the host is (even partly) a template: interpolated data
-    must not choose where a request goes."""
-    template = template or ''
-    match = _URL_ORIGIN.match(template)
-    if not match:
-        if '{' in template.split('://', 1)[0] or template.lstrip().startswith('{'):
-            raise AiWorkflowTemplateError('url', 'the scheme and host must be written literally, not templated')
+def _url_base_end(template) -> int:
+    """Index where the path, query or fragment of a URL template starts:
+    the first `/`, `?` or `#` after `scheme://`, outside template tags."""
+    index = 0
+    scheme = _URL_SCHEME.match(template)
+    if scheme:
+        index = scheme.end()
+    while index < len(template):
+        tag = _TEMPLATE_TAG.match(template, index)
+        if tag:
+            index = tag.end()
+            continue
+        if template[index] in '/?#':
+            return index
+        index += 1
+    return index
+
+
+def ai_workflows_context_split_url(template) -> tuple:
+    """(base, rest) of a URL template: the base is `scheme://host[:port]`,
+    the rest the path, query and fragment. The base is literal text and
+    `{{ key("NAME") }}` only: keystore values are set by IRIS users, while
+    any other value (alert data, node outputs, variables) could steer the
+    request, with its credentials, to another host. Raises
+    `AiWorkflowTemplateError` otherwise."""
+    template = (template or '').strip()
+    end = _url_base_end(template)
+    base, rest = template[:end], template[end:]
+    literal = _KEY_EXPRESSION.sub('', base)
+    if _TEMPLATE_OPENER.search(literal) or '}' in literal or '%' in literal:
+        raise AiWorkflowTemplateError('url', 'the scheme and host may only be written literally or come from '
+                                             '{{ key("NAME") }}')
+    if literal == base:
+        match = _URL_ORIGIN.match(base)
+        if not match or match.end() != len(base):
+            raise AiWorkflowTemplateError('url', 'the URL must start with http:// or https://')
+        if not match.group(2):
+            raise AiWorkflowTemplateError('url', 'the URL has no host')
+    elif ('://' in literal or rest.startswith('//')) and not _URL_SCHEME_HTTP.match(base):
         raise AiWorkflowTemplateError('url', 'the URL must start with http:// or https://')
-    scheme, netloc = match.group(1), match.group(2)
-    if '{' in netloc or '}' in netloc or '%' in netloc:
-        raise AiWorkflowTemplateError('url', 'the scheme and host must be written literally, not templated')
-    if not netloc:
-        raise AiWorkflowTemplateError('url', 'the URL has no host')
-    return f'{scheme.lower()}://{netloc.lower()}'
+    return base, rest
 
 
-def ai_workflows_context_check_url_origin(template, rendered):
-    """Raise `AiWorkflowTemplateError` unless the rendered URL keeps
-    the literal scheme and host of its template."""
-    expected = ai_workflows_context_url_origin(template)
+def ai_workflows_context_render_url_base(base, context) -> str:
+    """The rendered base of a URL template (see `split_url`): an http(s)
+    URL with a host, no credentials, query or fragment, without its
+    trailing `/`. A path is allowed (a key holding `https://h/api`). The
+    error messages never quote the value, which may be a secret."""
+    rendered = ai_workflows_context_render(base, context, 'url').strip()
+    if not rendered or any(c.isspace() or ord(c) < 32 or c == '\\' for c in rendered):
+        raise AiWorkflowTemplateError('url', 'the scheme and host render empty or with invalid characters')
     try:
+        parts = urlsplit(rendered)
+        _ = parts.port
+    except ValueError:
+        raise AiWorkflowTemplateError('url', 'the scheme and host do not render a valid URL')
+    if parts.scheme.lower() not in ('http', 'https'):
+        raise AiWorkflowTemplateError('url', 'the scheme and host must render an http:// or https:// URL')
+    if not parts.hostname or '@' in parts.netloc or '%' in parts.netloc:
+        raise AiWorkflowTemplateError('url', 'the scheme and host must render a host, without credentials')
+    if parts.query or parts.fragment or '?' in rendered or '#' in rendered:
+        raise AiWorkflowTemplateError('url', 'the scheme and host must not render a query or a fragment')
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip('/'), '', ''))
+
+
+def ai_workflows_context_check_url_origin(base, rendered):
+    """Raise `AiWorkflowTemplateError` unless the rendered URL keeps
+    the scheme and host of its rendered base."""
+    try:
+        expected = urlsplit(base)
         parts = urlsplit((rendered or '').strip())
     except ValueError as e:
         raise AiWorkflowTemplateError('url', f'invalid URL ({e})')
+    expected = f'{expected.scheme.lower()}://{expected.netloc.lower()}'
     actual = f'{parts.scheme.lower()}://{parts.netloc.lower()}'
     if actual != expected:
-        raise AiWorkflowTemplateError('url', f'the rendered URL goes to {actual}, not {expected}')
+        raise AiWorkflowTemplateError('url', 'the path or query changes the host of the URL')
 
 
 def ai_workflows_context_untrusted(source, content) -> str:

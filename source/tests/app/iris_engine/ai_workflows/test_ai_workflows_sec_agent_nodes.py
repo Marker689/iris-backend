@@ -97,6 +97,12 @@ class TestsHttpDestination(_HttpTestCase):
             self.assertEqual([], self.sent, url)
             self.assertEqual('failed', run.status, url)
 
+    def test_host_may_come_from_a_key(self):
+        # The harness key value doubles as a host name
+        run = self.run_nodes(_vars(p='a/b'), _http(url=f'https://{_KEY}:8089/x/{{{{ vars.p }}}}'))
+        self.assertEqual(f'https://{SECRET_VALUE}:8089/x/a%2Fb', self.sent[0][0]['url'])
+        self.assertNotIn(SECRET_VALUE, self.persisted(run))
+
     def test_inbound_hooks_should_be_refused_on_any_host(self):
         for url in ('https://other.example/api/v2/ai-workflows/hooks/abc',
                     'https://other.example/x/..%2Fapi/v2/AI-workflows/hooks/abc',
