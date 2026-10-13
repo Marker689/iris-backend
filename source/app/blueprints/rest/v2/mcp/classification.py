@@ -43,6 +43,7 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset({
     'iris_case_assets_list', 'iris_case_assets_get',
     'iris_case_notes_list', 'iris_case_notes_get',
     'iris_case_notes_directories_list',
+    'iris_case_events_list', 'iris_case_evidences_list',
     'iris_case_tasks_list', 'iris_case_tasks_get',
     'iris_search',
     'iris_me_get', 'iris_me_context_get',
@@ -73,6 +74,7 @@ WRITE_TOOLS: frozenset[str] = frozenset({
     'iris_case_assets_create', 'iris_case_assets_update', 'iris_case_assets_delete',
     'iris_case_notes_create', 'iris_case_notes_update',
     'iris_case_notes_directories_create',
+    'iris_case_datastore_files_create',
     'iris_case_tasks_create', 'iris_case_tasks_update',
     'iris_case_tasks_set_status',
     # War rooms — writes

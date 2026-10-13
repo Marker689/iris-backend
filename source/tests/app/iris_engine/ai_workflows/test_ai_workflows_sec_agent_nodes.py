@@ -181,16 +181,16 @@ class TestsNotifyAudience(EngineTestCase):
         self.assertEqual('succeeded', run.status)
         self.assertEqual([5], notify_many.call_args.args[0])
 
-    def _notify_entity(self, owners, reachable, actor_id=None):
-        node = {'id': 'notify', 'type': 'notify', 'config': {'audience': 'entity', 'title': 'Hello'}}
+    def _notify_entity(self, owners, reachable, actor_id=None, audience='entity', triggered_by=None):
+        node = {'id': 'notify', 'type': 'notify', 'config': {'audience': audience, 'title': 'Hello'}}
         wf = workflow(chain(node))
         with patch('app.iris_engine.ai_workflows.nodes.ai_workflows_db_entity_owner_ids', lambda *_args: owners), \
                 patch('app.iris_engine.ai_workflows.nodes.ai_workflows_entities_user_can_access',
                       lambda user_id, *_args: user_id in reachable), \
                 patch('app.iris_engine.notifications.service.notify_many') as notify_many:
             run = self.start(wf)
-            # An event run: nobody started it by hand
-            run.triggered_by_user_id = None
+            # An event run unless `triggered_by` started it by hand
+            run.triggered_by_user_id = triggered_by
             run.trigger_payload = {'actor': {'id': actor_id}} if actor_id else None
             from app.iris_engine.ai_workflows.engine import ai_workflows_engine_step
             while run.id in self.enqueued:
@@ -209,6 +209,20 @@ class TestsNotifyAudience(EngineTestCase):
         notify_many, output = self._notify_entity([8], {OWNER_ID}, actor_id=9)
         self.assertEqual([OWNER_ID], notify_many.call_args.args[0])
         self.assertIn('workflow owner', output['note'])
+
+    def test_triggerer_audience_should_notify_only_the_user_who_started_the_run(self):
+        notify_many, output = self._notify_entity([8], {8, 9}, audience='triggerer', triggered_by=9)
+        self.assertEqual([9], notify_many.call_args.args[0])
+        self.assertEqual([9], output['notified'])
+
+    def test_triggerer_audience_should_notify_the_user_behind_the_event(self):
+        notify_many, _output = self._notify_entity([8], {8, 9}, actor_id=9, audience='triggerer')
+        self.assertEqual([9], notify_many.call_args.args[0])
+
+    def test_triggerer_audience_should_not_fall_back_to_the_workflow_owner(self):
+        notify_many, output = self._notify_entity([8], {8, OWNER_ID}, audience='triggerer', triggered_by=9)
+        notify_many.assert_not_called()
+        self.assertIn('None of the users', output['note'])
 
     def test_unreachable_audience_should_notify_nobody_and_say_why(self):
         node = {'id': 'notify', 'type': 'notify', 'config': {'audience': 'owner', 'title': 'Hello'}}

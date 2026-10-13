@@ -5,18 +5,17 @@
   "workflow": {
     "name": "Detection rule feedback loop",
     "description": "Every Monday, counts the alerts resolved over the last 7 days per detection rule (source and alert title, varying values masked) and verdict, computes the false-positive rate, the share of noise and the mean time to close, and has the AI propose a tuning for each rule that is mostly noise (at least 5 alerts and 60% false positive or benign), based on sample alerts. The proposals land in the AI suggestions inbox and the workflow owner is notified: set the notify node to the detection engineering team. Reads up to 30 pages of 50 alerts, one a minute. Needs an AI provider.",
-    "trigger_type": "cron",
-    "trigger_config": {
-      "cron": "0 7 * * 1",
-      "target": "none"
-    },
     "graph": {
       "nodes": [
         {
           "id": "trigger",
           "type": "trigger",
           "label": "Every Monday 07:00 UTC",
-          "config": {},
+          "config": {
+            "trigger_type": "cron",
+            "cron": "0 7 * * 1",
+            "target": "none"
+          },
           "position": {
             "x": 0,
             "y": 0

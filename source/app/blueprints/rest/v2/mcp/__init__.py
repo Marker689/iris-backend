@@ -54,6 +54,9 @@ from app.blueprints.rest.v2.mcp.tools import alerts as _tools_alerts
 from app.blueprints.rest.v2.mcp.tools import iocs as _tools_iocs
 from app.blueprints.rest.v2.mcp.tools import assets as _tools_assets
 from app.blueprints.rest.v2.mcp.tools import notes as _tools_notes
+from app.blueprints.rest.v2.mcp.tools import events as _tools_events
+from app.blueprints.rest.v2.mcp.tools import evidences as _tools_evidences
+from app.blueprints.rest.v2.mcp.tools import datastore as _tools_datastore
 from app.blueprints.rest.v2.mcp.tools import tasks as _tools_tasks
 from app.blueprints.rest.v2.mcp.tools import search as _tools_search
 from app.blueprints.rest.v2.mcp.tools import profile as _tools_profile

@@ -65,13 +65,15 @@ def invoke_hook_for_case(
     targets: Sequence[Any],
     webhook_id: Optional[int] = None,
     workflow_id: Optional[int] = None,
+    workflow_trigger_id: Optional[str] = None,
     user_id: Optional[int] = None,
     scope_mask: Optional[int] = None,
 ) -> HookInvocationResult:
     """Resolve `targets` to ORM rows and dispatch a manual hook against
     them via `call_modules_hook` — or, with `webhook_id`, to that native
-    webhook, or with `workflow_id`, start that manual workflow on each,
-    acting as `user_id` bounded by `scope_mask`.
+    webhook, or with `workflow_id`, start that manual workflow on each
+    (at its trigger node `workflow_trigger_id`), acting as `user_id`
+    bounded by `scope_mask`.
 
     Skips (with a log entry) targets that don't exist or that reference
     an unsupported `data_type`. Raises `BusinessProcessingError` for
@@ -107,7 +109,7 @@ def invoke_hook_for_case(
 
     if obj_targets and workflow_id is not None:
         started, run_logs = ai_workflow_menus_run(workflow_id, hook_name, obj_targets, user_id, scope_mask,
-                                                  caseid=caseid)
+                                                  caseid=caseid, trigger_node_id=workflow_trigger_id)
         return HookInvocationResult(queued=started, logs=logs + run_logs)
 
     if obj_targets:
@@ -133,6 +135,7 @@ def invoke_hook_for_alerts(
     logs: Sequence[str] = (),
     webhook_id: Optional[int] = None,
     workflow_id: Optional[int] = None,
+    workflow_trigger_id: Optional[str] = None,
     user_id: Optional[int] = None,
     scope_mask: Optional[int] = None,
 ) -> HookInvocationResult:
@@ -159,7 +162,8 @@ def invoke_hook_for_alerts(
         return HookInvocationResult(queued=0, logs=list(logs))
 
     if workflow_id is not None:
-        started, run_logs = ai_workflow_menus_run(workflow_id, hook_name, list(alerts), user_id, scope_mask)
+        started, run_logs = ai_workflow_menus_run(workflow_id, hook_name, list(alerts), user_id, scope_mask,
+                                                  trigger_node_id=workflow_trigger_id)
         return HookInvocationResult(queued=started, logs=list(logs) + run_logs)
 
     if webhook_id is not None:

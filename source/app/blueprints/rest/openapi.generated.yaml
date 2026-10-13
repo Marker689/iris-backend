@@ -18434,6 +18434,193 @@ paths:
                 $ref: '#/components/schemas/McpToolResult'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_case_datastore_files_create:
+    post:
+      operationId: mcp_tool_iris_case_datastore_files_create
+      summary: Write a text file (Markdown, CSV, JSON, plain text...) into the case datastore, UTF-8 encoded.
+        `folder` puts it in that folder of the datastore root, created when missing; without it the file
+        goes to the root. A new file is created on every call, even with the same name.
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_case_datastore_files_create
+      x-mcp-mvp: true
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_case_datastore_files_create\"\
+        `. The request body schema below is the tool's `input_schema` (identical to what `tools/list`\
+        \ returns for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                filename:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  description: File name, extension included (e.g. report.md).
+                content:
+                  type: string
+                description:
+                  type: string
+                  description: Description shown in the datastore.
+                tags:
+                  type: string
+                  description: Comma-separated tags.
+                folder:
+                  type: string
+                  maxLength: 255
+                  description: Folder of the datastore root to put the file in (e.g. Reports).
+                case_identifier:
+                  type: integer
+                  description: Numeric ID of the IRIS case this call targets.
+              required:
+              - filename
+              - content
+              - case_identifier
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_case_events_list:
+    post:
+      operationId: mcp_tool_iris_case_events_list
+      summary: List the timeline events of a case, oldest first, with their category, linked assets and
+        IOCs. `in_summary` keeps only the events flagged to appear in the case summary. Descriptions are
+        clipped to a preview unless `view` is full.
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_case_events_list
+      x-mcp-mvp: true
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_case_events_list\"\
+        `. The request body schema below is the tool's `input_schema` (identical to what `tools/list`\
+        \ returns for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                page:
+                  type: integer
+                  description: 1-indexed page number.
+                per_page:
+                  type: integer
+                  description: Items per page (default 25, max 100).
+                order_by:
+                  type: string
+                  description: Field name to sort by.
+                sort_dir:
+                  type: string
+                  description: '''asc'' or ''desc''.'
+                view:
+                  type: string
+                  enum:
+                  - summary
+                  - full
+                  description: "Response detail level. 'summary' (the default) returns the identifying,\
+                    \ triage and cross-reference fields. 'full' adds raw source payloads, enrichment blobs,\
+                    \ custom attributes and modification history, and is typically an order of magnitude\
+                    \ larger. Stay on the default unless a field you need is genuinely absent \u2014 to\
+                    \ read one record in full, prefer the matching `*_get` tool over widening a whole\
+                    \ page of results."
+                in_summary:
+                  type: boolean
+                  description: Only the events shown in the case summary.
+                case_identifier:
+                  type: integer
+                  description: Numeric ID of the IRIS case this call targets.
+              required:
+              - case_identifier
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_case_evidences_list:
+    post:
+      operationId: mcp_tool_iris_case_evidences_list
+      summary: 'List the evidences of a case: the files and data collected during the investigation, with
+        their hash, size, type and dates. Oldest first unless `order_by` / `sort_dir` say otherwise.'
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_case_evidences_list
+      x-mcp-mvp: true
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_case_evidences_list\"\
+        `. The request body schema below is the tool's `input_schema` (identical to what `tools/list`\
+        \ returns for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                page:
+                  type: integer
+                  description: 1-indexed page number.
+                per_page:
+                  type: integer
+                  description: Items per page (default 25, max 100).
+                order_by:
+                  type: string
+                  description: Field name to sort by.
+                sort_dir:
+                  type: string
+                  description: '''asc'' or ''desc''.'
+                view:
+                  type: string
+                  enum:
+                  - summary
+                  - full
+                  description: "Response detail level. 'summary' (the default) returns the identifying,\
+                    \ triage and cross-reference fields. 'full' adds raw source payloads, enrichment blobs,\
+                    \ custom attributes and modification history, and is typically an order of magnitude\
+                    \ larger. Stay on the default unless a field you need is genuinely absent \u2014 to\
+                    \ read one record in full, prefer the matching `*_get` tool over widening a whole\
+                    \ page of results."
+                case_identifier:
+                  type: integer
+                  description: Numeric ID of the IRIS case this call targets.
+              required:
+              - case_identifier
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/v2/mcp/tools/iris_case_iocs_create:
     post:
       operationId: mcp_tool_iris_case_iocs_create
@@ -18870,7 +19057,9 @@ paths:
   /api/v2/mcp/tools/iris_case_notes_get:
     post:
       operationId: mcp_tool_iris_case_notes_get
-      summary: Fetch a single note by ID.
+      summary: 'Fetch a single note by ID. Bodies longer than a few thousand characters are clipped: pass
+        `content_offset` (0 first) to read the body as `note_content_chunks` instead, then call again
+        from `content_offset` + the total length of the chunks received until that reaches `content_length`.'
       tags:
       - MCP
       - MCP:tools
@@ -18893,6 +19082,10 @@ paths:
               properties:
                 note_identifier:
                   type: integer
+                content_offset:
+                  type: integer
+                  minimum: 0
+                  description: Read the body from this character on, in chunks.
                 case_identifier:
                   type: integer
                   description: Numeric ID of the IRIS case this call targets.
@@ -18913,7 +19106,8 @@ paths:
       operationId: mcp_tool_iris_case_notes_list
       summary: "Search case notes by free-text. Pass an empty string to list all notes in the case. Returns\
         \ note summaries with the body clipped to a short preview \u2014 call `iris_case_notes_get` with\
-        \ a `note_id` from the result to read a note in full."
+        \ a `note_id` from the result to read a note in full. Every match is returned unless `page` or\
+        \ `per_page` is given."
       tags:
       - MCP
       - MCP:tools
@@ -19713,7 +19907,8 @@ paths:
     post:
       operationId: mcp_tool_iris_cases_filter
       summary: Filter cases by structured fields (customer, classification, owner, severity, state, SOC
-        id, dates). Returns paginated case summaries.
+        id, dates) and/or an advanced `filters` tree (owner logins, tags, state names...). Returns paginated
+        case summaries.
       tags:
       - MCP
       - MCP:tools
@@ -19783,6 +19978,16 @@ paths:
                 end_open_date:
                   type: string
                   description: ISO date
+                filters:
+                  type: object
+                  description: 'Advanced filter, as in the cases page: a group {"logic": "and"|"or", "items":
+                    [...]} whose items are conditions {"fieldId", "operation", "value"} or nested groups.
+                    fieldId: title, case_id, outcome, open_date, classification, customer, state (name),
+                    owner (login), severity (name), tags. operation: equals, not, contains, not_contains,
+                    starts_with, not_starts_with, ends_with, not_ends_with, empty, not_empty. Text matches
+                    other than equals / not ignore case. Example: {"logic": "and", "items": [{"logic":
+                    "or", "items": [{"fieldId": "owner", "operation": "equals", "value": "jdoe"}]}, {"fieldId":
+                    "tags", "operation": "not_contains", "value": "red team"}]}.'
       responses:
         '200':
           description: "Tool result \u2014 JSON-RPC content wrapper."

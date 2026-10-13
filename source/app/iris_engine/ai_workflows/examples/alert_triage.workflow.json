@@ -5,22 +5,21 @@
   "workflow": {
     "name": "Alert triage first pass",
     "description": "When an alert of severity Medium or above is created, gathers the alerts and open cases sharing its IOCs or assets over the last 30 days and has the AI decide: close it as a false positive or legitimate activity, merge it into one of those open cases, escalate it to a new case, or ask the analyst for what is missing (once, then decide again). Every outcome is a suggestion on the alert that an analyst accepts or dismisses; nothing changes on its own. A merge is only proposed into an open case that shares an indicator. The severity threshold is the condition of the trigger (default severity ids: 4 Medium, 5 High, 6 Critical). Needs an AI provider.",
-    "trigger_type": "event",
-    "trigger_config": {
-      "hooks": [
-        "on_postload_alert_create"
-      ],
-      "condition": "data.alert_severity_id >= 4",
-      "dedup_minutes": 0,
-      "skip_if_active": true
-    },
     "graph": {
       "nodes": [
         {
           "id": "trigger",
           "type": "trigger",
           "label": "New alert, Medium or above",
-          "config": {},
+          "config": {
+            "trigger_type": "event",
+            "hooks": [
+              "on_postload_alert_create"
+            ],
+            "condition": "data.alert_severity_id >= 4",
+            "dedup_minutes": 0,
+            "skip_if_active": true
+          },
           "position": {
             "x": 0,
             "y": 0

@@ -155,22 +155,51 @@ def _field(source, name):
     return source.get(name) if isinstance(source, dict) else getattr(source, name, None)
 
 
+def _trigger_nodes(source) -> list:
+    graph = _field(source, 'graph')
+    nodes = graph.get('nodes') if isinstance(graph, dict) else None
+    return [n for n in nodes if isinstance(n, dict) and n.get('type') == 'trigger'] if isinstance(nodes, list) else []
+
+
+def ai_workflow_trigger_of_node(node):
+    """{type, config, node_id} of a trigger node carrying its trigger
+    (`config.trigger_type`), None for a node saved before."""
+    config = node.get('config') if isinstance(node.get('config'), dict) else {}
+    trigger_type = config.get('trigger_type')
+    if not isinstance(trigger_type, str) or not trigger_type:
+        return None
+    return {'type': trigger_type, 'config': {k: v for k, v in config.items() if k != 'trigger_type'},
+            'node_id': node.get('id')}
+
+
 def ai_workflow_triggers(source) -> list:
-    """[{type, config}] of a workflow, a definition dict or a snapshot;
-    a definition saved before multiple triggers has its single one."""
+    """[{type, config, node_id}] of a workflow, a definition dict or a
+    snapshot, in node order: one per trigger node. A graph saved before
+    trigger nodes carried their trigger has the workflow's `triggers` (or
+    single `trigger_type`), all starting at its trigger node."""
+    nodes = _trigger_nodes(source)
+    typed = [t for t in (ai_workflow_trigger_of_node(n) for n in nodes) if t is not None]
+    if typed:
+        return typed
+    start = nodes[0].get('id') if nodes else None
     triggers = _field(source, 'triggers')
     if isinstance(triggers, list) and triggers:
-        return [{'type': t.get('type'), 'config': t.get('config') if isinstance(t.get('config'), dict) else {}}
+        return [{'type': t.get('type'), 'config': t.get('config') if isinstance(t.get('config'), dict) else {},
+                 'node_id': t.get('node_id') or start}
                 for t in triggers if isinstance(t, dict)]
     trigger_type = _field(source, 'trigger_type')
     if not trigger_type:
         return []
     config = _field(source, 'trigger_config')
-    return [{'type': trigger_type, 'config': config if isinstance(config, dict) else {}}]
+    return [{'type': trigger_type, 'config': config if isinstance(config, dict) else {}, 'node_id': start}]
+
+
+def ai_workflow_triggers_of_type(source, trigger_type) -> list:
+    return [t for t in ai_workflow_triggers(source) if t['type'] == trigger_type]
 
 
 def ai_workflow_trigger_config(source, trigger_type):
-    """The config of the `trigger_type` trigger, None when it has none."""
+    """The config of the first `trigger_type` trigger, None when it has none."""
     for trigger in ai_workflow_triggers(source):
         if trigger['type'] == trigger_type:
             return trigger['config']
@@ -186,7 +215,9 @@ class AiWorkflow(db.Model):
     description = Column(Text, nullable=True)
     is_active = Column(Boolean, nullable=False, default=False)
 
-    # What starts the workflow: [{type, config}], at most one per type.
+    # What starts the workflow: [{type, config, node_id}], one per trigger
+    # node of the graph (each node carries its own in `config.trigger_type`
+    # and the keys below), kept here to find the workflows of a type.
     # event: {hooks: [...], condition, dedup_minutes, skip_if_active}
     # cron: {cron, target: none|war_rooms|cases, max_targets}
     # manual: {entity_types, menus, menu_label}
@@ -217,6 +248,8 @@ class AiWorkflow(db.Model):
     # bearer token; shown once at rotation
     inbound_signing_secret = Column(Text, nullable=True)
     last_fired_at = Column(DateTime, nullable=True)
+    # {trigger node id: ISO datetime} the last fire of each schedule
+    cron_fired_at = Column(JSONB, nullable=False, default=dict, server_default='{}')
     # Suppressed triggers (dedup, still active, hourly cap, chain depth) are
     # counted here rather than stored as full run rows
     skipped_count = Column(BigInteger, nullable=False, default=0)

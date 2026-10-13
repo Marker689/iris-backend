@@ -32,13 +32,14 @@ def ai_workflows_library_describe(document, default_name='') -> dict:
     uses_ai, requirements, document}` of a workflow document."""
     workflow = document.get('workflow') or {}
     nodes = (workflow.get('graph') or {}).get('nodes') or []
+    triggers = ai_workflow_triggers(workflow)
     return {
         'name': workflow.get('name') or default_name,
         'description': workflow.get('description') or '',
         'category': document.get('category') or _DEFAULT_CATEGORY,
-        'triggers': ai_workflow_triggers(workflow),
-        'trigger_type': workflow.get('trigger_type'),
-        'trigger_config': workflow.get('trigger_config') or {},
+        'triggers': triggers,
+        'trigger_type': triggers[0]['type'] if triggers else None,
+        'trigger_config': triggers[0]['config'] if triggers else {},
         'uses_ai': any(isinstance(n, dict) and n.get('type') == 'ai_agent' for n in nodes),
         'requirements': document.get('requirements') or {'keystore': [], 'tools': []},
         'document': document,

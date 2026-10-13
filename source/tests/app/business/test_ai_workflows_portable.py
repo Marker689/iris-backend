@@ -88,7 +88,8 @@ class TestsWorkflowExportImport(_PortableTestCase):
         self.workflows[3] = _stored_workflow(graph=_graph(), trigger_config={'inbound_token': 'x'})
         document = ai_workflows_export(3, _OWNER, False)
         self.assertNotIn(_TOKEN, str(document))
-        self.assertNotIn('inbound_token', document['workflow']['trigger_config'])
+        self.assertEqual({'trigger_type': 'manual'}, document['workflow']['graph']['nodes'][0]['config'])
+        self.assertFalse({'triggers', 'trigger_type', 'trigger_config'} & set(document['workflow']))
         self.assertEqual(['CALL_AUTH_SECRET', 'VT'], document['requirements']['keystore'])
         self.assertEqual(_NOW.isoformat(), document['exported_at'])
 

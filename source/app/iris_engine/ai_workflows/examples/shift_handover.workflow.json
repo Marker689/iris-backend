@@ -5,18 +5,17 @@
   "workflow": {
     "name": "Shift handover",
     "description": "At 07:00 and 19:00 UTC, gathers the alerts created over the last 12 hours, the open alerts and the open cases, and has the AI write the handover for the incoming shift: a headline, what happened, what to do first and what to watch. The full handover with the numbers lands in the AI suggestions inbox and the workflow owner is notified: set the notify node to the shift. Without an AI provider, the numbers are still sent. Adjust the cron and the \"created:>now-12h\" query of the first node to your shifts.",
-    "trigger_type": "cron",
-    "trigger_config": {
-      "cron": "0 7,19 * * *",
-      "target": "none"
-    },
     "graph": {
       "nodes": [
         {
           "id": "trigger",
           "type": "trigger",
           "label": "07:00 and 19:00 UTC",
-          "config": {},
+          "config": {
+            "trigger_type": "cron",
+            "cron": "0 7,19 * * *",
+            "target": "none"
+          },
           "position": {
             "x": 0,
             "y": 0

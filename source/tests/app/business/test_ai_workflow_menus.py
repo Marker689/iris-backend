@@ -1,0 +1,76 @@
+#  IRIS Source Code
+#  Copyright (C) 2026 - DFIR-IRIS
+#  contact@dfir-iris.org
+#
+#  This program is free software; you can redistribute it and/or
+#  modify it under the terms of the GNU Lesser General Public
+#  License as published by the Free Software Foundation; either
+#  version 3 of the License, or (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+#  Lesser General Public License for more details.
+#
+#  You should have received a copy of the GNU Lesser General Public License
+#  along with this program; if not, write to the Free Software Foundation,
+#  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+"""Manual workflows in the object menus: an entry per manual trigger
+shown on the objects, naming its trigger node. DB helpers are patched."""
+
+from types import SimpleNamespace
+from unittest import TestCase
+from unittest.mock import patch
+
+from app.business.ai_workflow_menus import ai_workflow_menus_options
+from app.business.ai_workflow_menus import ai_workflow_menus_run
+from app.models.errors import BusinessProcessingError
+
+_MENUS = 'app.business.ai_workflow_menus'
+
+
+def _trigger(node_id, trigger_type, **config):
+    return {'id': node_id, 'type': 'trigger', 'config': {'trigger_type': trigger_type, **config}}
+
+
+def _workflow(workflow_id, name, *triggers, is_active=True):
+    return SimpleNamespace(id=workflow_id, name=name, is_active=is_active, triggers=[], trigger_type=None,
+                           trigger_config=None, graph={'nodes': list(triggers), 'edges': []})
+
+
+class TestsMenuOptions(TestCase):
+
+    def setUp(self):
+        self.workflows = []
+        patcher = patch(f'{_MENUS}.ai_workflows_db_list_active', lambda _type: self.workflows)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _options(self, hook_type='ioc'):
+        return [(o['manual_hook_ui_name'], o['workflow_id'], o['workflow_trigger_id'])
+                for o in ai_workflow_menus_options(hook_type)]
+
+    def test_each_manual_trigger_on_the_objects_should_have_its_entry(self):
+        self.workflows = [
+            _workflow(1, 'Enrich',
+                      _trigger('quick', 'manual', entity_types=['case'], menus=['ioc']),
+                      _trigger('deep', 'manual', entity_types=['case'], menus=['ioc', 'asset'],
+                               menu_label='Deep dive'),
+                      _trigger('alerts', 'manual', entity_types=['alert'], menus=['alert']),
+                      _trigger('hourly', 'cron', cron='0 * * * *')),
+            _workflow(2, 'Off', _trigger('t', 'manual', entity_types=['case'], menus=['ioc']), is_active=False),
+        ]
+        self.assertEqual([('Enrich', 1, 'quick'), ('Deep dive', 1, 'deep')], self._options())
+        self.assertEqual([('Deep dive', 1, 'deep')], self._options('asset'))
+        self.assertEqual([('Enrich', 1, 'alerts')], self._options('alert'))
+
+    def test_legacy_workflow_should_offer_its_trigger_node(self):
+        workflow = _workflow(3, 'Legacy', {'id': 'trigger', 'type': 'trigger', 'config': {}})
+        workflow.trigger_type, workflow.trigger_config = 'manual', {'entity_types': ['case'], 'menus': ['ioc']}
+        self.workflows = [workflow]
+        self.assertEqual([('Legacy', 3, 'trigger')], self._options())
+
+    def test_run_should_refuse_a_malformed_trigger_id(self):
+        with self.assertRaises(BusinessProcessingError):
+            ai_workflow_menus_run(1, 'on_manual_trigger_ioc', [], 5, trigger_node_id=['quick'])

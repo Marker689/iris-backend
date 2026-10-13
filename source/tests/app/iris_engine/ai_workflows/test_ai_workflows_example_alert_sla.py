@@ -38,6 +38,7 @@ from app.iris_engine.ai_workflows.portable import ai_workflows_portable_tools
 from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run_unconfined
 from tests.app.iris_engine.ai_workflows.harness import OWNER_ID
 from tests.app.iris_engine.ai_workflows.harness import EngineTestCase
+from tests.app.iris_engine.ai_workflows.harness import example_trigger
 from tests.app.iris_engine.ai_workflows.harness import workflow
 
 _PATH = os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'app', 'iris_engine', 'ai_workflows',
@@ -72,13 +73,12 @@ class TestsAlertSlaDocument(TestCase):
 
     def test_workflow_should_validate(self):
         body = ai_workflows_portable_read_workflow(_DOCUMENT)
-        self.assertEqual([], ai_workflows_graph_validate_trigger_config(body['trigger_type'], body['trigger_config']))
-        self.assertEqual([], ai_workflows_graph_validate(body['graph'], body['trigger_type'], body['trigger_config'],
-                                                         body['write_tool_allowlist']))
+        self.assertEqual([], ai_workflows_graph_validate_trigger_config(*example_trigger(body)))
+        self.assertEqual([], ai_workflows_graph_validate(body['graph'], body['write_tool_allowlist']))
 
     def test_workflow_should_run_every_quarter_hour_without_ai(self):
         body = ai_workflows_portable_read_workflow(_DOCUMENT)
-        self.assertEqual(('cron', '*/15 * * * *', []), (body['trigger_type'], body['trigger_config']['cron'],
+        self.assertEqual(('cron', '*/15 * * * *', []), (example_trigger(body)[0], example_trigger(body)[1]['cron'],
                                                         body['write_tool_allowlist']))
         self.assertNotIn('ai_agent', [n['type'] for n in _NODES.values()])
 
@@ -155,7 +155,7 @@ class TestsAlertSlaRun(EngineTestCase):
     def _run(self, alerts):
         self.tool_results['iris_alerts_list'] = {'total': len(alerts), 'data': alerts}
         body = ai_workflows_portable_read_workflow(_DOCUMENT)
-        wf = workflow(body['graph'], trigger_type='cron', trigger_config=body['trigger_config'],
+        wf = workflow(body['graph'], trigger_type='cron', trigger_config=example_trigger(body)[1],
                       suggestion_audience='owner')
         run = ai_workflows_engine_start_run(wf, 'cron', run_as_user_id=OWNER_ID)
         for _ in range(20):

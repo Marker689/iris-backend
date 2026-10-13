@@ -276,10 +276,10 @@ class TestsAgentLiveness(_AgentTestCase):
 class TestsAgentTimeoutValidation(TestCase):
 
     def _errors(self, **config):
-        graph = {'nodes': [{'id': 'trigger', 'type': 'trigger', 'config': {}},
+        graph = {'nodes': [{'id': 'trigger', 'type': 'trigger', 'config': {'trigger_type': 'manual'}},
                            {'id': 'ai', 'type': 'ai_agent', 'config': {'prompt': 'Triage', **config}}],
                  'edges': [{'id': 'e', 'source': 'trigger', 'target': 'ai', 'source_port': 'out'}]}
-        return [e['field'] for e in ai_workflows_graph_validate(graph, 'manual', {}, [])]
+        return [e['field'] for e in ai_workflows_graph_validate(graph, [])]
 
     def test_timeout_should_be_between_1_and_60_minutes(self):
         self.assertEqual([], self._errors(timeout_minutes=30))

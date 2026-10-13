@@ -5,18 +5,17 @@
   "workflow": {
     "name": "Alert SLA watchdog",
     "description": "Every 15 minutes, checks the open alerts nobody is assigned to against the time allowed for their severity (Critical 15 min, High 1 h, Medium 4 h, Low 24 h, Informational 48 h; set them in the SLA check node) and, when alerts went past it since the previous check, notifies the workflow owner with the list of every alert waiting past its SLA, new breaches first. Set the notify node to the SOC leads. Checks the newest 100 waiting alerts. No AI involved.",
-    "trigger_type": "cron",
-    "trigger_config": {
-      "cron": "*/15 * * * *",
-      "target": "none"
-    },
     "graph": {
       "nodes": [
         {
           "id": "trigger",
           "type": "trigger",
           "label": "Every 15 minutes",
-          "config": {},
+          "config": {
+            "trigger_type": "cron",
+            "cron": "*/15 * * * *",
+            "target": "none"
+          },
           "position": {
             "x": 0,
             "y": 0

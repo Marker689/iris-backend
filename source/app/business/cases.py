@@ -96,6 +96,75 @@ def cases_filter(current_user, pagination_parameters, name=None, case_identifier
             end_close_date=end_close_date)
 
 
+_ADVANCED_FILTER_OPERATIONS = {
+    'equals', 'not',
+    'starts_with', 'not_starts_with',
+    'contains', 'not_contains',
+    'ends_with', 'not_ends_with',
+    'empty', 'not_empty'
+}
+# Safety cap on the nesting of filter groups
+_ADVANCED_FILTER_MAX_DEPTH = 8
+
+
+def _cases_advanced_filter_condition(condition, path: str) -> dict:
+    if not isinstance(condition, dict):
+        raise ValueError(f'Invalid condition at {path} (expected object)')
+    field_id = condition.get('fieldId')
+    operation = condition.get('operation')
+    value = condition.get('value', '')
+
+    if not isinstance(field_id, str) or not field_id:
+        raise ValueError(f'Invalid fieldId at {path}')
+    if not isinstance(operation, str) or not operation:
+        raise ValueError(f'Invalid operation at {path}')
+    if not isinstance(value, str):
+        raise ValueError(f'Invalid value at {path}')
+
+    operation = operation.lower()
+    if operation not in _ADVANCED_FILTER_OPERATIONS:
+        raise ValueError(f'Invalid operation at {path}')
+    if operation in ('empty', 'not_empty'):
+        value = ''
+
+    return {'fieldId': field_id, 'operation': operation, 'value': value}
+
+
+def _cases_advanced_filter_group(node, depth: int, path: str) -> dict:
+    if depth > _ADVANCED_FILTER_MAX_DEPTH:
+        raise ValueError(f'Filter group too deeply nested at {path}')
+    if not isinstance(node, dict):
+        raise ValueError(f'Invalid group at {path} (expected object)')
+    group_logic = str(node.get('logic', 'and')).lower()
+    if group_logic not in ('and', 'or'):
+        raise ValueError(f"Invalid logic at {path} (expected 'and' or 'or')")
+    items = node.get('items')
+    if not isinstance(items, list):
+        raise ValueError(f'Invalid items at {path} (expected list)')
+
+    normalised = []
+    for index, item in enumerate(items):
+        sub_path = f'{path}.items[{index}]'
+        if isinstance(item, dict) and ('items' in item or 'logic' in item and 'fieldId' not in item):
+            normalised.append(_cases_advanced_filter_group(item, depth + 1, sub_path))
+        else:
+            normalised.append(_cases_advanced_filter_condition(item, sub_path))
+
+    return {'logic': group_logic, 'items': normalised}
+
+
+def cases_filter_parse_advanced(filters, logic='and') -> dict:
+    """The advanced case filter, normalised to a nested group. Accepts
+    either a flat list of conditions, combined by `logic`, or a group
+    `{logic, items: [<condition>|<group>]}` recursing to any depth.
+    Raises ValueError on an invalid filter."""
+    if isinstance(filters, list):
+        return _cases_advanced_filter_group({'logic': logic, 'items': filters}, 0, 'filters')
+    if isinstance(filters, dict):
+        return _cases_advanced_filter_group(filters, 0, 'filters')
+    raise ValueError('Invalid filters (expected array or object)')
+
+
 def cases_filter_by_user(user, show_all: bool):
     return list_user_cases(user.id, show_all)
 

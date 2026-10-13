@@ -206,8 +206,9 @@ def _node_spec(node_type, label, description, category, ports, config_defaults):
 
 
 _CATALOGUE = (
-    _node_spec(NODE_TRIGGER, 'Trigger', 'Where every run starts: the events, schedule, manual run, inbound '
-               'webhook or calling workflow configured on the workflow.', 'trigger', (PORT_OUT,), {}),
+    _node_spec(NODE_TRIGGER, 'Trigger', 'Where a run starts: an event, a schedule, a manual run, an inbound '
+               'webhook or a calling workflow, set on the node. A workflow may hold several.', 'trigger',
+               (PORT_OUT,), {'trigger_type': 'manual'}),
     _node_spec(NODE_AI_AGENT, 'AI agent', 'Runs the AI assistant with a prompt and a set of tools. Reads run; '
                'writes run only when allowlisted on the workflow, otherwise they become suggestions.', 'ai',
                (PORT_OUT, PORT_ERROR),
@@ -297,6 +298,7 @@ def _trigger(ctx, _config):
     return NodeResult(
         output={
             'type': trigger.get('type'),
+            'node_id': trigger.get('node_id') or (ctx.node or {}).get('id'),
             'hook': trigger.get('hook'),
             'entity_type': run.entity_type,
             'entity_id': run.entity_id,
@@ -793,12 +795,15 @@ def _notify_audience(ctx, config) -> tuple:
     run's entity, and why the list is not the configured one, if so.
     `entity` is the entity's owner (a war room: its members) and the
     user who triggered the run, or whose action fired the event; when
-    none of them can be reached, the workflow owner is told instead."""
+    none of them can be reached, the workflow owner is told instead.
+    `triggerer` is only that user."""
     run = ctx.run
     owner_id = ctx.snapshot.get('owner_id')
     audience = config.get('audience') or AUDIENCE_ENTITY
     if audience == AUDIENCE_OWNER:
         candidates = [owner_id]
+    elif audience == 'triggerer':
+        candidates = [run.triggered_by_user_id, _event_actor_id(run)]
     elif audience == 'users':
         candidates = [u for u in config.get('user_ids') or [] if isinstance(u, int) and not isinstance(u, bool)]
     elif run.entity_type:

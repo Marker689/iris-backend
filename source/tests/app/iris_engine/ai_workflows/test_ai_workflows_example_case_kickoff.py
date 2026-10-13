@@ -35,6 +35,7 @@ from app.iris_engine.ai_workflows.portable import ai_workflows_portable_tools
 from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run_unconfined
 from tests.app.iris_engine.ai_workflows.harness import OWNER_ID
 from tests.app.iris_engine.ai_workflows.harness import EngineTestCase
+from tests.app.iris_engine.ai_workflows.harness import example_trigger
 from tests.app.iris_engine.ai_workflows.harness import text_turn
 from tests.app.iris_engine.ai_workflows.harness import tool_turn
 from tests.app.iris_engine.ai_workflows.harness import workflow
@@ -70,14 +71,13 @@ class TestsCaseKickoffDocument(TestCase):
     @patch('app.iris_engine.ai_workflows.graph.ai_workflows_db_postload_hooks', return_value=_HOOKS)
     def test_workflow_should_validate(self, _hooks):
         body = ai_workflows_portable_read_workflow(_DOCUMENT)
-        self.assertEqual([], ai_workflows_graph_validate_trigger_config(body['trigger_type'], body['trigger_config']))
-        self.assertEqual([], ai_workflows_graph_validate(body['graph'], body['trigger_type'], body['trigger_config'],
-                                                         body['write_tool_allowlist']))
+        self.assertEqual([], ai_workflows_graph_validate_trigger_config(*example_trigger(body)))
+        self.assertEqual([], ai_workflows_graph_validate(body['graph'], body['write_tool_allowlist']))
 
     def test_workflow_should_only_suggest(self):
         body = ai_workflows_portable_read_workflow(_DOCUMENT)
         self.assertEqual(([], ['on_postload_case_create']),
-                         (body['write_tool_allowlist'], body['trigger_config']['hooks']))
+                         (body['write_tool_allowlist'], example_trigger(body)[1]['hooks']))
 
     def test_requirements_should_match_the_graph(self):
         nodes = list(_NODES.values())
@@ -140,7 +140,7 @@ class TestsCaseKickoffRun(EngineTestCase):
 
     def _run(self):
         body = ai_workflows_portable_read_workflow(_DOCUMENT)
-        wf = workflow(body['graph'], trigger_type='event', trigger_config=body['trigger_config'])
+        wf = workflow(body['graph'], trigger_type='event', trigger_config=example_trigger(body)[1])
         run = ai_workflows_engine_start_run(wf, 'event', run_as_user_id=OWNER_ID, entity_type='case', entity_id=42,
                                             payload={'event': 'on_postload_case_create', 'data': {'case_id': 42}})
         for _ in range(40):

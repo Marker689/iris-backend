@@ -78,6 +78,7 @@ from app.models.ai_workflows import TRIGGER_EVENT
 from app.models.ai_workflows import TRIGGER_MANUAL
 from app.models.ai_workflows import TRIGGER_WORKFLOW
 from app.models.ai_workflows import ai_workflow_trigger_config
+from app.models.ai_workflows import ai_workflow_triggers_of_type
 from app.models.authorization import ac_has_permission_server_administrator
 
 logger = logging.getLogger(__name__)
@@ -224,12 +225,19 @@ def _condition_holds(workflow, condition) -> bool:
         return False
 
 
-def _suppression(workflow, trigger_type, entity_type, entity_id, dedup_key, dedup_minutes, now):
-    trigger_config = ai_workflow_trigger_config(workflow, trigger_type) or {}
+def _candidate(trigger, condition=None, dedup_key=None, dedup_minutes=0) -> dict:
+    """A trigger an occurrence fires: `condition` (expression, context)
+    or None, and the dedup rule of that trigger."""
+    return {'trigger': trigger, 'condition': condition, 'dedup_key': dedup_key, 'dedup_minutes': dedup_minutes}
+
+
+def _suppression(workflow, candidate, entity_type, entity_id, now):
+    dedup_key = candidate['dedup_key']
+    dedup_minutes = candidate['dedup_minutes']
     if dedup_key and dedup_minutes and ai_workflows_db_recent_dedup_run(
             workflow.id, dedup_key, now - datetime.timedelta(minutes=dedup_minutes)) is not None:
         return _SKIP_DUPLICATE
-    if entity_type and trigger_config.get('skip_if_active', True) \
+    if entity_type and candidate['trigger']['config'].get('skip_if_active', True) \
             and ai_workflows_db_active_run_for_entity(workflow.id, entity_type, entity_id) is not None:
         return _SKIP_ACTIVE
     if (workflow.max_runs_per_hour or 0) > 0 and ai_workflows_db_count_runs_since(
@@ -238,12 +246,13 @@ def _suppression(workflow, trigger_type, entity_type, entity_id, dedup_key, dedu
     return None
 
 
-def _guarded_start(workflow, trigger_type, *, entity_type, entity_id, sub_entity, payload, dedup_key=None,
-                   dedup_minutes=0, chain_depth=0, parent_run_id=None, condition=None):
-    """Start a run as the workflow owner. Returns the run, a minimal
-    `skipped` run when the owner may not run on the entity, or None when
-    the condition does not hold or a suppression rule applies (counted
-    on the workflow). `condition` is (expression, context) or None."""
+def _guarded_start(workflow, trigger_type, candidates, *, entity_type, entity_id, sub_entity, payload,
+                   chain_depth=0, parent_run_id=None):
+    """Start a run as the workflow owner, at the trigger node of the first
+    of `candidates` (see `_candidate`, in node order) whose condition
+    holds. Returns the run, a minimal `skipped` run when the owner may not
+    run on the entity, or None when no condition holds or a suppression
+    rule applies (counted on the workflow)."""
     max_depth = int(current_app.config.get('AI_WORKFLOWS_MAX_CHAIN_DEPTH', 2))
     if chain_depth > max_depth:
         ai_workflows_engine_skip_run(workflow, trigger_type, _SKIP_CHAIN)
@@ -257,11 +266,13 @@ def _guarded_start(workflow, trigger_type, *, entity_type, entity_id, sub_entity
         'parent_run_id': parent_run_id,
     }
     # Access first, unlocked (the check may commit), and before the
-    # condition: a refused run is recorded whatever the condition says
+    # conditions: a refused run is recorded whatever they say
     denial = ai_workflows_engine_access_denial(workflow, workflow.owner_id, entity_type, entity_id)
     if denial is not None:
-        return ai_workflows_engine_insert_run(workflow, trigger_type, denial=denial, **common)
-    if not _condition_holds(workflow, condition):
+        return ai_workflows_engine_insert_run(workflow, trigger_type, denial=denial,
+                                              trigger_node_id=candidates[0]['trigger']['node_id'], **common)
+    chosen = next((c for c in candidates if _condition_holds(workflow, c['condition'])), None)
+    if chosen is None:
         return None
 
     # The workflow lock serialises concurrent triggers of the workflow
@@ -271,17 +282,31 @@ def _guarded_start(workflow, trigger_type, *, entity_type, entity_id, sub_entity
     if workflow is None or not workflow.is_active:
         ai_workflows_db_commit()
         return None
-    reason = _suppression(workflow, trigger_type, entity_type, entity_id, dedup_key, dedup_minutes, ai_workflows_db_utcnow())
+    reason = _suppression(workflow, chosen, entity_type, entity_id, ai_workflows_db_utcnow())
     if reason is not None:
         # Commits, releasing the lock
         ai_workflows_engine_skip_run(workflow, trigger_type, reason)
         return None
-    return ai_workflows_engine_insert_run(workflow, trigger_type, dedup_key=dedup_key, **common)
+    return ai_workflows_engine_insert_run(workflow, trigger_type, dedup_key=chosen['dedup_key'],
+                                          trigger_node_id=chosen['trigger']['node_id'], **common)
+
+
+def _event_candidate(workflow, trigger, event, entity_type, entity_id, sub_entity) -> dict:
+    config = trigger['config']
+    expression = config.get('condition')
+    condition = (expression, _condition_context(event, entity_type, entity_id)) if expression else None
+    # Per trigger node: each has its own dedup window
+    node_key = f'{trigger["node_id"]}:' if trigger.get('node_id') else ''
+    sub_key = f':{sub_entity.get("type")}:{sub_entity.get("id")}' if sub_entity else ''
+    return _candidate(trigger, condition, f'{workflow.id}:{node_key}{entity_type}:{entity_id}{sub_key}',
+                      _int(config.get('dedup_minutes')) or 0)
 
 
 def ai_workflows_triggers_process_event(event, workflow_ids, chain_depth=None, parent_run_id=None) -> list:
-    """Start the runs an event triggers. Returns the ids of the runs
-    written (refused ones included; suppressed triggers write none)."""
+    """Start the runs an event triggers: one per workflow at most, at its
+    first event trigger matching the event whose condition holds.
+    Returns the ids of the runs written (refused ones included;
+    suppressed triggers write none)."""
     hook_name = event.get('event')
     entity_type, entity_id, sub_entity = ai_workflows_triggers_entity(event)
     run_ids = []
@@ -292,18 +317,17 @@ def ai_workflows_triggers_process_event(event, workflow_ids, chain_depth=None, p
     for workflow_id in workflow_ids or []:
         try:
             workflow = ai_workflows_db_get(workflow_id)
-            config = ai_workflow_trigger_config(workflow, TRIGGER_EVENT) if workflow is not None else None
-            if config is None or not workflow.is_active or not _hooks_match(config.get('hooks'), hook_name):
+            if workflow is None or not workflow.is_active:
                 continue
-            expression = config.get('condition')
-            condition = (expression, _condition_context(event, entity_type, entity_id)) if expression else None
-            sub_key = f':{sub_entity.get("type")}:{sub_entity.get("id")}' if sub_entity else ''
+            candidates = [_event_candidate(workflow, trigger, event, entity_type, entity_id, sub_entity)
+                          for trigger in ai_workflow_triggers_of_type(workflow, TRIGGER_EVENT)
+                          if _hooks_match(trigger['config'].get('hooks'), hook_name)]
+            if not candidates:
+                continue
             run = _guarded_start(
-                workflow, TRIGGER_EVENT,
+                workflow, TRIGGER_EVENT, candidates,
                 entity_type=entity_type, entity_id=entity_id, sub_entity=sub_entity, payload=event,
-                dedup_key=f'{workflow.id}:{entity_type}:{entity_id}{sub_key}',
-                dedup_minutes=_int(config.get('dedup_minutes')) or 0,
-                chain_depth=depth, parent_run_id=parent_run_id, condition=condition,
+                chain_depth=depth, parent_run_id=parent_run_id,
             )
             if run is not None:
                 run_ids.append(run.id)
@@ -338,12 +362,7 @@ def _accessible_targets(workflow, entity_type, fetch, limit, scope=None) -> list
     return [(entity_type, i) for i in targets[:limit]]
 
 
-def _cron_expression(workflow) -> str:
-    return (ai_workflow_trigger_config(workflow, TRIGGER_CRON) or {}).get('cron') or ''
-
-
-def _cron_targets(workflow) -> list:
-    config = ai_workflow_trigger_config(workflow, TRIGGER_CRON) or {}
+def _cron_targets(workflow, config) -> list:
     target = config.get('target') or 'none'
     limit = _int(config.get('max_targets')) or _DEFAULT_MAX_TARGETS
     if target == 'war_rooms':
@@ -358,18 +377,54 @@ def _cron_targets(workflow) -> list:
     return [(None, None)]
 
 
-def _claim_cron(workflow_id, now):
-    """Lock the workflow and record the fire; None when not due (any
-    more: another tick took it)."""
-    workflow = ai_workflows_db_lock_workflow(workflow_id)
-    expression = _cron_expression(workflow) if workflow is not None else ''
-    if workflow is None or not workflow.is_active or not expression \
-            or not ai_workflows_cron_is_due(expression, now, workflow.last_fired_at):
-        ai_workflows_db_commit()
+def _cron_last_fired(workflow, trigger):
+    """When the schedule `trigger` last fired; before each schedule kept
+    its own, the last fire of the workflow."""
+    fired = workflow.cron_fired_at if isinstance(workflow.cron_fired_at, dict) else {}
+    if not fired:
+        return workflow.last_fired_at
+    value = fired.get(trigger.get('node_id') or '')
+    try:
+        return datetime.datetime.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
         return None
+
+
+def _cron_due(workflow, now) -> list:
+    """The schedules of `workflow` due at `now`."""
+    due = []
+    for trigger in ai_workflow_triggers_of_type(workflow, TRIGGER_CRON):
+        expression = trigger['config'].get('cron') or ''
+        try:
+            if expression and ai_workflows_cron_is_due(expression, now, _cron_last_fired(workflow, trigger)):
+                due.append(trigger)
+        except ValueError as e:
+            logger.warning(f'AI workflow #{workflow.id} has an invalid schedule: {e}')
+    return due
+
+
+def _claim_cron(workflow_id, now):
+    """Lock the workflow and record the fires; (workflow, due schedules),
+    or (None, []) when none is due (any more: another tick took them)."""
+    workflow = ai_workflows_db_lock_workflow(workflow_id)
+    due = _cron_due(workflow, now) if workflow is not None and workflow.is_active else []
+    if not due:
+        ai_workflows_db_commit()
+        return None, []
+    schedules = [t.get('node_id') or '' for t in ai_workflow_triggers_of_type(workflow, TRIGGER_CRON)]
+    fired = workflow.cron_fired_at if isinstance(workflow.cron_fired_at, dict) else {}
+    if fired:
+        # Schedules removed since are forgotten
+        fired = {node_id: value for node_id, value in fired.items() if node_id in schedules}
+    elif workflow.last_fired_at is not None:
+        # The first fire per schedule: the others keep the workflow's last
+        fired = {node_id: workflow.last_fired_at.isoformat() for node_id in schedules}
+    for trigger in due:
+        fired[trigger.get('node_id') or ''] = now.isoformat()
+    workflow.cron_fired_at = fired
     workflow.last_fired_at = now
     ai_workflows_db_commit()
-    return workflow
+    return workflow, due
 
 
 def ai_workflows_triggers_cron_tick(now=None) -> list:
@@ -378,20 +433,16 @@ def ai_workflows_triggers_cron_tick(now=None) -> list:
     run_ids = []
     for candidate in ai_workflows_db_list_active(TRIGGER_CRON):
         try:
-            expression = _cron_expression(candidate)
-            if not expression or not ai_workflows_cron_is_due(expression, now, candidate.last_fired_at):
+            if not _cron_due(candidate, now):
                 continue
-            workflow = _claim_cron(candidate.id, now)
-            if workflow is None:
-                continue
-            payload = {'cron': expression, 'fired_at': now.isoformat()}
-            for entity_type, entity_id in _cron_targets(workflow):
-                run = _guarded_start(workflow, TRIGGER_CRON, entity_type=entity_type, entity_id=entity_id,
-                                     sub_entity=None, payload=payload)
-                if run is not None:
-                    run_ids.append(run.id)
-        except ValueError as e:
-            logger.warning(f'AI workflow #{candidate.id} has an invalid schedule: {e}')
+            workflow, due = _claim_cron(candidate.id, now)
+            for trigger in due:
+                payload = {'cron': trigger['config'].get('cron'), 'fired_at': now.isoformat()}
+                for entity_type, entity_id in _cron_targets(workflow, trigger['config']):
+                    run = _guarded_start(workflow, TRIGGER_CRON, [_candidate(trigger)], entity_type=entity_type,
+                                         entity_id=entity_id, sub_entity=None, payload=payload)
+                    if run is not None:
+                        run_ids.append(run.id)
         except Exception:
             logger.exception(f'AI workflow #{candidate.id} schedule failed')
             ai_workflows_db_rollback()
@@ -400,25 +451,38 @@ def ai_workflows_triggers_cron_tick(now=None) -> list:
 
 # ---- Object menus -----------------------------------------------------------
 
-def ai_workflows_triggers_menu_types(workflow) -> list:
-    """Object menus (`on_manual_trigger_<type>`) an active manual workflow shows in."""
-    if workflow is None or not workflow.is_active:
+def ai_workflows_triggers_menu_triggers(workflow, menu_type) -> list:
+    """The manual triggers of an active workflow shown in the
+    `on_manual_trigger_<menu_type>` object menus, in node order."""
+    if workflow is None or not workflow.is_active or menu_type not in MENU_ENTITY_TYPES:
         return []
-    menus = (ai_workflow_trigger_config(workflow, TRIGGER_MANUAL) or {}).get('menus')
-    return [m for m in menus if m in MENU_ENTITY_TYPES] if isinstance(menus, list) else []
+    return [trigger for trigger in ai_workflow_triggers_of_type(workflow, TRIGGER_MANUAL)
+            if isinstance(trigger['config'].get('menus'), list) and menu_type in trigger['config']['menus']]
 
 
-def ai_workflows_triggers_start_from_menu(workflow_id, event, user_id, scope_mask=None) -> tuple:
-    """Start a run of a manual workflow from an object menu entry. It acts
-    as the clicking user `user_id` (their permissions, personal keys and
-    daily budget), bounded by `scope_mask`, on the entity of `event` (the
+def _menu_trigger(workflow, menu_type, trigger_node_id):
+    """The manual trigger a menu entry starts: the one of node
+    `trigger_node_id`, else the first offered in that menu."""
+    triggers = ai_workflows_triggers_menu_triggers(workflow, menu_type)
+    return next((t for t in triggers if t['node_id'] == trigger_node_id), triggers[0] if triggers else None)
+
+
+def ai_workflows_triggers_start_from_menu(workflow_id, event, user_id, scope_mask=None,
+                                         trigger_node_id=None) -> tuple:
+    """Start a run of a manual workflow from an object menu entry, at its
+    trigger node `trigger_node_id` (the first manual trigger offered in
+    that menu when None or not one). It acts as the clicking user
+    `user_id` (their permissions, personal keys and daily budget),
+    bounded by `scope_mask`, on the entity of `event` (the
     `on_manual_trigger_*` event of the clicked object).
 
     Returns (run, reason): the run (a minimal `skipped` one when the user
     may not run it on the entity, `reason` then saying why), or None and
     why nothing started."""
     workflow = ai_workflows_db_get(workflow_id)
-    if not _enabled() or event.get('object_type') not in ai_workflows_triggers_menu_types(workflow):
+    menu_type = event.get('object_type')
+    trigger = _menu_trigger(workflow, menu_type, trigger_node_id) if _enabled() else None
+    if trigger is None:
         return None, _NOT_IN_MENU
     entity_type, entity_id, sub_entity = ai_workflows_triggers_entity(event)
     if entity_type is None or entity_id is None:
@@ -431,6 +495,7 @@ def ai_workflows_triggers_start_from_menu(workflow_id, event, user_id, scope_mas
         'triggered_by_user_id': user_id,
         'run_as_user_id': user_id,
         'scope_mask': scope_mask,
+        'trigger_node_id': trigger['node_id'],
     }
     # Access first, unlocked (the check may commit)
     denial = ai_workflows_engine_access_denial(workflow, user_id, entity_type, entity_id, scope_mask)
@@ -441,7 +506,7 @@ def ai_workflows_triggers_start_from_menu(workflow_id, event, user_id, scope_mas
     # holds against concurrent clicks. No dedup nor active-run rule: the
     # analyst asked for this run.
     workflow = ai_workflows_db_lock_workflow(workflow_id)
-    if not ai_workflows_triggers_menu_types(workflow):
+    if _menu_trigger(workflow, menu_type, trigger['node_id']) is None:
         ai_workflows_db_commit()
         return None, _NOT_IN_MENU
     if _hourly_cap_reached(workflow):
@@ -461,6 +526,11 @@ def _hourly_cap_reached(workflow) -> bool:
 def _callable(workflow) -> bool:
     return workflow is not None and workflow.is_active \
         and ai_workflow_trigger_config(workflow, TRIGGER_WORKFLOW) is not None
+
+
+def _workflow_trigger_node(workflow):
+    triggers = ai_workflow_triggers_of_type(workflow, TRIGGER_WORKFLOW)
+    return triggers[0]['node_id'] if triggers else None
 
 
 def _may_call(caller, workflow) -> bool:
@@ -510,6 +580,7 @@ def ai_workflows_triggers_start_from_workflow(caller, node_id, workflow_id, inpu
         'scope_mask': caller.scope_mask,
         'chain_depth': depth,
         'parent_run_id': caller.id,
+        'trigger_node_id': _workflow_trigger_node(workflow),
     }
     # Access first, unlocked (the check may commit)
     denial = ai_workflows_engine_access_denial(workflow, caller.run_as_user_id, caller.entity_type,

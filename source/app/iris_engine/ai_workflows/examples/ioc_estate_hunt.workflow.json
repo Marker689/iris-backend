@@ -5,22 +5,21 @@
   "workflow": {
     "name": "IOC hunt across the estate",
     "description": "When an IOC (IP, domain, URL, hash or file name) is added to a case, asks the analysts of the case whether to look it up; when they say yes, searches the SIEM for it over the last 30 days, counts the hits per host and, when hosts outside the case saw it, notifies the case owner and whoever added the IOC and suggests adding each of those hosts (up to 5, one a minute) to the case as an asset linked to the IOC. Works with Elasticsearch / OpenSearch (ECS fields) and Splunk (CIM fields): set the input siem of the \"SIEM query\" node to elastic or splunk, then the URL of the matching search node (your cluster and index, or your Splunk management port); adapt the field lists at the top of the \"SIEM query\" script to your data. Needs the keystore entry SIEM_API_KEY (an Elastic API key, or a Splunk authentication token of a user with read-only search rights, restricted to the SIEM host) and, for an internal SIEM, IRIS_AI_WORKFLOWS_ALLOW_PRIVATE_EGRESS. A question left unanswered for a day, or dismissed, skips the search; to search every IOC without asking, link \"Something to hunt?\" straight to \"Splunk?\". For long searches, switch the request to async mode.",
-    "trigger_type": "event",
-    "trigger_config": {
-      "hooks": [
-        "on_postload_ioc_create"
-      ],
-      "condition": "",
-      "dedup_minutes": 60,
-      "skip_if_active": false
-    },
     "graph": {
       "nodes": [
         {
           "id": "trigger",
           "type": "trigger",
           "label": "IOC created",
-          "config": {},
+          "config": {
+            "trigger_type": "event",
+            "hooks": [
+              "on_postload_ioc_create"
+            ],
+            "condition": "",
+            "dedup_minutes": 60,
+            "skip_if_active": false
+          },
           "position": {
             "x": 0,
             "y": 0

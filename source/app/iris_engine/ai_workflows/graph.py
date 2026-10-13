@@ -16,13 +16,13 @@
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-"""Workflow definition validation: the graph and the trigger config.
+"""Workflow definition validation: the graph and its trigger nodes.
 
 Errors are `{node_id, field, message}` dicts (`node_id` None for errors
-about the graph as a whole or the trigger config) so the editor can
-point at the faulty node.
+about the graph as a whole) so the editor can point at the faulty node.
 """
 
+import copy
 import json
 import logging
 import re
@@ -74,6 +74,7 @@ from app.models.ai_workflows import TRIGGER_MANUAL
 from app.models.ai_workflows import TRIGGER_TYPES
 from app.models.ai_workflows import TRIGGER_WEBHOOK
 from app.models.ai_workflows import TRIGGER_WORKFLOW
+from app.models.ai_workflows import ai_workflow_trigger_of_node
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,10 @@ CRON_TARGETS = ('none', 'war_rooms', 'cases')
 HTTP_METHODS = ('GET', 'POST', 'PUT', 'PATCH', 'DELETE')
 
 _MAX_NODES = 200
+_MAX_TRIGGERS = 10
+# Trigger types a workflow holds at most once: the inbound webhook URL
+# and the "called by a workflow" entry point are per workflow
+_SINGLE_TRIGGER_TYPES = (TRIGGER_WEBHOOK, TRIGGER_WORKFLOW)
 _MAX_BLOCK_NODES = 50
 _MAX_EDGES = 1000
 _MAX_DEFINITION_BYTES = 1024 * 1024
@@ -116,11 +121,67 @@ def ai_workflows_graph_nodes(graph) -> dict:
     return {n['id']: n for n in nodes if isinstance(n, dict) and isinstance(n.get('id'), str)}
 
 
-def ai_workflows_graph_trigger_id(graph):
-    for node in (graph or {}).get('nodes') or []:
-        if isinstance(node, dict) and node.get('type') == NODE_TRIGGER:
-            return node.get('id')
-    return None
+def ai_workflows_graph_trigger_ids(graph) -> list:
+    """Ids of the trigger nodes, in node order."""
+    return [node.get('id') for node in (graph or {}).get('nodes') or []
+            if isinstance(node, dict) and node.get('type') == NODE_TRIGGER]
+
+
+def ai_workflows_graph_trigger_id(graph, node_id=None):
+    """The trigger node a run starts at: `node_id` when it is one, else
+    the first; None when the graph has none."""
+    trigger_ids = ai_workflows_graph_trigger_ids(graph)
+    if node_id is not None and node_id in trigger_ids:
+        return node_id
+    return trigger_ids[0] if trigger_ids else None
+
+
+def _free_id(prefix, taken) -> str:
+    index = 1
+    while f'{prefix}{index}' in taken:
+        index += 1
+    taken.add(f'{prefix}{index}')
+    return f'{prefix}{index}'
+
+
+def ai_workflows_graph_upgrade_triggers(graph, triggers):
+    """The graph of a definition saved before trigger nodes carried their
+    trigger: its single trigger node takes the first of `triggers`
+    ([{type, config}]), each other trigger becoming a trigger node below
+    it with the same outgoing links. Any other graph is returned as is."""
+    if not isinstance(graph, dict) or not isinstance(graph.get('nodes'), list):
+        return graph
+    trigger_nodes = [n for n in graph['nodes'] if isinstance(n, dict) and n.get('type') == NODE_TRIGGER]
+    triggers = [t for t in triggers or [] if isinstance(t, dict) and isinstance(t.get('type'), str)]
+    if len(trigger_nodes) != 1 or ai_workflow_trigger_of_node(trigger_nodes[0]) is not None or not triggers:
+        return graph
+    graph = copy.deepcopy(graph)
+    original = next(n for n in graph['nodes'] if isinstance(n, dict) and n.get('type') == NODE_TRIGGER)
+    edges = graph.get('edges') if isinstance(graph.get('edges'), list) else []
+    outgoing = [e for e in edges if isinstance(e, dict) and e.get('source') == original.get('id')]
+    taken = {n.get('id') for n in graph['nodes'] if isinstance(n, dict)} | \
+        {e.get('id') for e in edges if isinstance(e, dict)}
+
+    def _with_trigger(node, trigger):
+        config = trigger.get('config') if isinstance(trigger.get('config'), dict) else {}
+        return {**node, 'config': {'trigger_type': trigger['type'], **config}}
+
+    nodes = []
+    for node in graph['nodes']:
+        nodes.append(_with_trigger(node, triggers[0]) if node is original else node)
+    position = original.get('position') if isinstance(original.get('position'), dict) else {}
+    for offset, trigger in enumerate(triggers[1:], start=1):
+        node_id = _free_id('n', taken)
+        node = {key: value for key, value in original.items() if key not in ('id', 'position', 'label')}
+        node['id'] = node_id
+        if position:
+            node['position'] = {**position, 'y': (position.get('y') or 0) + 120 * offset}
+        nodes.append(_with_trigger(node, trigger))
+        for edge in outgoing:
+            edges.append({**edge, 'id': _free_id('e', taken), 'source': node_id})
+    graph['nodes'] = nodes
+    graph['edges'] = edges
+    return graph
 
 
 def ai_workflows_graph_targets(graph, node_id, port) -> list:
@@ -284,31 +345,22 @@ def ai_workflows_graph_validate_trigger_config(trigger_type, trigger_config) -> 
     return []
 
 
-def ai_workflows_graph_validate_triggers(triggers) -> list:
-    """Errors of a workflow's triggers `[{type, config}]`: at least one,
-    at most one per type, each config valid (fields
-    `triggers.<index>.config.<key>`)."""
-    if not isinstance(triggers, list) or not triggers:
-        return [_error(None, 'triggers', 'Add at least one trigger')]
-    errors = []
-    seen = set()
-    for index, trigger in enumerate(triggers):
-        if not isinstance(trigger, dict):
-            errors.append(_error(None, f'triggers.{index}', 'Must be an object'))
-            continue
-        trigger_type = trigger.get('type')
-        if trigger_type in seen:
-            errors.append(_error(None, f'triggers.{index}.type', f'There is already a {trigger_type} trigger'))
-            continue
-        seen.add(trigger_type)
-        for error in ai_workflows_graph_validate_trigger_config(trigger_type, trigger.get('config')):
-            field = error['field'] or ''
-            if field == 'trigger_type':
-                field = f'triggers.{index}.type'
-            elif field.startswith('trigger_config'):
-                field = f'triggers.{index}.config{field[len("trigger_config"):]}'
-            errors.append({**error, 'field': field})
-    return errors
+def _check_trigger(check):
+    """A trigger node carries its trigger: `trigger_type` and that
+    type's keys, errors on the node with the key as field."""
+    config = check.config
+    trigger_type = config.get('trigger_type')
+    if trigger_type in (None, ''):
+        check.add('trigger_type', 'Select what starts the run')
+        return
+    trigger_config = {k: v for k, v in config.items() if k != 'trigger_type'}
+    for error in ai_workflows_graph_validate_trigger_config(trigger_type, trigger_config):
+        field = error['field'] or ''
+        if field.startswith('trigger_config.'):
+            field = field[len('trigger_config.'):]
+        elif field == 'trigger_config':
+            field = 'config'
+        check.add(field, error['message'])
 
 
 # ---- Node configs ---------------------------------------------------------------
@@ -529,7 +581,7 @@ def _check_action(check, allowlist):
 
 
 def _check_notify(check):
-    check.one_of('audience', (AUDIENCE_ENTITY, AUDIENCE_OWNER, 'users'), AUDIENCE_ENTITY)
+    check.one_of('audience', (AUDIENCE_ENTITY, 'triggerer', AUDIENCE_OWNER, 'users'), AUDIENCE_ENTITY)
     if check.config.get('audience') == 'users':
         _check_user_ids(check)
     if check.required('title'):
@@ -629,7 +681,9 @@ def _check_node(node, allowlist, errors):
         return
     check = _Checker(node_id, config, errors)
     node_type = node.get('type')
-    if node_type == NODE_AI_AGENT:
+    if node_type == NODE_TRIGGER:
+        _check_trigger(check)
+    elif node_type == NODE_AI_AGENT:
         _check_ai_agent(check, allowlist)
     elif node_type == NODE_CONDITION:
         _check_condition(check)
@@ -663,6 +717,18 @@ def _check_node(node, allowlist, errors):
 
 # ---- Graph structure ------------------------------------------------------------
 
+def _reachable(adjacency, start) -> set:
+    """Node ids reachable from `start`, itself included."""
+    reached = {start}
+    queue = [start]
+    while queue:
+        for target in adjacency.get(queue.pop(), ()):
+            if target not in reached:
+                reached.add(target)
+                queue.append(target)
+    return reached
+
+
 def _structure_errors(nodes, edges, fragment=False) -> tuple:
     """(errors, {node_id: node}, adjacency) of the graph shape. A
     `fragment` (saved block) has no trigger and needs no reachability."""
@@ -690,8 +756,10 @@ def _structure_errors(nodes, edges, fragment=False) -> tuple:
     triggers = [n for n in by_id.values() if n.get('type') == NODE_TRIGGER]
     if fragment and triggers:
         errors.append(_error(None, 'nodes', 'A block cannot hold a trigger node'))
-    elif not fragment and len(triggers) != 1:
-        errors.append(_error(None, 'nodes', 'A workflow needs exactly one trigger node'))
+    elif not fragment and not triggers:
+        errors.append(_error(None, 'nodes', 'A workflow needs a trigger node'))
+    elif not fragment and len(triggers) > _MAX_TRIGGERS:
+        errors.append(_error(None, 'nodes', f'A workflow has at most {_MAX_TRIGGERS} trigger nodes'))
 
     adjacency = {node_id: [] for node_id in by_id}
     for index, edge in enumerate(edges):
@@ -709,7 +777,7 @@ def _structure_errors(nodes, edges, fragment=False) -> tuple:
                                  f'{source["type"]} nodes have no "{port}" output'))
             continue
         if target.get('type') == NODE_TRIGGER:
-            errors.append(_error(target['id'], f'edges.{index}', 'Nothing can lead back to the trigger'))
+            errors.append(_error(target['id'], f'edges.{index}', 'Nothing can lead to a trigger'))
             continue
         bad_side = next((key for key in ('source_side', 'target_side')
                          if edge.get(key) is not None and edge.get(key) not in _HANDLE_SIDES), None)
@@ -719,17 +787,13 @@ def _structure_errors(nodes, edges, fragment=False) -> tuple:
             continue
         adjacency[source['id']].append(target['id'])
 
-    if not fragment and len(triggers) == 1:
-        reached = {triggers[0]['id']}
-        queue = [triggers[0]['id']]
-        while queue:
-            for target in adjacency[queue.pop()]:
-                if target not in reached:
-                    reached.add(target)
-                    queue.append(target)
+    if not fragment and triggers:
+        reached = set()
+        for trigger in triggers:
+            reached |= _reachable(adjacency, trigger['id'])
         for node_id in by_id:
             if node_id not in reached:
-                errors.append(_error(node_id, None, 'Not reachable from the trigger'))
+                errors.append(_error(node_id, None, 'Not reachable from a trigger'))
 
     return errors, by_id, adjacency
 
@@ -780,9 +844,36 @@ def ai_workflows_graph_validate_node(node, write_tool_allowlist) -> list:
     return errors
 
 
-def ai_workflows_graph_validate(graph, trigger_type, trigger_config, write_tool_allowlist, triggers=None) -> list:
-    """Errors of a workflow graph; `triggers` ([{type, config}]) when the
-    workflow has several, else its single `trigger_type`."""
+def _trigger_errors(by_id, adjacency) -> list:
+    """Across the trigger nodes: a webhook and a workflow-call trigger at
+    most once each, and no node needing an entity after a schedule that
+    has none."""
+    errors = []
+    seen = set()
+    for node in by_id.values():
+        if node.get('type') != NODE_TRIGGER:
+            continue
+        trigger = ai_workflow_trigger_of_node(node)
+        if trigger is None:
+            continue
+        if trigger['type'] in _SINGLE_TRIGGER_TYPES:
+            if trigger['type'] in seen:
+                errors.append(_error(node['id'], 'trigger_type',
+                                     f'A workflow has at most one {trigger["type"]} trigger'))
+            seen.add(trigger['type'])
+        if trigger['type'] == TRIGGER_CRON and trigger['config'].get('target') in (None, 'none'):
+            for node_id in sorted(_reachable(adjacency, node['id'])):
+                reached = by_id[node_id]
+                if reached.get('type') in (NODE_FIND_RELATED, NODE_FIND_WAR_ROOM_TASKS) \
+                        and (reached.get('config') or {}).get('source') != 'search':
+                    error = _error(node_id, None, 'Needs an entity, but a schedule without target leads here')
+                    if error not in errors:
+                        errors.append(error)
+    return errors
+
+
+def ai_workflows_graph_validate(graph, write_tool_allowlist) -> list:
+    """Errors of a workflow graph, its trigger nodes included."""
     if not isinstance(graph, dict):
         return [_error(None, 'graph', 'Must be an object')]
     nodes = graph.get('nodes')
@@ -813,14 +904,5 @@ def ai_workflows_graph_validate(graph, trigger_type, trigger_config, write_tool_
     errors.extend(structure)
     for node in by_id.values():
         _check_node(node, allowlist, errors)
-
-    if triggers is None:
-        triggers = [{'type': trigger_type, 'config': trigger_config}]
-    entityless = any(isinstance(t, dict) and t.get('type') == TRIGGER_CRON
-                     and (t.get('config') or {}).get('target') in (None, 'none') for t in triggers)
-    if entityless:
-        for node in by_id.values():
-            if node.get('type') in (NODE_FIND_RELATED, NODE_FIND_WAR_ROOM_TASKS) \
-                    and (node.get('config') or {}).get('source') != 'search':
-                errors.append(_error(node['id'], None, 'Needs an entity, but this schedule has no target'))
+    errors.extend(_trigger_errors(by_id, adjacency))
     return errors

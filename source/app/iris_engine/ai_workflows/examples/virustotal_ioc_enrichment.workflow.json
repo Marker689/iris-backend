@@ -5,23 +5,22 @@
   "workflow": {
     "name": "VirusTotal IOC enrichment",
     "description": "On IOC creation or update, looks the IOC (hash, IP, domain or URL) up on VirusTotal, stores the verdict and a readable summary (detection ratio, threat label and names, flagging engines, reputation, dates, network or registrar) in the IOC enrichment (\"virustotal\" key) and a vt:<verdict> tag, and notifies the case owner and whoever added the IOC when it is malicious. Needs the keystore entry VIRUSTOTAL_API_KEY (restrict it to www.virustotal.com). Each IOC value is looked up at most once a day.",
-    "trigger_type": "event",
-    "trigger_config": {
-      "hooks": [
-        "on_postload_ioc_create",
-        "on_postload_ioc_update"
-      ],
-      "condition": "",
-      "dedup_minutes": 60,
-      "skip_if_active": true
-    },
     "graph": {
       "nodes": [
         {
           "id": "trigger",
           "type": "trigger",
           "label": "IOC created or updated",
-          "config": {},
+          "config": {
+            "trigger_type": "event",
+            "hooks": [
+              "on_postload_ioc_create",
+              "on_postload_ioc_update"
+            ],
+            "condition": "",
+            "dedup_minutes": 60,
+            "skip_if_active": true
+          },
           "position": {
             "x": 0,
             "y": 0

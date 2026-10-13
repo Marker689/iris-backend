@@ -83,6 +83,7 @@ from app.models.ai_workflows import INBOUND_CALLBACK
 from app.models.ai_workflows import INBOUND_TRIGGER
 from app.models.ai_workflows import TRIGGER_WEBHOOK
 from app.models.ai_workflows import ai_workflow_trigger_config
+from app.models.ai_workflows import ai_workflow_triggers_of_type
 from app.models.ai_workflows import WAIT_CALLBACK
 from app.models.ai_workflows import WAIT_PENDING
 
@@ -434,8 +435,10 @@ def _start_locked(workflow_id, signature_sha256, denial, entity_type, entity_id,
     # of the same signature sees it
     ai_workflows_db_add(event)
     try:
+        webhook = ai_workflow_triggers_of_type(workflow, TRIGGER_WEBHOOK)
         run = ai_workflows_engine_insert_run(workflow, TRIGGER_WEBHOOK, denial=denial, entity_type=entity_type,
-                                             entity_id=entity_id, payload=payload)
+                                             entity_id=entity_id, payload=payload,
+                                             trigger_node_id=webhook[0]['node_id'] if webhook else None)
     except Exception:
         logger.exception(f'Starting AI workflow #{workflow_id} from an inbound webhook failed')
         ai_workflows_db_rollback()

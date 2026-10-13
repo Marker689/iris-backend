@@ -13,7 +13,6 @@ This guide is for people and for LLMs. It explains how to write an IRIS AI workf
   "workflow": {
     "name": "Short name",
     "description": "What it does and why",
-    "triggers": [{"type": "event", "config": {"hooks": ["on_postload_alert_create"]}}],
     "graph": {"nodes": [], "edges": []},
     "write_tool_allowlist": [],
     "max_runs_per_hour": 60,
@@ -25,7 +24,7 @@ This guide is for people and for LLMs. It explains how to write an IRIS AI workf
 ```
 
 - A bare `workflow` object without the envelope is also accepted.
-- A single `trigger_type` with its `trigger_config` is still accepted in place of `triggers`.
+- The triggers are set on the `trigger` nodes of the graph (section 3). A document written before, with a `triggers` list (or a single `trigger_type` with its `trigger_config`) and one config-less `trigger` node, is still accepted: each trigger becomes a `trigger` node.
 - `requirements`, `warnings`, `exported_at` and `iris_version` are informative and ignored on import.
 - An imported workflow is created **inactive** and owned by the importer, with no customer scope. Review it, create the keystore entries it needs, then activate it.
 
@@ -55,24 +54,29 @@ A block is a reusable fragment of graph (for example "look a hash up on VirusTot
 
 ```json
 {
-  "nodes": [{"id": "trigger", "type": "trigger", "label": "Start", "config": {}, "position": {"x": 0, "y": 0}}],
+  "nodes": [{"id": "trigger", "type": "trigger", "label": "New alert",
+             "config": {"trigger_type": "event", "hooks": ["on_postload_alert_create"]}, "position": {"x": 0, "y": 0}}],
   "edges": [{"id": "e1", "source": "trigger", "target": "next", "source_port": "out"}]
 }
 ```
 
 - **Node ids** are 1–64 characters from letters, digits, `_ . : -`, and are unique. Use short meaningful ids (`vt`, `summary`): later nodes reference outputs as `nodes.<id>.output`.
-- **Triggers.** A workflow has exactly **one** `trigger` node, whichever of its triggers starts the run. Every node must be reachable from it, and no edge may lead back to it.
+- **Triggers.** A workflow has 1 to 10 `trigger` nodes, each starting the run its own way (section 3). Every node must be reachable from one of them, and no edge may lead to a trigger.
 - **Edges** leave a node through a **port** (`source_port`, default `out`). The ports of each node type are listed in the catalogue, for example a condition has `true`/`false` and an HTTP request has `out`/`error`/`timeout`. Several edges may leave one port; their targets run in order.
 - **Errors.** When a node fails, the run follows its `error` port if one is wired; otherwise the run fails.
-- **Loops** are allowed: an edge may lead back to an earlier node (never to the trigger). Exit the loop with a `condition`, for example on a counter kept by a `set_variables` node, and read each pass through `vars` or `nodes.<id>.output`, which holds the output of the latest pass. A run fails once it has executed `IRIS_AI_WORKFLOWS_MAX_STEPS_PER_RUN` nodes (1000 by default), so a loop that never exits stops there; every node of every pass counts.
+- **Loops** are allowed: an edge may lead back to an earlier node (never to a trigger). Exit the loop with a `condition`, for example on a counter kept by a `set_variables` node, and read each pass through `vars` or `nodes.<id>.output`, which holds the output of the latest pass. A run fails once it has executed `IRIS_AI_WORKFLOWS_MAX_STEPS_PER_RUN` nodes (1000 by default), so a loop that never exits stops there; every node of every pass counts.
 - **Optional fields.** `label` and `position` are optional; the editor lays out nodes without a position. `handles` (editor only) sets the sides a node's connectors are drawn on: `{"input": "top", "output": "bottom"}`, each side being `left`, `top`, `right` or `bottom` (default: input on the left, outputs on the right). An edge may also carry `source_side` / `target_side` (same values) when it leaves or enters a node on another side than its default; the editor sets them when a link is drawn from or dropped on another side.
 - **Limits.** A workflow has at most 200 nodes, 1000 edges and 1 MB.
 
 ## 3. Triggers
 
-`triggers` is a list of `{type, config}`, with at most one trigger of each type. A workflow can, for example, run on an event, every night and from a menu. The run starts at the `trigger` node whichever trigger fired; `trigger.type` tells which one.
+Each `trigger` node carries one trigger: its config is `trigger_type` plus the keys of that type, e.g. `{"trigger_type": "cron", "cron": "0 7 * * *", "target": "none"}`. A workflow can, for example, run on an event, every night and from a menu, each from its own `trigger` node wired to its own path or to shared nodes. A type may appear on several nodes (two schedules, two events with different conditions, two menu entries), except `webhook` and `workflow`: at most one each. The run starts at the node whose trigger fired; `trigger.type` and `trigger.node_id` tell which one.
 
-| `type` | `config` |
+- An event starts one run per workflow: at the first event trigger, in node order, whose `hooks` and `condition` match.
+- Each schedule fires on its own.
+- Each manual trigger with `menus` is its own menu entry. A manual run from the editor picks its trigger node.
+
+| `trigger_type` | Other config keys |
 |---|---|
 | `event` | `hooks`: list of `on_postload_*` event names (see the catalogue) or `["*"]`. Optional `condition`: a Jinja expression over `event`, `data`, `hook`, `entity_type`, `entity_id`; e.g. `data.alert_severity_id >= 4`. Optional `dedup_minutes`: ignore the same entity again for that long. Optional `skip_if_active` (default `true`): don't start while a run on the same entity is active. |
 | `cron` | `cron`: 5-field expression (`*/15 * * * *`). `target`: `none`, `war_rooms` or `cases` (one run per open target the owner can access), and `max_targets`. |
@@ -102,7 +106,7 @@ Text fields are **Jinja templates** (sandboxed) rendered with the run context:
 
 | Variable | Content |
 |---|---|
-| `trigger` | `type`, `hook`, `payload` (the event; the object is `payload.data`), `entity_type`, `entity_id`, `sub_entity` |
+| `trigger` | `type`, `node_id` (the trigger node that started the run), `hook`, `payload` (the event; the object is `payload.data`), `entity_type`, `entity_id`, `sub_entity` |
 | `entity` | A snapshot of the alert / cluster / case / war room the run is about, filled by the trigger node |
 | `nodes.<id>.output` | The output of every node already run; `nodes.<id>.port` is the port it left through |
 | `vars` | Values stored by `set_variables` nodes |
@@ -130,7 +134,7 @@ Examples: `{{ entity.alert_title }}`, `{{ nodes.vt.output.body.data.attributes.l
 
 The config fields are listed with their defaults in the catalogue. Highlights:
 
-- **`trigger`**: no config. Output: `type`, `hook`, `entity_type`, `entity_id`, `sub_entity`.
+- **`trigger`**: config `trigger_type` and that type's keys (section 3). Output: `type`, `node_id`, `hook`, `entity_type`, `entity_id`, `sub_entity`.
 - **`condition`**: ports `true` / `false`. It has two modes.
   - `mode: "rules"`: uses `logic` (`and`/`or`) and `rules`, a list of `{path, operator, value}`.
     - `path` is a dotted context path.
@@ -187,7 +191,7 @@ The config fields are listed with their defaults in the catalogue. Highlights:
   - `popup` (default true) opens the question in a dialog for the users asked, wherever they are in IRIS, instead of only listing it on the entity and in the suggestions inbox.
   - Output: `answer` and `answered_by`.
 - **`notify`**: an in-app notification.
-  - Config: `audience` is `entity`, `owner` or `users` (with `user_ids`), plus `title` and `body`.
+  - Config: `audience` is `entity`, `triggerer` (the user who started the run or whose action fired the event), `owner` or `users` (with `user_ids`), plus `title` and `body`.
   - `entity` is the entity's owner (a war room: its members) plus the user who triggered the run or whose action fired the event; when none of them can see the entity, the workflow owner is notified instead. Only active users who can see the entity are notified. The output is `{notified: [user ids]}`, with a `note` when the list differs from the audience.
 - **`run_workflow`**: ports `out`, `error`, `timeout`. It starts another workflow, which must be active and have a `workflow` trigger.
   - Config: `workflow_id`; `inputs`, a list of `{name, value}` (a template or a `$path` object) given to the called workflow as `trigger.payload.inputs`; `mode`; `timeout_minutes` (1–43200, 60 by default).
@@ -254,12 +258,12 @@ else:
   "format_version": 1,
   "workflow": {
     "name": "VirusTotal IOC enrichment",
-    "trigger_type": "event",
-    "trigger_config": {"hooks": ["on_postload_ioc_create", "on_postload_ioc_update"], "dedup_minutes": 60},
     "write_tool_allowlist": ["iris_case_iocs_update"],
     "graph": {
       "nodes": [
-        {"id": "trigger", "type": "trigger", "config": {}},
+        {"id": "trigger", "type": "trigger", "config": {
+          "trigger_type": "event", "hooks": ["on_postload_ioc_create", "on_postload_ioc_update"], "dedup_minutes": 60
+        }},
         {"id": "prepare", "type": "python", "config": {
           "inputs": [{"name": "ioc", "value": {"$path": "trigger.payload.data"}}],
           "code": "kind = ((ioc.get('ioc_type') or {}).get('type_name') or '').lower()\nvalue = (ioc.get('ioc_value') or '').strip()\nif kind in ('md5', 'sha1', 'sha256'):\n    result = {'supported': True, 'collection': 'files', 'id': value.lower()}\nelse:\n    result = {'supported': False}"
@@ -303,7 +307,7 @@ More workflows ship in the workflow library; they are listed at the end of this 
 
 ## 9. Checklist before answering with a workflow
 
-- [ ] One `trigger` node; every node is reachable; node ids are unique and short.
+- [ ] Each `trigger` node has a `trigger_type`; every node is reachable from a trigger; node ids are unique and short.
 - [ ] Every `source_port` exists on its node type; `error` / `timeout` ports are wired where a failure matters.
 - [ ] Event names, tool names and keystore names come from the catalogue below.
 - [ ] Write tools used by `action` nodes are in `write_tool_allowlist`.

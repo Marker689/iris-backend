@@ -53,7 +53,8 @@ class TestsAiWorkflowsLibraryEntries(TestCase):
         self.assertEqual(('alert_triage.workflow.json', 'Alert triage first pass', 'event', True),
                          (triage['file'], triage['name'], triage['trigger_type'], triage['uses_ai']))
         self.assertEqual(['on_postload_alert_create'], triage['trigger_config']['hooks'])
-        self.assertEqual([{'type': 'event', 'config': triage['trigger_config']}], triage['triggers'])
+        self.assertEqual([{'type': 'event', 'config': triage['trigger_config'], 'node_id': 'trigger'}],
+                         triage['triggers'])
         self.assertEqual(triage['document']['requirements'], triage['requirements'])
         self.assertFalse(entries['alert_sla_watchdog']['uses_ai'])
         self.assertEqual(['SIEM_API_KEY'], entries['ioc_estate_hunt']['requirements']['keystore'])

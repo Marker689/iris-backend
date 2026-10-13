@@ -42,6 +42,7 @@ starts them; `scope_mask` is the API-key scope of the request (None
 for a session or an unscoped key) and bounds the run.
 """
 
+import copy
 import datetime
 import json
 import uuid
@@ -99,9 +100,10 @@ from app.iris_engine.ai_workflows.entities import ai_workflows_entities_user_can
 from app.iris_engine.ai_workflows.graph import ai_workflows_graph_nodes
 from app.iris_engine.ai_workflows.guide import ai_workflows_guide_examples
 from app.iris_engine.ai_workflows.guide import ai_workflows_guide_render
+from app.iris_engine.ai_workflows.graph import ai_workflows_graph_trigger_ids
+from app.iris_engine.ai_workflows.graph import ai_workflows_graph_upgrade_triggers
 from app.iris_engine.ai_workflows.graph import ai_workflows_graph_validate
 from app.iris_engine.ai_workflows.graph import ai_workflows_graph_validate_node
-from app.iris_engine.ai_workflows.graph import ai_workflows_graph_validate_triggers
 from app.iris_engine.ai_workflows.keystore import ai_workflows_keystore_visible_entries
 from app.iris_engine.ai_workflows.live import ai_workflows_live_run_room
 from app.iris_engine.ai_workflows.live import ai_workflows_live_workflow_room
@@ -138,6 +140,7 @@ from app.models.ai_workflows import TRIGGER_MANUAL
 from app.models.ai_workflows import TRIGGER_TYPES
 from app.models.ai_workflows import TRIGGER_WEBHOOK
 from app.models.ai_workflows import ai_workflow_trigger_config
+from app.models.ai_workflows import ai_workflow_trigger_of_node
 from app.models.ai_workflows import ai_workflow_triggers
 from app.models.authorization import Permissions
 from app.models.authorization import ac_has_permission_server_administrator
@@ -247,16 +250,18 @@ def _user_summary(user_id, users=None):
 # ---- Serialization ---------------------------------------------------------
 
 def _definition(workflow) -> dict:
-    """The behaviour-defining snapshot a version row keeps."""
+    """The behaviour-defining snapshot a version row keeps; a graph saved
+    before trigger nodes carried their trigger is shown upgraded."""
+    graph = ai_workflows_graph_upgrade_triggers(workflow.graph or {}, ai_workflow_triggers(workflow))
     return {
         'name': workflow.name,
         'description': workflow.description,
         'is_active': bool(workflow.is_active),
-        'triggers': ai_workflow_triggers(workflow),
+        'triggers': _graph_triggers(graph) or ai_workflow_triggers(workflow),
         'trigger_type': workflow.trigger_type,
         'trigger_config': workflow.trigger_config or {},
         'customer_scope': workflow.customer_scope or [],
-        'graph': workflow.graph or {},
+        'graph': graph,
         'owner_id': workflow.owner_id,
         'write_tool_allowlist': workflow.write_tool_allowlist or [],
         'max_runs_per_hour': workflow.max_runs_per_hour,
@@ -631,24 +636,15 @@ def _errors_on(errors, *fields) -> bool:
     return any(e.get('field') in fields for e in errors)
 
 
-def _validate_definition(triggers, graph, allowlist) -> list:
-    errors = list(ai_workflows_graph_validate_triggers(triggers) or [])
-    first = triggers[0] if triggers and isinstance(triggers[0], dict) else {}
-    errors.extend(ai_workflows_graph_validate(graph, first.get('type'), first.get('config'), allowlist,
-                                              triggers=[t for t in triggers if isinstance(t, dict)]) or [])
-    return errors
-
-
-def _pick_triggers(body, existing, errors) -> list:
-    """`triggers` of the body; else its single `trigger_type` /
-    `trigger_config`, replacing the first trigger (the others stay);
-    else the existing triggers. [{type, config}]."""
-    current = ai_workflow_triggers(existing) if existing is not None else []
+def _body_triggers(body, current, errors):
+    """The triggers [{type, config}] the body sets: its `triggers`, else
+    its `trigger_type` / `trigger_config` replacing the first of
+    `current`; None when it sets none."""
     if body.get('triggers') is not None:
         triggers = body.get('triggers')
         if not isinstance(triggers, list) or not all(isinstance(t, dict) for t in triggers):
             errors.append(_error(None, 'triggers', 'triggers must be a list of {type, config} objects'))
-            return []
+            return None
     elif 'trigger_type' in body or 'trigger_config' in body:
         first = current[0] if current else {}
         trigger_type = body.get('trigger_type', first.get('type'))
@@ -657,16 +653,75 @@ def _pick_triggers(body, existing, errors) -> list:
                                                                               else {})
         if trigger_type not in TRIGGER_TYPES:
             errors.append(_error(None, 'trigger_type', f'trigger_type must be one of {", ".join(TRIGGER_TYPES)}'))
-            return []
+            return None
         if config is not None and not isinstance(config, dict):
             errors.append(_error(None, 'trigger_config', 'trigger_config must be an object'))
-            return []
-        triggers = [{'type': trigger_type, 'config': config or {}}] \
-            + [t for t in current[1:] if t['type'] != trigger_type]
+            return None
+        triggers = [{'type': trigger_type, 'config': config or {}}] + list(current[1:])
     else:
-        triggers = current
-    return [{'type': t.get('type'), 'config': t.get('config') if t.get('config') is not None else {}}
-            for t in triggers]
+        return None
+    for trigger in triggers:
+        config = trigger.get('config') if trigger.get('config') is not None else {}
+        if not isinstance(config, dict):
+            errors.append(_error(None, 'triggers', 'A trigger config must be an object'))
+            return None
+    return [{'type': t.get('type'), 'config': t.get('config') or {}} for t in triggers]
+
+
+def _carries_triggers(graph) -> bool:
+    return any(ai_workflow_trigger_of_node(node) is not None for node in graph.get('nodes') or []
+               if isinstance(node, dict) and node.get('type') == 'trigger')
+
+
+def _set_trigger_nodes(graph, triggers) -> dict:
+    """The graph with `triggers` set on its trigger nodes, in order."""
+    graph = copy.deepcopy(graph)
+    remaining = iter(triggers)
+    for node in graph.get('nodes') or []:
+        if isinstance(node, dict) and node.get('type') == 'trigger':
+            trigger = next(remaining)
+            node['config'] = {'trigger_type': trigger['type'], **trigger['config']}
+    return graph
+
+
+def _pick_graph(body, existing, errors):
+    """The graph to save, each trigger node carrying its trigger; None
+    when the graph is malformed. Before trigger nodes carried their
+    trigger, the workflow had `triggers` (or `trigger_type` /
+    `trigger_config`): a graph without, its single trigger node is
+    upgraded with those (of the body, else of `existing`). On a graph
+    carrying its triggers, the body may still set them: in node order
+    without a graph, and matching the graph's with one."""
+    if 'graph' in body:
+        graph = body.get('graph')
+    else:
+        graph = existing.graph if existing is not None else None
+    graph = graph or {'nodes': [], 'edges': []}
+    if not isinstance(graph, dict) or not isinstance(graph.get('nodes', []), list) \
+            or not isinstance(graph.get('edges', []), list):
+        errors.append(_error(None, 'graph', 'graph must be an object with "nodes" and "edges" lists'))
+        return None
+    if not _carries_triggers(graph):
+        current = ai_workflow_triggers(existing) if existing is not None else []
+        triggers = _body_triggers(body, current, errors)
+        return ai_workflows_graph_upgrade_triggers(graph, current if triggers is None else triggers)
+    derived = [{'type': t['type'], 'config': t['config']} for t in ai_workflow_triggers({'graph': graph})]
+    triggers = _body_triggers(body, derived, errors)
+    if triggers is None or triggers == derived:
+        return graph
+    if 'graph' in body:
+        errors.append(_error(None, 'triggers', 'The triggers are set on the trigger nodes of the graph'))
+    elif len(triggers) != len(ai_workflows_graph_trigger_ids(graph)):
+        errors.append(_error(None, 'triggers', f'One trigger per trigger node of the graph '
+                                               f'({len(ai_workflows_graph_trigger_ids(graph))})'))
+    else:
+        graph = _set_trigger_nodes(graph, triggers)
+    return graph
+
+
+def _graph_triggers(graph) -> list:
+    """[{type, config, node_id}] the trigger nodes of `graph` carry."""
+    return ai_workflow_triggers({'graph': graph}) if graph is not None and _carries_triggers(graph) else []
 
 
 def _ai_workflows_validate(body, user_id, is_admin, existing=None) -> dict:
@@ -704,13 +759,7 @@ def _ai_workflows_validate(body, user_id, is_admin, existing=None) -> dict:
         errors.append(_error(None, 'is_active', 'is_active must be a boolean'))
         is_active = False
 
-    triggers = _pick_triggers(body, existing, errors)
-
-    graph = pick('graph', None) or {'nodes': [], 'edges': []}
-    if not isinstance(graph, dict) or not isinstance(graph.get('nodes', []), list) \
-            or not isinstance(graph.get('edges', []), list):
-        errors.append(_error(None, 'graph', 'graph must be an object with "nodes" and "edges" lists'))
-        graph = None
+    graph = _pick_graph(body, existing, errors)
 
     allowlist = _validate_allowlist(pick('write_tool_allowlist', []), errors)
 
@@ -726,11 +775,14 @@ def _ai_workflows_validate(body, user_id, is_admin, existing=None) -> dict:
     scope = _validate_customer_scope(pick('customer_scope', None), owner, errors)
 
     if graph is not None and not _errors_on(errors, 'triggers', 'trigger_type', 'trigger_config'):
-        errors.extend(_validate_definition(triggers, graph, allowlist))
+        errors.extend(ai_workflows_graph_validate(graph, allowlist))
 
     if errors:
         _raise_invalid(errors)
 
+    # Derived from the trigger nodes: the triggers find the workflows of a
+    # type without loading their graphs
+    triggers = _graph_triggers(graph)
     return {
         'name': name,
         'description': description,
@@ -752,14 +804,10 @@ def ai_workflows_validate_definition(body) -> dict:
     """Editor dry validation: `{valid, errors}`, never raises on content."""
     body = body if isinstance(body, dict) else {}
     errors = []
-    triggers = _pick_triggers(body, None, errors)
-    graph = body.get('graph') or {'nodes': [], 'edges': []}
-    if not isinstance(graph, dict):
-        errors.append(_error(None, 'graph', 'graph must be an object with "nodes" and "edges" lists'))
-        graph = None
+    graph = _pick_graph(body, None, errors)
     allowlist = _validate_allowlist(body.get('write_tool_allowlist') or [], errors)
     if graph is not None and not _errors_on(errors, 'triggers', 'trigger_type', 'trigger_config'):
-        errors.extend(_validate_definition(triggers, graph, allowlist))
+        errors.extend(ai_workflows_graph_validate(graph, allowlist))
     errors = _dedup_errors(errors)
     return {'valid': not errors, 'errors': errors}
 
@@ -911,8 +959,17 @@ def ai_workflows_get_version(workflow_id, version, user_id, is_admin) -> dict:
         'created_at': _iso(row.created_at),
         'created_by_id': row.created_by_id,
         'created_by': _user_summary(row.created_by_id),
-        'snapshot': row.snapshot,
+        'snapshot': _upgraded_snapshot(row.snapshot),
     }
+
+
+def _upgraded_snapshot(snapshot):
+    """A version saved before trigger nodes carried their trigger, its
+    graph upgraded (see `_definition`)."""
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get('graph'), dict):
+        return snapshot
+    graph = ai_workflows_graph_upgrade_triggers(snapshot['graph'], ai_workflow_triggers(snapshot))
+    return {**snapshot, 'graph': graph, 'triggers': _graph_triggers(graph) or ai_workflow_triggers(snapshot)}
 
 
 def _new_signing_secret(workflow) -> str:
@@ -1008,16 +1065,19 @@ def ai_workflows_require_enabled():
         raise AiWorkflowsDisabledError()
 
 
-def _check_entity(workflow, entity_type, entity_id, user_id, scope_mask=None, any_type=False):
+def _check_entity(workflow, entity_type, entity_id, user_id, scope_mask=None, any_type=False, trigger=None):
     """Validate and coerce a run target the clicking user must be able
     to access (an entity they cannot see is not found); returns
     (type, id). `any_type` (a node test) ignores the manual trigger
-    restriction."""
+    restriction; `trigger` is the one the run starts at."""
     # Manual trigger `entity_types` restricts the target, and then makes it
     # mandatory; empty = any type, or none
     allowed_types = list(ENTITY_TYPES)
     restricted = False
-    manual = ai_workflow_trigger_config(workflow, TRIGGER_MANUAL)
+    if trigger is not None:
+        manual = trigger['config'] if trigger['type'] == TRIGGER_MANUAL else None
+    else:
+        manual = ai_workflow_trigger_config(workflow, TRIGGER_MANUAL)
     if manual is not None and not any_type:
         configured = list(manual.get('entity_types') or [])
         if configured:
@@ -1056,15 +1116,30 @@ def _check_entity_access(user_id, entity_type, entity_id, scope_mask):
         raise ObjectNotFoundError()
 
 
+def _manual_trigger(workflow, node_id):
+    """The trigger an editor run starts at: the one of trigger node
+    `node_id`, else the first manual trigger, else the first trigger."""
+    triggers = ai_workflow_triggers(workflow)
+    if node_id is None:
+        return next((t for t in triggers if t['type'] == TRIGGER_MANUAL), triggers[0] if triggers else None)
+    trigger = next((t for t in triggers if t['node_id'] == node_id), None) if isinstance(node_id, str) else None
+    if trigger is None:
+        raise BusinessProcessingError('Invalid run request',
+                                      data={'trigger_node_id': ['Not a trigger node of the workflow']})
+    return trigger
+
+
 def ai_workflows_run_manual(workflow_id, body, user_id, is_admin, scope_mask=None) -> dict:
-    """Manual run (or dry run). It acts as the workflow owner, is
+    """Manual run (or dry run), at the trigger node `trigger_node_id` of
+    the body (see `_manual_trigger`). It acts as the workflow owner, is
     recorded as triggered by the clicking user, who must access the
     entity, and is bounded by the clicking user's API-key scope."""
     ai_workflows_require_enabled()
     workflow = _get_owned_workflow(workflow_id, user_id, is_admin)
     body = body if isinstance(body, dict) else {}
+    trigger = _manual_trigger(workflow, body.get('trigger_node_id'))
     entity_type, entity_id = _check_entity(workflow, body.get('entity_type'), body.get('entity_id'), user_id,
-                                           scope_mask)
+                                           scope_mask, trigger=trigger)
     dry_run = body.get('dry_run', False)
     if not isinstance(dry_run, bool):
         raise BusinessProcessingError('Invalid run request', data={'dry_run': ['Must be a boolean']})
@@ -1080,6 +1155,7 @@ def ai_workflows_run_manual(workflow_id, body, user_id, is_admin, scope_mask=Non
         payload=payload,
         dry_run=dry_run,
         scope_mask=scope_mask,
+        trigger_node_id=trigger['node_id'] if trigger is not None else None,
     )
     target = f' on {entity_type} #{entity_id}' if entity_type else ''
     mode = 'dry run' if dry_run else 'run'
@@ -1109,6 +1185,7 @@ def ai_workflows_rerun(run_uuid, user_id, is_admin, scope_mask=None) -> dict:
         chain_depth=original.chain_depth or 0,
         parent_run_id=original.parent_run_id,
         scope_mask=scope_mask,
+        trigger_node_id=((original.context or {}).get('trigger') or {}).get('node_id'),
     )
     track_activity(f'AI workflow #{workflow.id} "{workflow.name}" run {original.uuid} re-run as {run.uuid}',
                    ctx_less=True)

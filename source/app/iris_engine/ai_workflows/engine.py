@@ -303,26 +303,29 @@ def _owner_identity(workflow, run_as_user_id):
 def ai_workflows_engine_start_run(workflow, trigger_type, *, run_as_user_id, triggered_by_user_id=None,
                                   entity_type=None, entity_id=None, sub_entity=None, payload=None, dry_run=False,
                                   dedup_key=None, chain_depth=0, parent_run_id=None, enqueue=True,
-                                  scope_mask=None) -> AiWorkflowRun:
+                                  scope_mask=None, trigger_node_id=None) -> AiWorkflowRun:
     """Create (and commit) a run of `workflow`, acting as the workflow
     owner whatever `run_as_user_id` says. `scope_mask` is the API-key
     scope of the triggering credential (None: unrestricted), ANDed into
     the run's permissions. A run whose owner cannot act or access the
     entity, or whose entity is outside the workflow customer scope, is
-    recorded as a minimal `skipped` run and never executes."""
+    recorded as a minimal `skipped` run and never executes. The run
+    starts at the trigger node `trigger_node_id` (the first when None)."""
     run_as_user_id = _owner_identity(workflow, run_as_user_id)
     denial = ai_workflows_engine_access_denial(workflow, run_as_user_id, entity_type, entity_id, scope_mask)
     return ai_workflows_engine_insert_run(
         workflow, trigger_type, denial=denial, triggered_by_user_id=triggered_by_user_id, entity_type=entity_type,
         entity_id=entity_id, sub_entity=sub_entity, payload=payload, dry_run=dry_run, dedup_key=dedup_key,
-        chain_depth=chain_depth, parent_run_id=parent_run_id, enqueue=enqueue, scope_mask=scope_mask)
+        chain_depth=chain_depth, parent_run_id=parent_run_id, enqueue=enqueue, scope_mask=scope_mask,
+        trigger_node_id=trigger_node_id)
 
 
 def ai_workflows_engine_insert_run(workflow, trigger_type, *, denial=None, triggered_by_user_id=None,
                                    entity_type=None, entity_id=None, sub_entity=None, payload=None, dry_run=False,
                                    dedup_key=None, chain_depth=0, parent_run_id=None, enqueue=True,
                                    scope_mask=None, replay=None, tested_node=None,
-                                   run_as_user_id=None, caller_wait_uuid=None) -> AiWorkflowRun:
+                                   run_as_user_id=None, caller_wait_uuid=None,
+                                   trigger_node_id=None) -> AiWorkflowRun:
     """Insert (and commit) the run once `ai_workflows_engine_access_denial`
     returned `denial`: the trigger path checks access before taking the
     workflow lock (the check may commit), then inserts under the lock.
@@ -331,7 +334,9 @@ def ai_workflows_engine_insert_run(workflow, trigger_type, *, denial=None, trigg
     run executes that node definition alone. `run_as_user_id` (the
     owner when None) must be the user `denial` was computed for.
     `caller_wait_uuid`: the wait of the `run_workflow` node that called
-    the run, resumed when it ends."""
+    the run, resumed when it ends. `trigger_node_id`: the trigger node
+    the run starts at (the first when None or not a trigger node), kept
+    as `trigger.node_id` in the context."""
     common = {
         'run_as_user_id': workflow.owner_id if run_as_user_id is None else run_as_user_id,
         'triggered_by_user_id': triggered_by_user_id,
@@ -357,7 +362,9 @@ def ai_workflows_engine_insert_run(workflow, trigger_type, *, denial=None, trigg
     run = _new_run(workflow, trigger_type, dedup_key=dedup_key, **common)
     if entity_type and entity_id is not None:
         run.customer_id = ai_workflows_entities_customer(entity_type, entity_id)
-    run.pending_nodes = [ai_workflows_graph_trigger_id(workflow.graph)]
+    start = ai_workflows_graph_trigger_id(workflow.graph, trigger_node_id)
+    run.pending_nodes = [start]
+    run.context = {**run.context, 'trigger': {**run.context['trigger'], 'node_id': start}}
     if replay is not None:
         run.context = replay['context']
         run.pending_nodes = [replay['node_id']]

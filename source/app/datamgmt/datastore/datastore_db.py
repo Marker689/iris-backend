@@ -19,7 +19,9 @@
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 import datetime
+import hashlib
 import logging
+import uuid
 from pathlib import Path
 
 from sqlalchemy import and_
@@ -297,6 +299,45 @@ def datastore_get_interactive_path_node(cid):
         db_create(dsp)
 
     return dsp
+
+
+def datastore_get_or_create_folder(folder_name, cid):
+    """The folder `folder_name` right under the root of the case datastore,
+    created when it does not exist yet."""
+    dsp_root = datastore_get_root(cid)
+    dsp = DataStorePath.query.filter(
+        DataStorePath.path_case_id == cid,
+        DataStorePath.path_parent_id == dsp_root.path_id,
+        DataStorePath.path_name == folder_name
+    ).first()
+    if dsp is None:
+        _, _, dsp = datastore_add_child_node(dsp_root.path_id, folder_name, cid)
+    return dsp
+
+
+def datastore_store_new_file(dsf, content, cid):
+    """Writes `content` (bytes) as the regular, unencrypted file of the new
+    row `dsf`, then commits the row. Nothing is committed when the file
+    cannot be written, and no file is left when the row cannot be."""
+    if dsf.file_uuid is None:
+        dsf.file_uuid = uuid.uuid4()
+    dsf.file_is_ioc = False
+    dsf.file_is_evidence = False
+    dsf.file_password = ''
+    dsf.file_case_id = cid
+    dsf.file_size = len(content)
+    dsf.file_sha256 = hashlib.sha256(content).hexdigest().upper()
+
+    location = datastore_get_standard_path(dsf, cid)
+    location.write_bytes(content)
+    dsf.file_local_name = location.as_posix()
+    try:
+        db_create(dsf)
+    except Exception:
+        db.session.rollback()
+        location.unlink(missing_ok=True)
+        raise
+    return dsf
 
 
 def datastore_get_standard_path(datastore_file, cid):

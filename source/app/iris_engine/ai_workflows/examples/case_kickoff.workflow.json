@@ -5,22 +5,21 @@
   "workflow": {
     "name": "Case kickoff",
     "description": "When a case is opened, the AI reads its IOCs, assets and source alerts and drafts the kickoff: a summary, the known scope, hypotheses with how to check them, open questions and the first tasks. It suggests adding the kickoff note to the case and creating the first three tasks (status To do); an analyst accepts or dismisses each suggestion. Needs an AI provider.",
-    "trigger_type": "event",
-    "trigger_config": {
-      "hooks": [
-        "on_postload_case_create"
-      ],
-      "condition": "",
-      "dedup_minutes": 0,
-      "skip_if_active": true
-    },
     "graph": {
       "nodes": [
         {
           "id": "trigger",
           "type": "trigger",
           "label": "Case opened",
-          "config": {},
+          "config": {
+            "trigger_type": "event",
+            "hooks": [
+              "on_postload_case_create"
+            ],
+            "condition": "",
+            "dedup_minutes": 0,
+            "skip_if_active": true
+          },
           "position": {
             "x": 0,
             "y": 0

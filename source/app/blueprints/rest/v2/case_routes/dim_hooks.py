@@ -67,6 +67,7 @@ def invoke_dim_hook(case_identifier):
             module_name=payload.get('module_name'),
             webhook_id=payload.get('webhook_id'),
             workflow_id=payload.get('workflow_id'),
+            workflow_trigger_id=payload.get('workflow_trigger_id'),
             user_id=iris_current_user.id,
             scope_mask=ac_current_api_key_scope_mask(),
             data_type=payload.get('type'),

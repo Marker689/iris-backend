@@ -23,6 +23,7 @@ from app.business.cases import (
     cases_close,
     cases_create,
     cases_filter,
+    cases_filter_parse_advanced,
     cases_get_by_identifier,
     cases_reopen,
     cases_update,
@@ -180,7 +181,8 @@ def iris_cases_list(args: dict) -> dict:
     name='iris_cases_filter',
     description=(
         'Filter cases by structured fields (customer, classification, owner, '
-        'severity, state, SOC id, dates). Returns paginated case summaries.'
+        'severity, state, SOC id, dates) and/or an advanced `filters` tree '
+        '(owner logins, tags, state names...). Returns paginated case summaries.'
     ),
     input_schema={
         'type': 'object',
@@ -199,12 +201,31 @@ def iris_cases_list(args: dict) -> dict:
             'is_open': {'type': 'boolean'},
             'start_open_date': {'type': 'string', 'description': 'ISO date'},
             'end_open_date': {'type': 'string', 'description': 'ISO date'},
+            'filters': {
+                'type': 'object',
+                'description': (
+                    'Advanced filter, as in the cases page: a group {"logic": "and"|"or", "items": [...]} whose '
+                    'items are conditions {"fieldId", "operation", "value"} or nested groups. fieldId: title, '
+                    'case_id, outcome, open_date, classification, customer, state (name), owner (login), '
+                    'severity (name), tags. operation: equals, not, contains, not_contains, starts_with, '
+                    'not_starts_with, ends_with, not_ends_with, empty, not_empty. Text matches other than '
+                    'equals / not ignore case. Example: {"logic": "and", "items": [{"logic": "or", "items": '
+                    '[{"fieldId": "owner", "operation": "equals", "value": "jdoe"}]}, {"fieldId": "tags", '
+                    '"operation": "not_contains", "value": "red team"}]}.'
+                ),
+            },
         },
     },
     permissions=(Permissions.standard_user,),
     mvp=True,
 )
 def iris_cases_filter(args: dict) -> dict:
+    advanced_filters = None
+    if args.get('filters'):
+        try:
+            advanced_filters = cases_filter_parse_advanced(args.get('filters'))
+        except ValueError as exc:
+            raise MCPError(protocol.INVALID_PARAMS, str(exc)) from exc
     result = cases_filter(
         iris_current_user,
         build_pagination(args),
@@ -220,6 +241,7 @@ def iris_cases_filter(args: dict) -> dict:
         start_open_date=args.get('start_open_date'),
         end_open_date=args.get('end_open_date'),
         is_open=args.get('is_open'),
+        advanced_filters=advanced_filters,
     )
     if result is None:
         raise MCPError(protocol.INTERNAL_ERROR, 'Case filter returned no result.')

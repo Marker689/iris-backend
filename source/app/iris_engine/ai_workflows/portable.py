@@ -29,14 +29,16 @@ recognisable token (`AKIA…`, `ghp_…`, a JWT, a private key…), a quoted
 `"password": "…"` style assignment or a `?apikey=…` query. String
 constants inside template expressions are scanned too. Neither the owner,
 the customer scope, the inbound token nor the signing secret of a
-workflow are exported, and the trigger configuration keeps only the keys
-the trigger types read: they belong to the instance.
+workflow are exported, and the trigger nodes keep only the keys the
+trigger types read: they belong to the instance.
 
 Pure functions: the business layer reads the database and validates.
 """
 
 import copy
 import re
+
+from app.models.ai_workflows import ai_workflow_trigger_of_node
 
 FORMAT_WORKFLOW = 'iris-ai-workflow'
 FORMAT_BLOCK = 'iris-ai-workflow-block'
@@ -47,7 +49,8 @@ WORKFLOW_FIELDS = ('name', 'description', 'triggers', 'trigger_type', 'trigger_c
                    'max_runs_per_hour', 'token_budget_per_run', 'suggestion_audience')
 BLOCK_FIELDS = ('name', 'description', 'category', 'nodes', 'edges')
 
-# Keys the trigger types read (`graph._*_config_errors`, `triggers`)
+# Keys the trigger types read (`graph._*_config_errors`), on a trigger node
+# next to its `trigger_type`
 TRIGGER_CONFIG_FIELDS = ('hooks', 'condition', 'dedup_minutes', 'skip_if_active', 'cron', 'target', 'max_targets',
                          'entity_types', 'menus', 'menu_label', 'require_signature', 'entity_type',
                          'entity_id_path')
@@ -364,15 +367,27 @@ def ai_workflows_portable_export_workflow(definition, exported_at=None, instance
     graph = workflow.get('graph') if isinstance(workflow.get('graph'), dict) else {'nodes': [], 'edges': []}
     nodes, warnings = ai_workflows_portable_scrub_nodes(graph.get('nodes'))
     workflow['graph'] = {'nodes': nodes, 'edges': copy.deepcopy(graph.get('edges') or [])}
-    trigger_config = workflow.get('trigger_config')
-    if isinstance(trigger_config, dict):
-        workflow['trigger_config'] = _trigger_config(trigger_config)
-    if isinstance(workflow.get('triggers'), list):
-        workflow['triggers'] = [{'type': t.get('type'), 'config': _trigger_config(t.get('config'))}
-                                for t in workflow['triggers'] if isinstance(t, dict)]
+    carried = False
+    for node in nodes:
+        trigger = ai_workflow_trigger_of_node(node) \
+            if isinstance(node, dict) and node.get('type') == 'trigger' else None
+        if trigger is not None:
+            node['config'] = {'trigger_type': trigger['type'], **_trigger_config(trigger['config'])}
+            carried = True
+    if carried:
+        # The trigger nodes carry the triggers
+        for field in ('triggers', 'trigger_type', 'trigger_config'):
+            workflow.pop(field, None)
     else:
-        # A definition saved before multiple triggers
-        workflow.pop('triggers', None)
+        # A definition saved before trigger nodes carried their trigger
+        trigger_config = workflow.get('trigger_config')
+        if isinstance(trigger_config, dict):
+            workflow['trigger_config'] = _trigger_config(trigger_config)
+        if isinstance(workflow.get('triggers'), list):
+            workflow['triggers'] = [{'type': t.get('type'), 'config': _trigger_config(t.get('config'))}
+                                    for t in workflow['triggers'] if isinstance(t, dict)]
+        else:
+            workflow.pop('triggers', None)
     return {
         'format': FORMAT_WORKFLOW,
         'format_version': FORMAT_VERSION,

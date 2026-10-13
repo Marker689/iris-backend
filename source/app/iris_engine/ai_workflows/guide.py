@@ -87,7 +87,7 @@ def _catalogue_markdown(catalogue) -> list:
                      f'Ports: {", ".join(f"`{p}`" for p in spec.get("ports") or [])}. '
                      f'Config defaults: `{json.dumps(spec.get("config_defaults") or {}, sort_keys=True)}`')
     lines += ['', '### Trigger types', '', ', '.join(f'`{t}`' for t in catalogue.get('trigger_types') or []),
-              '', '### Events (`trigger_config.hooks` of an event trigger)', '']
+              '', '### Events (`hooks` of an event trigger node)', '']
     for hook in catalogue.get('hooks') or []:
         description = _short(hook.get('description'))
         lines.append(f'- `{hook["name"]}` — {description}' if description else f'- `{hook["name"]}`')

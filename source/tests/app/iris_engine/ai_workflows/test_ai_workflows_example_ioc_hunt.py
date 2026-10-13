@@ -40,6 +40,7 @@ from app.iris_engine.ai_workflows.portable import ai_workflows_portable_tools
 from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run_unconfined
 from tests.app.iris_engine.ai_workflows.harness import OWNER_ID
 from tests.app.iris_engine.ai_workflows.harness import EngineTestCase
+from tests.app.iris_engine.ai_workflows.harness import example_trigger
 from tests.app.iris_engine.ai_workflows.harness import FakeResolver
 from tests.app.iris_engine.ai_workflows.harness import workflow
 
@@ -85,15 +86,14 @@ class TestsIocHuntDocument(TestCase):
            return_value=[('on_postload_ioc_create', '')])
     def test_workflow_should_validate(self, _hooks):
         body = ai_workflows_portable_read_workflow(_DOCUMENT)
-        self.assertEqual([], ai_workflows_graph_validate_trigger_config(body['trigger_type'], body['trigger_config']))
-        self.assertEqual([], ai_workflows_graph_validate(body['graph'], body['trigger_type'], body['trigger_config'],
-                                                         body['write_tool_allowlist']))
+        self.assertEqual([], ai_workflows_graph_validate_trigger_config(*example_trigger(body)))
+        self.assertEqual([], ai_workflows_graph_validate(body['graph'], body['write_tool_allowlist']))
 
     def test_workflow_should_only_suggest_writes(self):
         self.assertEqual([], _DOCUMENT['workflow']['write_tool_allowlist'])
 
     def test_waiting_run_should_not_hold_back_the_other_iocs_of_the_case(self):
-        config = _DOCUMENT['workflow']['trigger_config']
+        config = example_trigger(_DOCUMENT['workflow'])[1]
         self.assertEqual((False, 60), (config['skip_if_active'], config['dedup_minutes']))
 
     def test_requirements_should_match_the_graph(self):
@@ -331,7 +331,7 @@ class TestsIocHuntRun(EngineTestCase):
 
     def _run(self, ioc, document=_DOCUMENT):
         body = ai_workflows_portable_read_workflow(document)
-        wf = workflow(body['graph'], trigger_type='event', trigger_config=body['trigger_config'])
+        wf = workflow(body['graph'], trigger_type='event', trigger_config=example_trigger(body)[1])
         self.tool_results.update({
             'iris_case_iocs_get': ioc,
             'iris_case_assets_list': {'total': 1, 'data': [{'asset_id': 1, 'asset_name': 'WS-001'}]},

@@ -36,6 +36,7 @@ from app.models.ai_workflows import AiWorkflowRun
 from app.models.ai_workflows import AiWorkflowRunStep
 from app.models.ai_workflows import AiWorkflowWait
 from app.models.ai_workflows import WAIT_PENDING
+from app.models.ai_workflows import ai_workflow_triggers
 
 OWNER_ID = 3
 SECRET_NAME = 'api_token'
@@ -191,9 +192,16 @@ def workflow(graph, *, trigger_type='manual', trigger_config=None, allowlist=Non
         'suggestion_audience': 'entity',
         'is_active': True,
         'last_fired_at': None,
+        'cron_fired_at': {},
     }
     fields.update(extra)
     return SimpleNamespace(**fields)
+
+
+def example_trigger(body):
+    """(type, config) of the first trigger node of a workflow body."""
+    trigger = ai_workflow_triggers(body)[0]
+    return trigger['type'], trigger['config']
 
 
 def chain(*nodes, ports=None):

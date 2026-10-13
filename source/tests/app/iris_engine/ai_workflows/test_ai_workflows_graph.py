@@ -22,10 +22,11 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from app.iris_engine.ai_workflows.graph import ai_workflows_graph_targets
+from app.iris_engine.ai_workflows.graph import ai_workflows_graph_trigger_id
+from app.iris_engine.ai_workflows.graph import ai_workflows_graph_upgrade_triggers
 from app.iris_engine.ai_workflows.graph import ai_workflows_graph_validate
 from app.iris_engine.ai_workflows.graph import ai_workflows_graph_validate_fragment
 from app.iris_engine.ai_workflows.graph import ai_workflows_graph_validate_trigger_config
-from app.iris_engine.ai_workflows.graph import ai_workflows_graph_validate_triggers
 
 _WRITE_TOOL = 'iris_case_notes_create'
 _READ_TOOL = 'iris_cases_get'
@@ -39,8 +40,9 @@ def _edge(source, target, port='out'):
     return {'id': f'{source}-{target}-{port}', 'source': source, 'target': target, 'source_port': port}
 
 
-def _graph(nodes, edges):
-    return {'nodes': [_node('trigger', 'trigger')] + nodes, 'edges': edges}
+def _graph(nodes, edges, trigger_type='manual', **trigger_config):
+    return {'nodes': [_node('trigger', 'trigger', trigger_type=trigger_type, **trigger_config)] + nodes,
+            'edges': edges}
 
 
 def _messages(errors):
@@ -49,8 +51,8 @@ def _messages(errors):
 
 class TestsGraphStructure(TestCase):
 
-    def _validate(self, graph, allowlist=None, trigger_type='manual', trigger_config=None):
-        return ai_workflows_graph_validate(graph, trigger_type, trigger_config or {}, allowlist or [])
+    def _validate(self, graph, allowlist=None):
+        return ai_workflows_graph_validate(graph, allowlist or [])
 
     def test_valid_graph_should_have_no_error(self):
         graph = _graph([_node('agent', 'ai_agent', prompt='Triage {{ entity.title }}', tools=[_READ_TOOL]),
@@ -62,15 +64,17 @@ class TestsGraphStructure(TestCase):
                         _edge('check', 'end', 'false')])
         self.assertEqual([], self._validate(graph, allowlist=[_WRITE_TOOL]))
 
-    def test_graph_should_need_exactly_one_trigger(self):
-        graph = {'nodes': [_node('a', 'trigger'), _node('b', 'trigger')], 'edges': []}
-        self.assertIn((None, 'A workflow needs exactly one trigger node'), _messages(self._validate(graph)))
+    def test_graph_should_need_a_trigger(self):
         graph = {'nodes': [_node('a', 'stop')], 'edges': []}
-        self.assertIn((None, 'A workflow needs exactly one trigger node'), _messages(self._validate(graph)))
+        self.assertIn((None, 'A workflow needs a trigger node'), _messages(self._validate(graph)))
+
+    def test_graph_should_hold_at_most_ten_triggers(self):
+        graph = {'nodes': [_node(f't{i}', 'trigger', trigger_type='manual') for i in range(11)], 'edges': []}
+        self.assertIn((None, 'A workflow has at most 10 trigger nodes'), _messages(self._validate(graph)))
 
     def test_unreachable_node_should_be_reported(self):
         graph = _graph([_node('orphan', 'stop')], [])
-        self.assertEqual([('orphan', 'Not reachable from the trigger')], _messages(self._validate(graph)))
+        self.assertEqual([('orphan', 'Not reachable from a trigger')], _messages(self._validate(graph)))
 
     def test_unknown_type_and_duplicate_id_should_be_reported(self):
         graph = _graph([_node('x', 'teleport'), _node('trigger', 'stop')], [])
@@ -92,7 +96,7 @@ class TestsGraphStructure(TestCase):
 
     def test_edge_into_the_trigger_should_be_reported(self):
         graph = _graph([_node('vars', 'set_variables')], [_edge('trigger', 'vars'), _edge('vars', 'trigger')])
-        self.assertIn(('trigger', 'Nothing can lead back to the trigger'), _messages(self._validate(graph)))
+        self.assertIn(('trigger', 'Nothing can lead to a trigger'), _messages(self._validate(graph)))
 
     def test_cycle_without_waiting_node_should_be_allowed(self):
         graph = _graph([_node('a', 'set_variables'), _node('b', 'set_variables')],
@@ -122,9 +126,8 @@ class TestsGraphStructure(TestCase):
 class TestsGraphNodeConfig(TestCase):
 
     def _errors(self, node, allowlist=None, trigger_type='manual', trigger_config=None):
-        graph = _graph([node], [_edge('trigger', node['id'])])
-        return [(e['field'], e['message']) for e in
-                ai_workflows_graph_validate(graph, trigger_type, trigger_config or {}, allowlist or [])]
+        graph = _graph([node], [_edge('trigger', node['id'])], trigger_type, **(trigger_config or {}))
+        return [(e['field'], e['message']) for e in ai_workflows_graph_validate(graph, allowlist or [])]
 
     def test_action_with_a_write_tool_should_need_the_allowlist(self):
         node = _node('note', 'action', tool=_WRITE_TOOL)
@@ -160,7 +163,7 @@ class TestsGraphNodeConfig(TestCase):
 
     def test_allowlist_should_hold_write_tools_only(self):
         graph = _graph([], [])
-        errors = ai_workflows_graph_validate(graph, 'manual', {}, [_READ_TOOL])
+        errors = ai_workflows_graph_validate(graph, [_READ_TOOL])
         self.assertEqual([('write_tool_allowlist', f'{_READ_TOOL} is not a write tool')],
                          [(e['field'], e['message']) for e in errors])
 
@@ -202,7 +205,7 @@ class TestsGraphNodeConfig(TestCase):
     def test_cron_without_target_should_flag_entity_nodes(self):
         node = _node('related', 'find_related')
         errors = self._errors(node, trigger_type='cron', trigger_config={'cron': '* * * * *'})
-        self.assertEqual([(None, 'Needs an entity, but this schedule has no target')], errors)
+        self.assertEqual([(None, 'Needs an entity, but a schedule without target leads here')], errors)
         self.assertEqual([], self._errors(node, trigger_type='cron',
                                           trigger_config={'cron': '* * * * *', 'target': 'cases'}))
 
@@ -262,39 +265,87 @@ class TestsTriggerConfig(TestCase):
                          [e['field'] for e in ai_workflows_graph_validate_trigger_config('workflow', {'x': 1})])
 
 
-class TestsTriggers(TestCase):
+class TestsTriggerNodes(TestCase):
 
-    def test_several_triggers_of_distinct_types_should_pass(self):
-        self.assertEqual([], ai_workflows_graph_validate_triggers([
-            {'type': 'cron', 'config': {'cron': '0 * * * *', 'target': 'cases'}},
+    def _errors(self, nodes, edges):
+        return [(e['node_id'], e['field'], e['message']) for e in
+                ai_workflows_graph_validate({'nodes': nodes, 'edges': edges}, [])]
+
+    def test_several_triggers_should_pass(self):
+        nodes = [_node('cron', 'trigger', trigger_type='cron', cron='0 * * * *', target='cases'),
+                 _node('cron2', 'trigger', trigger_type='cron', cron='0 8 * * mon', target='war_rooms'),
+                 _node('manual', 'trigger', trigger_type='manual', entity_types=['case']),
+                 _node('call', 'trigger', trigger_type='workflow'),
+                 _node('end', 'stop')]
+        edges = [_edge('cron', 'end'), _edge('cron2', 'end'), _edge('manual', 'end'), _edge('call', 'end')]
+        self.assertEqual([], self._errors(nodes, edges))
+
+    def test_trigger_node_should_have_a_type(self):
+        nodes = [_node('t', 'trigger')]
+        self.assertEqual([('t', 'trigger_type', 'Select what starts the run')], self._errors(nodes, []))
+
+    def test_config_errors_should_point_at_the_node_key(self):
+        nodes = [_node('t', 'trigger', trigger_type='cron', cron='61 * * * *'),
+                 _node('u', 'trigger', trigger_type='telepathy'),
+                 _node('w', 'trigger', trigger_type='workflow', x=1)]
+        self.assertEqual([('t', 'cron'), ('u', 'trigger_type'), ('w', 'config')],
+                         [error[:2] for error in self._errors(nodes, [])])
+
+    def test_webhook_and_workflow_triggers_should_appear_once(self):
+        nodes = [_node('w1', 'trigger', trigger_type='workflow'), _node('w2', 'trigger', trigger_type='workflow')]
+        self.assertEqual([('w2', 'trigger_type', 'A workflow has at most one workflow trigger')],
+                         self._errors(nodes, []))
+
+    def test_entityless_schedule_should_flag_only_what_it_reaches(self):
+        nodes = [_node('cron', 'trigger', trigger_type='cron', cron='* * * * *'),
+                 _node('manual', 'trigger', trigger_type='manual', entity_types=['case']),
+                 _node('related', 'find_related'), _node('end', 'stop')]
+        self.assertEqual([], self._errors(nodes, [_edge('cron', 'end'), _edge('manual', 'related')]))
+        self.assertEqual([('related', None, 'Needs an entity, but a schedule without target leads here')],
+                         self._errors(nodes, [_edge('cron', 'related'), _edge('manual', 'end')]))
+
+    def test_node_reachable_from_any_trigger_should_pass(self):
+        nodes = [_node('a', 'trigger', trigger_type='manual'), _node('b', 'trigger', trigger_type='manual'),
+                 _node('x', 'stop'), _node('y', 'stop')]
+        self.assertEqual([], self._errors(nodes, [_edge('a', 'x'), _edge('b', 'y')]))
+
+    def test_trigger_id_should_default_to_the_first(self):
+        graph = {'nodes': [_node('end', 'stop'), _node('a', 'trigger'), _node('b', 'trigger')], 'edges': []}
+        self.assertEqual('b', ai_workflows_graph_trigger_id(graph, 'b'))
+        self.assertEqual('a', ai_workflows_graph_trigger_id(graph, 'end'))
+        self.assertEqual('a', ai_workflows_graph_trigger_id(graph))
+        self.assertIsNone(ai_workflows_graph_trigger_id({'nodes': [], 'edges': []}))
+
+
+class TestsUpgradeTriggers(TestCase):
+
+    _LEGACY = {'nodes': [_node('trigger', 'trigger'), _node('end', 'stop')], 'edges': [_edge('trigger', 'end')]}
+
+    def test_legacy_graph_should_get_a_node_per_trigger(self):
+        graph = ai_workflows_graph_upgrade_triggers(self._LEGACY, [
             {'type': 'manual', 'config': {'entity_types': ['case']}},
-            {'type': 'workflow', 'config': {}},
-        ]))
-
-    def test_triggers_should_not_be_empty(self):
-        for triggers in ([], None, 'manual'):
-            self.assertEqual(['triggers'], [e['field'] for e in ai_workflows_graph_validate_triggers(triggers)])
-
-    def test_a_type_should_appear_once(self):
-        errors = ai_workflows_graph_validate_triggers([{'type': 'manual', 'config': {}},
-                                                       {'type': 'manual', 'config': {}}])
-        self.assertEqual([('triggers.1.type', 'There is already a manual trigger')],
-                         [(e['field'], e['message']) for e in errors])
-
-    def test_errors_should_point_at_the_trigger(self):
-        errors = ai_workflows_graph_validate_triggers([
-            {'type': 'manual', 'config': {}},
-            {'type': 'cron', 'config': {'cron': '61 * * * *'}},
-            {'type': 'telepathy', 'config': {}},
-            'oops',
+            {'type': 'cron', 'config': {'cron': '0 * * * *'}},
         ])
-        self.assertEqual(['triggers.1.config.cron', 'triggers.2.type', 'triggers.3'], [e['field'] for e in errors])
+        self.assertEqual({'trigger_type': 'manual', 'entity_types': ['case']}, graph['nodes'][0]['config'])
+        added = graph['nodes'][2]
+        self.assertEqual(('n1', 'trigger', {'trigger_type': 'cron', 'cron': '0 * * * *'}, 120),
+                         (added['id'], added['type'], added['config'], added['position']['y']))
+        self.assertEqual([('trigger', 'end'), ('n1', 'end')], [(e['source'], e['target']) for e in graph['edges']])
+        self.assertEqual(['e1'], [e['id'] for e in graph['edges'][1:]])
+        self.assertEqual([], ai_workflows_graph_validate(graph, []))
+        self.assertEqual({}, self._LEGACY['nodes'][0]['config'])
+
+    def test_typed_or_triggerless_graph_should_be_left_alone(self):
+        typed = _graph([], [])
+        self.assertIs(typed, ai_workflows_graph_upgrade_triggers(typed, [{'type': 'cron', 'config': {}}]))
+        self.assertIs(self._LEGACY, ai_workflows_graph_upgrade_triggers(self._LEGACY, []))
+        self.assertIsNone(ai_workflows_graph_upgrade_triggers(None, [{'type': 'manual', 'config': {}}]))
 
 
 class TestsGraphLimits(TestCase):
 
     def _messages(self, graph):
-        return [(e['node_id'], e['field'], e['message']) for e in ai_workflows_graph_validate(graph, 'manual', {}, [])]
+        return [(e['node_id'], e['field'], e['message']) for e in ai_workflows_graph_validate(graph, [])]
 
     def test_too_many_edges_should_be_rejected(self):
         graph = _graph([_node('end', 'stop')], [_edge('trigger', 'end')] * 1001)
@@ -350,7 +401,7 @@ class TestsGraphSecurityChecks(TestCase):
 
     def _errors(self, node):
         graph = _graph([node], [_edge('trigger', node['id'])])
-        return [(e['field'], e['message']) for e in ai_workflows_graph_validate(graph, 'manual', {}, [])]
+        return [(e['field'], e['message']) for e in ai_workflows_graph_validate(graph, [])]
 
     def test_http_url_should_have_a_literal_scheme_and_host(self):
         for url in ('{{ vars.url }}', 'https://{{ vars.host }}/x', 'http{{ vars.s }}://example.org/',

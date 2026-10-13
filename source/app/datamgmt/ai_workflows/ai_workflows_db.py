@@ -50,7 +50,7 @@ from app.models.ai_workflows import RUN_ACTIVE_STATUSES
 from app.models.ai_workflows import RUN_RUNNING
 from app.models.ai_workflows import RUN_SKIPPED
 from app.models.ai_workflows import TRIGGER_EVENT
-from app.models.ai_workflows import ai_workflow_trigger_config
+from app.models.ai_workflows import ai_workflow_triggers_of_type
 from app.models.ai_workflows import SUGGESTION_OPEN
 from app.models.ai_workflows import WAIT_PENDING
 from app.models.alert_clusters import AlertCluster
@@ -790,16 +790,23 @@ def ai_workflows_db_count_skip(workflow_id, reason, now):
 
 
 def ai_workflows_db_active_event_hooks() -> list:
-    """(workflow id, configured hooks) of the active workflows with an
-    event trigger, without loading their graphs."""
+    """(workflow id, hooks of all its event triggers) of the active
+    workflows with an event trigger, without loading their graphs."""
     rows = (
         db.session.query(AiWorkflow.id, AiWorkflow.triggers)
         .filter(AiWorkflow.is_active.is_(True), AiWorkflow.triggers.contains([{'type': TRIGGER_EVENT}]))
         .order_by(AiWorkflow.id.asc())
         .all()
     )
-    return [(workflow_id, (ai_workflow_trigger_config({'triggers': triggers}, TRIGGER_EVENT) or {}).get('hooks'))
-            for workflow_id, triggers in rows]
+    result = []
+    for workflow_id, triggers in rows:
+        hooks = []
+        for trigger in ai_workflow_triggers_of_type({'triggers': triggers}, TRIGGER_EVENT):
+            configured = trigger['config'].get('hooks')
+            if isinstance(configured, list):
+                hooks.extend(h for h in configured if h not in hooks)
+        result.append((workflow_id, hooks))
+    return result
 
 
 def ai_workflows_db_settle_session() -> bool:

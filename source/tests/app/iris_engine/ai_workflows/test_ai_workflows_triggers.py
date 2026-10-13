@@ -52,6 +52,15 @@ def patch_skip_counter(test, workflows):
     test.addCleanup(patcher.stop)
 
 
+def _typed_graph(**triggers):
+    """Trigger nodes {node id: (type, config)}, each leading to a stop."""
+    nodes = [{'id': node_id, 'type': 'trigger', 'config': {'trigger_type': trigger_type, **config}}
+             for node_id, (trigger_type, config) in triggers.items()]
+    return {'nodes': nodes + [{'id': 'end', 'type': 'stop', 'config': {}}],
+            'edges': [{'id': f'e-{node_id}', 'source': node_id, 'target': 'end', 'source_port': 'out'}
+                      for node_id in triggers]}
+
+
 def _event(hook='on_postload_alert_create', object_type='alert', action='create', object_id=5, **extra):
     return {'event': hook, 'object_type': object_type, 'action': action, 'object_id': object_id,
             'case': None, 'data': {}, 'actor': {'id': 1}, **extra}
@@ -131,7 +140,7 @@ class TestsEventTrigger(EngineTestCase):
         run = runs[0]
         self.assertEqual(('alert', 5, OWNER_ID, 0), (run.entity_type, run.entity_id, run.run_as_user_id,
                                                      run.chain_depth))
-        self.assertEqual('11:alert:5', run.dedup_key)
+        self.assertEqual('11:trigger:alert:5', run.dedup_key)
         self.assertEqual('on_postload_alert_create', run.context['trigger']['hook'])
         self.assertEqual([run.id], self.enqueued)
 
@@ -202,6 +211,23 @@ class TestsEventTrigger(EngineTestCase):
         # The suppression rules are those of the event trigger
         self.dedup_hit = object()
         self.assertEqual([], self._fire(wf))
+
+    def test_run_should_start_at_the_event_trigger_matching_the_hook(self):
+        wf = self._workflow()
+        wf.graph = _typed_graph(cases=('event', {'hooks': ['on_postload_case_create']}),
+                                alerts=('event', {'hooks': ['on_postload_alert_create']}))
+        run = self._fire(wf)[0]
+        self.assertEqual(('alerts', ['alerts']), (run.context['trigger']['node_id'], run.pending_nodes))
+        self.assertEqual('11:alerts:alert:5', run.dedup_key)
+
+    def test_first_event_trigger_whose_condition_holds_should_win(self):
+        wf = self._workflow()
+        wf.graph = _typed_graph(
+            high=('event', {'hooks': ['*'], 'condition': 'data.alert_severity_id >= 4'}),
+            other=('event', {'hooks': ['on_postload_alert_create']}))
+        self.assertEqual(['other'], [r.context['trigger']['node_id'] for r in self._fire(wf)])
+        event = _event(data={'alert_severity_id': 5})
+        self.assertEqual(['high'], [r.context['trigger']['node_id'] for r in self._fire(wf, event)])
 
     def test_workflow_without_an_event_trigger_should_not_start(self):
         wf = self._workflow()
@@ -302,6 +328,17 @@ class TestsMenuTrigger(EngineTestCase):
         self.assertIsNone(reason)
         self.assertEqual(('running', 'manual'), (run.status, run.trigger_type))
 
+    def test_menu_entry_should_start_at_its_manual_trigger(self):
+        self.wf.graph = _typed_graph(first=('manual', {'entity_types': ['case'], 'menus': ['ioc']}),
+                                     second=('manual', {'entity_types': ['case'], 'menus': ['ioc'],
+                                                        'menu_label': 'Deep dive'}))
+        ioc = _event(hook='on_manual_trigger_ioc', object_type='ioc', action='manual_trigger', object_id=77,
+                     case={'id': 4, 'name': 'c'})
+        for node_id, expected in (('second', 'second'), (None, 'first'), ('gone', 'first')):
+            run, _reason = ai_workflows_triggers_start_from_menu(self.wf.id, ioc, self.ANALYST_ID,
+                                                                 trigger_node_id=node_id)
+            self.assertEqual(expected, run.context['trigger']['node_id'], node_id)
+
 
 class TestsCronTrigger(EngineTestCase):
 
@@ -339,3 +376,25 @@ class TestsCronTrigger(EngineTestCase):
     def test_not_due_schedule_should_not_start(self):
         self.assertEqual([], ai_workflows_triggers_cron_tick(datetime.datetime(2026, 10, 5, 10, 16)))
         self.assertIsNone(self.wf.last_fired_at)
+
+    def test_each_schedule_should_fire_on_its_own(self):
+        self.wf.graph = _typed_graph(often=('cron', {'cron': '*/5 * * * *', 'target': 'cases'}),
+                                     hourly=('cron', {'cron': '0 * * * *'}))
+        run_ids = ai_workflows_triggers_cron_tick(datetime.datetime(2026, 10, 5, 10, 15))
+        self.assertEqual(['often', 'often'], [self.store.runs[i].context['trigger']['node_id'] for i in run_ids])
+        self.assertEqual({'often': '2026-10-05T10:15:00'}, self.wf.cron_fired_at)
+        run_ids = ai_workflows_triggers_cron_tick(datetime.datetime(2026, 10, 5, 11, 0))
+        runs = [self.store.runs[i] for i in run_ids]
+        self.assertEqual([('often', 'case', 1), ('often', 'case', 2), ('hourly', None, None)],
+                         [(r.context['trigger']['node_id'], r.entity_type, r.entity_id) for r in runs])
+        self.assertEqual({'often': '2026-10-05T11:00:00', 'hourly': '2026-10-05T11:00:00'}, self.wf.cron_fired_at)
+        self.assertEqual([], ai_workflows_triggers_cron_tick(datetime.datetime(2026, 10, 5, 11, 0)))
+
+    def test_first_fire_per_schedule_should_start_from_the_last_fire(self):
+        self.wf.graph = _typed_graph(often=('cron', {'cron': '*/5 * * * *', 'target': 'cases'}),
+                                     hourly=('cron', {'cron': '0 * * * *'}))
+        self.wf.last_fired_at = datetime.datetime(2026, 10, 5, 11, 0)
+        self.assertEqual([], ai_workflows_triggers_cron_tick(datetime.datetime(2026, 10, 5, 11, 0)))
+        self.wf.cron_fired_at = {'often': '2026-10-05T11:00:00', 'removed': '2026-10-05T11:00:00'}
+        ai_workflows_triggers_cron_tick(datetime.datetime(2026, 10, 5, 11, 5))
+        self.assertEqual({'often': '2026-10-05T11:05:00'}, self.wf.cron_fired_at)

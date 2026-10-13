@@ -66,12 +66,17 @@ _TOOLS = [
 ] + [{'name': f'write_{i}', 'classification': 'write'} for i in range(250)]
 
 
+def _legacy_graph():
+    """A graph saved before trigger nodes carried their trigger."""
+    return {'nodes': [{'id': 'trigger', 'type': 'trigger', 'config': {}}], 'edges': []}
+
+
 def _body(**overrides):
     body = {
         'name': 'Triage',
         'trigger_type': TRIGGER_MANUAL,
         'trigger_config': {'entity_types': ['alert']},
-        'graph': {'nodes': [], 'edges': []},
+        'graph': _legacy_graph(),
     }
     body.update(overrides)
     return body
@@ -80,7 +85,7 @@ def _body(**overrides):
 def _stored_workflow(**overrides):
     values = {
         'name': 'Stored', 'description': None, 'is_active': True, 'trigger_type': TRIGGER_MANUAL,
-        'trigger_config': {'entity_types': ['alert']}, 'customer_scope': [], 'graph': {'nodes': [{'id': 'n'}], 'edges': []},
+        'trigger_config': {'entity_types': ['alert']}, 'customer_scope': [], 'graph': _legacy_graph(),
         'owner_id': _OWNER, 'write_tool_allowlist': [], 'max_runs_per_hour': 60, 'token_budget_per_run': 50000,
         'suggestion_audience': 'entity', 'version': 1,
     }
@@ -97,7 +102,7 @@ def _run(**overrides):
         'workflow_name': 'Triage', 'definition_snapshot': {'owner_id': _OWNER}, 'owner_id': None,
         'run_as_user_id': _OWNER, 'triggered_by_user_id': None, 'entity_type': 'alert', 'entity_id': 4,
         'trigger_type': TRIGGER_MANUAL, 'sub_entity': None, 'trigger_payload': {'a': 1}, 'is_dry_run': False,
-        'chain_depth': 0, 'parent_run_id': None,
+        'chain_depth': 0, 'parent_run_id': None, 'context': {'trigger': {'node_id': 'menu'}},
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -127,7 +132,6 @@ class _WorkflowsTestCase(TestCase):
             patch(f'{_BUSINESS}.access_controls_user_accessible_customers',
                   side_effect=lambda user, _permissions: self.accessible_customers.get(user.id)),
             patch(f'{_BUSINESS}.ai_workflows_tools_catalogue', return_value=_TOOLS),
-            patch(f'{_BUSINESS}.ai_workflows_graph_validate_triggers', return_value=[]),
             patch(f'{_BUSINESS}.ai_workflows_graph_validate', return_value=[]),
             patch(f'{_BUSINESS}.ai_workflows_entities_user_can_access', self.can_access),
             patch(f'{_BUSINESS}.ai_workflows_engine_start_run', self.start_run),
@@ -194,6 +198,22 @@ class TestsManualRunIdentity(_WorkflowsTestCase):
         self.assertEqual(('case', 4), (self.start_run.call_args.kwargs['entity_type'],
                                        self.start_run.call_args.kwargs['entity_id']))
 
+    def test_run_should_start_at_the_chosen_manual_trigger(self):
+        graph = {'nodes': [{'id': 'cron', 'type': 'trigger', 'config': {'trigger_type': 'cron', 'cron': '* * * * *'}},
+                           {'id': 'alerts', 'type': 'trigger',
+                            'config': {'trigger_type': 'manual', 'entity_types': ['alert']}},
+                           {'id': 'cases', 'type': 'trigger',
+                            'config': {'trigger_type': 'manual', 'entity_types': ['case']}}],
+                 'edges': []}
+        self.workflows[3] = _stored_workflow(graph=graph)
+        ai_workflows_run_manual(3, {'entity_type': 'alert', 'entity_id': 4}, _OWNER, False)
+        self.assertEqual('alerts', self.start_run.call_args.kwargs['trigger_node_id'])
+        ai_workflows_run_manual(3, {'entity_type': 'case', 'entity_id': 4, 'trigger_node_id': 'cases'}, _OWNER, False)
+        self.assertEqual('cases', self.start_run.call_args.kwargs['trigger_node_id'])
+        with self.assertRaises(BusinessProcessingError):
+            ai_workflows_run_manual(3, {'entity_type': 'alert', 'entity_id': 4, 'trigger_node_id': 'cases'},
+                                    _OWNER, False)
+
     def test_unrestricted_manual_trigger_should_accept_no_entity(self):
         self.workflows[3] = _stored_workflow(trigger_config={})
         ai_workflows_run_manual(3, {}, _OWNER, False)
@@ -222,6 +242,7 @@ class TestsRerunIdentity(_WorkflowsTestCase):
         self.assertEqual(_ADMIN, kwargs['triggered_by_user_id'])
         self.assertEqual(mask, kwargs['scope_mask'])
         self.assertEqual({'a': 1}, kwargs['payload'])
+        self.assertEqual('menu', kwargs['trigger_node_id'])
 
     def test_rerun_should_need_entity_access_of_the_clicker(self):
         self.can_access.side_effect = lambda user_id, *_args: user_id != _ADMIN
@@ -378,7 +399,10 @@ class TestsListAndSerialization(_WorkflowsTestCase):
     def test_detail_should_carry_the_graph_and_skip_counters(self):
         workflow = _stored_workflow(skipped_count=3, last_skip_reason='rate limit', inbound_signing_secret='enc:x')
         data = ai_workflows_serialize(workflow)
-        self.assertEqual({'nodes': [{'id': 'n'}], 'edges': []}, data['graph'])
+        self.assertEqual({'nodes': [{'id': 'trigger', 'type': 'trigger',
+                                     'config': {'trigger_type': 'manual', 'entity_types': ['alert']}}],
+                          'edges': []}, data['graph'])
+        self.assertEqual([('manual', 'trigger')], [(t['type'], t['node_id']) for t in data['triggers']])
         self.assertEqual(3, data['skipped_count'])
         self.assertEqual('rate limit', data['last_skip_reason'])
         self.assertTrue(data['has_signing_secret'])

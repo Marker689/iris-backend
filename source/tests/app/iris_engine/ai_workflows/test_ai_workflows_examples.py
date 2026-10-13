@@ -38,6 +38,7 @@ from app.iris_engine.ai_workflows.portable import ai_workflows_portable_read_wor
 from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run_unconfined
 from tests.app.iris_engine.ai_workflows.harness import OWNER_ID
 from tests.app.iris_engine.ai_workflows.harness import EngineTestCase
+from tests.app.iris_engine.ai_workflows.harness import example_trigger
 from tests.app.iris_engine.ai_workflows.harness import FakeResolver
 from tests.app.iris_engine.ai_workflows.harness import workflow
 
@@ -103,9 +104,8 @@ class TestsExampleDocuments(TestCase):
     @patch('app.iris_engine.ai_workflows.graph.ai_workflows_db_postload_hooks', return_value=_HOOKS)
     def test_workflow_should_validate(self, _hooks):
         body = ai_workflows_portable_read_workflow(_WORKFLOW)
-        self.assertEqual([], ai_workflows_graph_validate_trigger_config(body['trigger_type'], body['trigger_config']))
-        self.assertEqual([], ai_workflows_graph_validate(body['graph'], body['trigger_type'], body['trigger_config'],
-                                                         body['write_tool_allowlist']))
+        self.assertEqual([], ai_workflows_graph_validate_trigger_config(*example_trigger(body)))
+        self.assertEqual([], ai_workflows_graph_validate(body['graph'], body['write_tool_allowlist']))
 
     def test_block_should_validate(self):
         body = ai_workflows_portable_read_block(_BLOCK)
@@ -280,7 +280,7 @@ class TestsVirusTotalWorkflowRun(_VirusTotalRunTestCase):
 
     def _run(self, ioc):
         body = ai_workflows_portable_read_workflow(_WORKFLOW)
-        wf = workflow(body['graph'], trigger_type='event', trigger_config=body['trigger_config'],
+        wf = workflow(body['graph'], trigger_type='event', trigger_config=example_trigger(body)[1],
                       allowlist=body['write_tool_allowlist'])
         self.tool_results['iris_case_iocs_get'] = ioc
         return self._start(wf, ioc)

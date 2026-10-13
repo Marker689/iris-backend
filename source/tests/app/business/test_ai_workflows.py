@@ -55,12 +55,17 @@ _TOOLS = [
 ]
 
 
+def _legacy_graph():
+    """A graph saved before trigger nodes carried their trigger."""
+    return {'nodes': [{'id': 'trigger', 'type': 'trigger', 'config': {}}], 'edges': []}
+
+
 def _body(**overrides):
     body = {
         'name': 'Triage',
         'trigger_type': TRIGGER_MANUAL,
         'trigger_config': {'entity_types': ['alert']},
-        'graph': {'nodes': [], 'edges': []},
+        'graph': _legacy_graph(),
     }
     body.update(overrides)
     return body
@@ -73,7 +78,7 @@ def _user(user_id, active=True):
 def _stored_workflow(**overrides):
     values = {
         'name': 'Stored', 'description': None, 'is_active': False, 'trigger_type': TRIGGER_MANUAL,
-        'trigger_config': {'entity_types': ['alert']}, 'customer_scope': [], 'graph': {'nodes': [], 'edges': []},
+        'trigger_config': {'entity_types': ['alert']}, 'customer_scope': [], 'graph': _legacy_graph(),
         'owner_id': _OWNER, 'write_tool_allowlist': [], 'max_runs_per_hour': 60, 'token_budget_per_run': 50000,
         'suggestion_audience': 'entity', 'version': 1,
     }
@@ -117,7 +122,6 @@ class _WorkflowsTestCase(TestCase):
             patch(f'{_BUSINESS}.access_controls_user_accessible_customers',
                   side_effect=lambda user, _permissions: self.accessible_customers.get(user.id)),
             patch(f'{_BUSINESS}.ai_workflows_tools_catalogue', return_value=_TOOLS),
-            patch(f'{_BUSINESS}.ai_workflows_graph_validate_triggers', return_value=[]),
             patch(f'{_BUSINESS}.ai_workflows_graph_validate', side_effect=lambda *_args, **_kwargs: self.graph_errors),
             patch(f'{_BUSINESS}.ai_workflows_entities_user_can_access', self.can_access),
             patch(f'{_BUSINESS}.ai_workflows_engine_start_run', self.start_run),
@@ -220,38 +224,66 @@ class TestsUpdate(_WorkflowsTestCase):
         self.assertIsNone(workflow.inbound_token_hash)
 
 
+def _pairs(triggers):
+    return [(t['type'], t['config']) for t in triggers]
+
+
+def _trigger_node(node_id, trigger_type, **config):
+    return {'id': node_id, 'type': 'trigger', 'config': {'trigger_type': trigger_type, **config}}
+
+
 class TestsTriggers(_WorkflowsTestCase):
 
     _CRON = {'type': 'cron', 'config': {'cron': '0 * * * *', 'target': 'cases'}}
     _MANUAL = {'type': TRIGGER_MANUAL, 'config': {'entity_types': ['alert']}}
 
-    def test_create_with_several_triggers_should_mirror_the_first(self):
+    def test_triggers_should_be_derived_from_the_trigger_nodes(self):
+        graph = {'nodes': [_trigger_node('a', 'cron', cron='0 * * * *', target='cases'),
+                           _trigger_node('b', 'cron', cron='0 8 * * *'), _trigger_node('c', 'workflow')],
+                 'edges': []}
+        data = ai_workflows_create({'name': 'Triage', 'graph': graph}, _OWNER, False)
+        self.assertEqual([('cron', 'a'), ('cron', 'b'), ('workflow', 'c')],
+                         [(t['type'], t['node_id']) for t in data['triggers']])
+        self.assertEqual(('cron', self._CRON['config']), (data['trigger_type'], data['trigger_config']))
+
+    def test_legacy_triggers_should_become_trigger_nodes(self):
         data = ai_workflows_create(_body(triggers=[self._CRON, {'type': 'workflow'}]), _OWNER, False)
-        self.assertEqual([self._CRON, {'type': 'workflow', 'config': {}}], data['triggers'])
+        self.assertEqual([('cron', self._CRON['config']), ('workflow', {})], _pairs(data['triggers']))
+        self.assertEqual(['trigger', 'n1'], [n['id'] for n in data['graph']['nodes']])
         self.assertEqual(('cron', self._CRON['config']), (data['trigger_type'], data['trigger_config']))
 
     def test_single_trigger_body_should_replace_the_first_trigger_only(self):
         workflow = self.workflows[3] = _stored_workflow(triggers=[self._MANUAL, self._CRON])
         ai_workflows_update(3, {'trigger_type': TRIGGER_EVENT, 'trigger_config': {'hooks': ['x']}}, _OWNER, False)
-        self.assertEqual([{'type': TRIGGER_EVENT, 'config': {'hooks': ['x']}}, self._CRON], workflow.triggers)
+        self.assertEqual([(TRIGGER_EVENT, {'hooks': ['x']}), ('cron', self._CRON['config'])],
+                         _pairs(workflow.triggers))
         self.assertEqual(TRIGGER_EVENT, workflow.trigger_type)
-
-    def test_single_trigger_body_of_another_listed_type_should_not_duplicate_it(self):
-        workflow = self.workflows[3] = _stored_workflow(triggers=[self._MANUAL, self._CRON])
-        ai_workflows_update(3, {'trigger_type': 'cron', 'trigger_config': {'cron': '5 * * * *'}}, _OWNER, False)
-        self.assertEqual([{'type': 'cron', 'config': {'cron': '5 * * * *'}}], workflow.triggers)
 
     def test_triggers_should_replace_every_trigger_and_be_kept_otherwise(self):
         workflow = self.workflows[3] = _stored_workflow(triggers=[self._MANUAL, self._CRON])
         ai_workflows_update(3, {'name': 'Renamed'}, _OWNER, False)
-        self.assertEqual([self._MANUAL, self._CRON], workflow.triggers)
-        ai_workflows_update(3, {'triggers': [self._CRON]}, _OWNER, False)
-        self.assertEqual(([self._CRON], 'cron'), (workflow.triggers, workflow.trigger_type))
+        self.assertEqual(_pairs([self._MANUAL, self._CRON]), _pairs(workflow.triggers))
+        ai_workflows_update(3, {'triggers': [self._CRON, self._MANUAL]}, _OWNER, False)
+        self.assertEqual((_pairs([self._CRON, self._MANUAL]), 'cron'), (_pairs(workflow.triggers),
+                                                                        workflow.trigger_type))
+
+    def test_body_triggers_should_match_the_trigger_nodes(self):
+        graph = {'nodes': [_trigger_node('a', 'manual'), _trigger_node('b', 'cron', cron='0 * * * *')],
+                 'edges': []}
+        workflow = self.workflows[3] = _stored_workflow(graph=graph)
+        ai_workflows_update(3, {'triggers': [self._MANUAL, self._CRON]}, _OWNER, False)
+        self.assertEqual({'trigger_type': 'cron', **self._CRON['config']}, workflow.graph['nodes'][1]['config'])
+        errors = self._invalid_update({'triggers': [self._CRON]})
+        self.assertEqual(['triggers'], [e['field'] for e in errors])
+        errors = self._invalid_update({'graph': graph, 'triggers': [self._CRON, self._MANUAL]})
+        self.assertEqual([('triggers', 'The triggers are set on the trigger nodes of the graph')],
+                         [(e['field'], e['message']) for e in errors])
 
     def test_stored_single_trigger_should_be_read_as_a_list(self):
         workflow = self.workflows[3] = _stored_workflow()
         ai_workflows_update(3, {'name': 'Renamed'}, _OWNER, False)
-        self.assertEqual([self._MANUAL], workflow.triggers)
+        self.assertEqual([(self._MANUAL['type'], self._MANUAL['config'], 'trigger')],
+                         [(t['type'], t['config'], t['node_id']) for t in workflow.triggers])
 
     def test_malformed_triggers_should_be_rejected(self):
         for triggers in ('manual', ['manual']):
@@ -262,10 +294,15 @@ class TestsTriggers(_WorkflowsTestCase):
         webhook = {'type': 'webhook', 'config': {}}
         workflow = self.workflows[3] = _stored_workflow(triggers=[webhook], inbound_token_hash='abc')
         with app.app_context():
-            ai_workflows_update(3, {'triggers': [self._MANUAL, webhook]}, _OWNER, False)
+            ai_workflows_update(3, {'triggers': [webhook]}, _OWNER, False)
         self.assertEqual('abc', workflow.inbound_token_hash)
         ai_workflows_update(3, {'triggers': [self._MANUAL]}, _OWNER, False)
         self.assertIsNone(workflow.inbound_token_hash)
+
+    def _invalid_update(self, body):
+        with self.assertRaises(BusinessProcessingError) as context:
+            ai_workflows_update(3, body, _OWNER, False)
+        return context.exception.get_data()['errors']
 
 
 class TestsRunVisibility(TestCase):

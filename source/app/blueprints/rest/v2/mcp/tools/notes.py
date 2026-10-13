@@ -63,6 +63,12 @@ _note_summary_schema = CaseNoteSchema(only=_NOTE_SUMMARY_FIELDS)
 
 _NOTE_LIST_PREVIEWS = {'note_content': 400}
 
+# `iris_case_notes_get` with `content_offset`: a chunk stays under the
+# result budget's per-string clip (MAX_TEXT_FIELD_BYTES), a window
+# under its total, escaping included in most cases
+_NOTE_CHUNK_CHARS = 3000
+_NOTE_WINDOW_CHARS = 30000
+
 
 def _get_note_in_case(note_id: int, case_id: int):
     note = notes_get(note_id)
@@ -78,13 +84,16 @@ def _get_note_in_case(note_id: int, case_id: int):
         'Search case notes by free-text. Pass an empty string to list all '
         'notes in the case. Returns note summaries with the body clipped to '
         'a short preview — call `iris_case_notes_get` with a `note_id` from '
-        'the result to read a note in full.'
+        'the result to read a note in full. Every match is returned unless '
+        '`page` or `per_page` is given.'
     ),
     input_schema={
         'type': 'object',
         'properties': {
             **VIEW_SCHEMA_FRAGMENT,
             'search_input': {'type': 'string'},
+            'page': PAGINATION_SCHEMA_FRAGMENT['page'],
+            'per_page': PAGINATION_SCHEMA_FRAGMENT['per_page'],
         },
     },
     permissions=(Permissions.standard_user,),
@@ -97,19 +106,64 @@ def iris_case_notes_list(args: dict) -> dict:
         notes = notes_search(args['case_identifier'], search_input)
     except BusinessProcessingError as exc:
         raise MCPError(protocol.INTERNAL_ERROR, exc.get_message()) from exc
+    paging = {}
+    if args.get('page') is not None or args.get('per_page') is not None:
+        # Paged here: notes_search is not. Opt-in, so the callers that
+        # expect every note in one answer keep getting it. The search has
+        # no order: by id, so that the pages do not overlap
+        pagination = build_pagination(args)
+        page = max(1, pagination.get_page())
+        per_page = max(1, pagination.get_per_page())
+        total = len(notes)
+        notes = sorted(notes, key=lambda note: note.note_id)[(page - 1) * per_page:page * per_page]
+        last_page = max(1, (total + per_page - 1) // per_page)
+        paging = {'total': total, 'last_page': last_page, 'current_page': page,
+                  'next_page': page + 1 if page < last_page else None}
     schema = schema_for_view(args, _note_summary_schema, _note_schema)
     rows = schema.dump(notes, many=True)
     for field, limit in _NOTE_LIST_PREVIEWS.items():
         clip_text_field(rows, field, limit)
-    return {'notes': rows}
+    return {'notes': rows, **paging}
+
+
+def _notes_content_window(note, content: str, offset: int) -> dict:
+    """The body from `offset` on, as chunks short enough to pass the
+    result budget untouched. Rows dropped by the budget come off the end:
+    the caller resumes from offset + the length of the chunks it got."""
+    offset = min(max(0, offset), len(content))
+    window = content[offset:offset + _NOTE_WINDOW_CHARS]
+    end = offset + len(window)
+    return {
+        'note_id': note.note_id,
+        'note_title': note.note_title,
+        'directory_id': note.directory_id,
+        'content_length': len(content),
+        'content_offset': offset,
+        'content_next_offset': end if end < len(content) else None,
+        'note_content_chunks': [window[i:i + _NOTE_CHUNK_CHARS]
+                                for i in range(0, len(window), _NOTE_CHUNK_CHARS)],
+    }
 
 
 @mcp_tool(
     name='iris_case_notes_get',
-    description='Fetch a single note by ID.',
+    description=(
+        'Fetch a single note by ID. Bodies longer than a few thousand '
+        'characters are clipped: pass `content_offset` (0 first) to read the '
+        'body as `note_content_chunks` instead, then call again from '
+        '`content_offset` + the total length of the chunks received until '
+        'that reaches `content_length`.'
+    ),
     input_schema={
         'type': 'object',
-        'properties': {'note_identifier': {'type': 'integer'}},
+        'properties': {
+            'note_identifier': {'type': 'integer'},
+            'content_offset': {
+                'type': 'integer',
+                'minimum': 0,
+                'description': 'Read the body from this character on, in chunks.',
+            },
+        },
         'required': ['note_identifier'],
     },
     permissions=(Permissions.standard_user,),
@@ -126,6 +180,8 @@ def iris_case_notes_get(args: dict) -> dict:
     # and an edit built on it would revert their unsaved typing.
     data['note_content'] = collab_current_markdown(f'note:{note.note_id}',
                                                    data.get('note_content'))
+    if args.get('content_offset') is not None:
+        return _notes_content_window(note, data['note_content'] or '', int(args['content_offset']))
     return data
 
 

@@ -5,22 +5,21 @@
   "workflow": {
     "name": "Case closure documentation review",
     "description": "When a case is closed, the AI reads its notes, tasks, IOCs, assets and source alerts, rates how well it is documented and lists the gaps. It then suggests a closure report note (summary, timeline, scope, root cause, actions taken, lessons learned, open items), a clearer case description when the current one falls short, and rewrites of up to three existing notes. An analyst accepts or dismisses each suggestion; nothing is changed until then. The case is reviewed once per closure: later updates of the closed case do not run it again. Needs an AI provider.",
-    "trigger_type": "event",
-    "trigger_config": {
-      "hooks": [
-        "on_postload_case_update"
-      ],
-      "condition": "data.state and data.state.state_name == 'Closed' and (data.close_date or '')[:10] == (event.timestamp or '')[:10]",
-      "dedup_minutes": 1440,
-      "skip_if_active": true
-    },
     "graph": {
       "nodes": [
         {
           "id": "trigger",
           "type": "trigger",
           "label": "Case closed",
-          "config": {},
+          "config": {
+            "trigger_type": "event",
+            "hooks": [
+              "on_postload_case_update"
+            ],
+            "condition": "data.state and data.state.state_name == 'Closed' and (data.close_date or '')[:10] == (event.timestamp or '')[:10]",
+            "dedup_minutes": 1440,
+            "skip_if_active": true
+          },
           "position": {
             "x": 0,
             "y": 0

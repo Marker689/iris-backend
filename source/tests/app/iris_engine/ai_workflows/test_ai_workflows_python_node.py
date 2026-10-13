@@ -103,10 +103,10 @@ class TestsPythonNode(EngineTestCase):
 class TestsPythonNodeGraph(TestCase):
 
     def _errors(self, code, **config):
-        graph = {'nodes': [{'id': 'trigger', 'type': 'trigger', 'config': {}},
+        graph = {'nodes': [{'id': 'trigger', 'type': 'trigger', 'config': {'trigger_type': 'manual'}},
                            {'id': 'py', 'type': 'python', 'config': {'code': code, **config}}],
                  'edges': [{'id': 'e', 'source': 'trigger', 'target': 'py', 'source_port': 'out'}]}
-        return [(e['field'], e['message']) for e in ai_workflows_graph_validate(graph, 'manual', {}, [])]
+        return [(e['field'], e['message']) for e in ai_workflows_graph_validate(graph, [])]
 
     def test_valid_script_should_pass(self):
         self.assertEqual([], self._errors('result = 1', inputs=[{'name': 'value', 'value': '{{ run.uuid }}'}],
@@ -137,9 +137,9 @@ class TestsPathReferences(TestCase):
                          ai_workflows_context_render_arguments(arguments, context, 'arguments'))
 
     def test_invalid_path_should_be_refused_by_validation(self):
-        graph = {'nodes': [{'id': 'trigger', 'type': 'trigger', 'config': {}},
+        graph = {'nodes': [{'id': 'trigger', 'type': 'trigger', 'config': {'trigger_type': 'manual'}},
                            {'id': 'v', 'type': 'set_variables',
                             'config': {'variables': [{'name': 'a', 'value': {'$path': '{{ x }}'}}]}}],
                  'edges': [{'id': 'e', 'source': 'trigger', 'target': 'v', 'source_port': 'out'}]}
-        errors = ai_workflows_graph_validate(graph, 'manual', {}, [])
+        errors = ai_workflows_graph_validate(graph, [])
         self.assertEqual(['variables.0.value'], [e['field'] for e in errors])

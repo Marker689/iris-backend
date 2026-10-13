@@ -37,6 +37,7 @@ from app.iris_engine.ai_workflows.portable import ai_workflows_portable_tools
 from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_run_unconfined
 from tests.app.iris_engine.ai_workflows.harness import OWNER_ID
 from tests.app.iris_engine.ai_workflows.harness import EngineTestCase
+from tests.app.iris_engine.ai_workflows.harness import example_trigger
 from tests.app.iris_engine.ai_workflows.harness import text_turn
 from tests.app.iris_engine.ai_workflows.harness import tool_turn
 from tests.app.iris_engine.ai_workflows.harness import workflow
@@ -87,7 +88,7 @@ def _plan(review=None, description='Phishing', max_notes=3):
 def _closed(state='Closed', close_date='2026-10-09', timestamp='2026-10-09T14:03:11.120000+00:00'):
     data = {'case_id': 42, 'state': {'state_name': state} if state else None, 'close_date': close_date}
     event = {'event': 'on_postload_case_update', 'timestamp': timestamp, 'data': data}
-    return ai_workflows_context_eval_expression(_DOCUMENT['workflow']['trigger_config']['condition'], {
+    return ai_workflows_context_eval_expression(example_trigger(_DOCUMENT['workflow'])[1]['condition'], {
         'event': event, 'payload': event, 'data': data, 'hook': event['event'], 'entity_type': 'case',
         'entity_id': 42})
 
@@ -97,15 +98,14 @@ class TestsCaseClosureDocument(TestCase):
     @patch('app.iris_engine.ai_workflows.graph.ai_workflows_db_postload_hooks', return_value=_HOOKS)
     def test_workflow_should_validate(self, _hooks):
         body = ai_workflows_portable_read_workflow(_DOCUMENT)
-        self.assertEqual([], ai_workflows_graph_validate_trigger_config(body['trigger_type'], body['trigger_config']))
-        self.assertEqual([], ai_workflows_graph_validate(body['graph'], body['trigger_type'], body['trigger_config'],
-                                                         body['write_tool_allowlist']))
+        self.assertEqual([], ai_workflows_graph_validate_trigger_config(*example_trigger(body)))
+        self.assertEqual([], ai_workflows_graph_validate(body['graph'], body['write_tool_allowlist']))
 
     def test_workflow_should_only_suggest(self):
         body = ai_workflows_portable_read_workflow(_DOCUMENT)
         self.assertEqual(([], ['on_postload_case_update'], 1440),
-                         (body['write_tool_allowlist'], body['trigger_config']['hooks'],
-                          body['trigger_config']['dedup_minutes']))
+                         (body['write_tool_allowlist'], example_trigger(body)[1]['hooks'],
+                          example_trigger(body)[1]['dedup_minutes']))
 
     def test_requirements_should_match_the_graph(self):
         nodes = list(_NODES.values())
@@ -193,7 +193,7 @@ class TestsCaseClosureRun(EngineTestCase):
 
     def _run(self):
         body = ai_workflows_portable_read_workflow(_DOCUMENT)
-        wf = workflow(body['graph'], trigger_type='event', trigger_config=body['trigger_config'])
+        wf = workflow(body['graph'], trigger_type='event', trigger_config=example_trigger(body)[1])
         run = ai_workflows_engine_start_run(wf, 'event', run_as_user_id=OWNER_ID, entity_type='case', entity_id=42,
                                             payload={'event': 'on_postload_case_update', 'data': {
                                                 'case_id': 42, 'case_description': 'Phishing',
