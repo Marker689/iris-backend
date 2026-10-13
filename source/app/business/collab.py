@@ -36,6 +36,7 @@ import base64
 import datetime
 
 from app.business.access_controls import ac_fast_check_user_has_case_access
+from app.datamgmt.collab_db import collab_create_doc_if_missing
 from app.datamgmt.collab_db import collab_lock_doc
 from app.db import db
 from app.iris_engine.collab.render import markdown_to_ydoc_update
@@ -259,9 +260,18 @@ def resolve_doc(doc_name, user_id):
 _CURRENT_SEEDER_VERSION = 4
 
 
+def _is_seeded(row):
+    return row is not None and bool(row.y_state) and row.seeder_version == _CURRENT_SEEDER_VERSION
+
+
 def ensure_snapshot(doc_name, current_content):
-    """Return the authoritative `y_state` bytes for `doc_name`, creating
-    it from the source column if this is a first open.
+    """Return the authoritative `y_state` bytes for `doc_name` and their
+    epoch, creating them from the source column if this is a first open.
+
+    The epoch identifies the Y.Doc's lineage: a re-seed replaces the
+    document with a new one, unrelated to the copies editors hold, and
+    changes the epoch. An editor must never merge a copy from another
+    epoch into the doc: Yjs would add its content next to the new one.
 
     Guarantees:
       * A `CollabDoc` row exists after this call.
@@ -278,10 +288,8 @@ def ensure_snapshot(doc_name, current_content):
     fallback path.
     """
     row = CollabDoc.query.filter_by(doc_name=doc_name).first()
-    stored_version = getattr(row, 'seeder_version', None) if row is not None else None
-    is_current_version = stored_version == _CURRENT_SEEDER_VERSION
-    if row is not None and row.y_state and is_current_version:
-        return bytes(row.y_state)
+    if _is_seeded(row):
+        return bytes(row.y_state), row.seeder_version
 
     # Re-seed. Reaches this branch on:
     #   * first open of a doc (`row is None`),
@@ -296,22 +304,22 @@ def ensure_snapshot(doc_name, current_content):
     seed_md = current_content or ''
     seed_bytes = markdown_to_ydoc_update(seed_md)
 
-    if row is None:
-        row = CollabDoc(
-            doc_name=doc_name,
-            y_state=seed_bytes,
-            content_md=seed_md,
-            seeder_version=_CURRENT_SEEDER_VERSION,
-            last_flushed_at=datetime.datetime.utcnow(),
-        )
-        db.session.add(row)
-    else:
-        row.y_state = seed_bytes
-        row.content_md = seed_md
-        row.seeder_version = _CURRENT_SEEDER_VERSION
-        row.last_flushed_at = datetime.datetime.utcnow()
+    # Seeded under the row lock, and only if no concurrent join did it
+    # meanwhile: two seeds are two lineages, and the editors that got the
+    # overwritten one would send updates the stored doc can't render.
+    collab_create_doc_if_missing(doc_name)
+    row = collab_lock_doc(doc_name)
+    if _is_seeded(row):
+        state, epoch = bytes(row.y_state), row.seeder_version
+        db.session.rollback()
+        return state, epoch
+
+    row.y_state = seed_bytes
+    row.content_md = seed_md
+    row.seeder_version = _CURRENT_SEEDER_VERSION
+    row.last_flushed_at = datetime.datetime.utcnow()
     db.session.commit()
-    return seed_bytes
+    return seed_bytes, _CURRENT_SEEDER_VERSION
 
 
 def apply_wire_update(doc_name, update_b64, user_id):

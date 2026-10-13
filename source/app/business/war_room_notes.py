@@ -12,6 +12,8 @@ from app.datamgmt.war_rooms.war_room_notes_db import get_revision
 from app.datamgmt.war_rooms.war_room_notes_db import list_revisions
 from app.datamgmt.war_rooms.war_room_notes_db import write_revision
 from app.db import db
+from app.iris_engine.collab.sync import collab_current_markdown
+from app.iris_engine.collab.sync import collab_replace_markdown
 from app.iris_engine.module_handler.module_handler import call_modules_hook
 from app.iris_engine.utils.tracker import track_activity
 from app.models.errors import BusinessProcessingError
@@ -220,6 +222,10 @@ def war_room_note_restore_revision(war_room_id, note_id, revision_number,
     if revision is None:
         raise ObjectNotFoundError()
 
+    # The column only catches up with the editor when its last user
+    # leaves: the state being replaced is the editor's.
+    doc_name = f'war-room-note:{note.note_id}'
+    note.content = collab_current_markdown(doc_name, note.content)
     write_revision(updated_by_id, note)
 
     note.title = revision.title
@@ -227,6 +233,9 @@ def war_room_note_restore_revision(war_room_id, note_id, revision_number,
     note.updated_at = datetime.datetime.utcnow()
     note.updated_by_id = updated_by_id
     db.session.commit()
+    # Else the editor keeps showing the old content, and its next flush
+    # writes it back over the restored one
+    collab_replace_markdown(doc_name, note.content or '')
     track_activity(
         f'restored revision #{revision_number} of note "{note.title}"',
         war_room_id=war_room_id,

@@ -16,7 +16,22 @@
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+from app.db import db
 from app.models.collab import CollabDoc
+
+
+def collab_create_doc_if_missing(doc_name):
+    """Insert an empty `CollabDoc` row for `doc_name` unless one exists.
+
+    Two first opens of a document race to create its row: a plain INSERT
+    fails the loser on the primary key. Here the loser waits for the
+    winner's transaction and inserts nothing; both then go through
+    `collab_lock_doc`. No commit.
+    """
+    db.session.execute(pg_insert(CollabDoc.__table__).values(doc_name=doc_name)
+                       .on_conflict_do_nothing(index_elements=['doc_name']))
 
 
 def collab_lock_doc(doc_name):

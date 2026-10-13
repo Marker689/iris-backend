@@ -76,6 +76,10 @@ _MAX_AWARENESS_B64_LEN = 64 * 1024
 # can't burn resolver/DB cycles by joining thousands of doc-names.
 _MAX_DOCS_PER_SID = 32
 
+# Acks of `sync`, see `on_sync`.
+_SYNC_APPLIED = {'ok': True}
+_SYNC_REJECTED = {'ok': False}
+
 # Track which docs each sid has joined so we can drive per-doc leave
 # on disconnect. flask-socketio doesn't hand us the room list on a
 # raw disconnect event, so we mirror it here. Doubles as the source
@@ -291,7 +295,7 @@ def on_join(data):
     # (small header). If the seeding raises, we don't want to admit the
     # client to the room since they'd be stuck with no state to apply.
     try:
-        y_state_bytes = ensure_snapshot(doc_name, resolved['current_content'])
+        y_state_bytes, epoch = ensure_snapshot(doc_name, resolved['current_content'])
     except Exception:
         logger.exception('collab: ensure_snapshot failed for %s', doc_name)
         emit('resolution-error', {'doc': doc_name, 'reason': 'server error'})
@@ -303,6 +307,9 @@ def on_join(data):
     emit('sync-init', {
         'doc': doc_name,
         'y_state': base64.b64encode(y_state_bytes).decode('ascii'),
+        # A client that joined an earlier epoch holds an unrelated Y.Doc:
+        # it must reload, never merge it (see `ensure_snapshot`).
+        'epoch': epoch,
         'can_write': resolved['can_write'],
         'user': {
             'id': user_id,
@@ -345,37 +352,42 @@ def on_sync(data):
       4. We only rebroadcast if the merge into the server's
          authoritative Y.Doc succeeded — a malformed update that fails
          `merge_updates` is dropped, not passed on to peers.
+
+    The return value is the ack: `{'ok': True}` once the update is
+    stored, `{'ok': False}` if it was not. The client keeps its edits
+    flagged unsaved until acked, and rejoins to resend them on a
+    rejection.
     """
     user_id = _current_user_id()
     if not user_id or not isinstance(data, dict):
-        return
+        return _SYNC_REJECTED
     doc_name = data.get('doc')
     update_b64 = data.get('update')
     if not isinstance(doc_name, str):
-        return
+        return _SYNC_REJECTED
 
     # (1) Sender-membership gate.
     if doc_name not in _sid_docs.get(request.sid, set()):
         emit('permission-denied',
              {'doc': doc_name, 'reason': 'not a participant of this doc'})
-        return
+        return _SYNC_REJECTED
 
     # (3) Size cap, before any DB work.
     if not isinstance(update_b64, str) or not update_b64:
-        return
+        return _SYNC_REJECTED
     if len(update_b64) > _MAX_UPDATE_B64_LEN:
         emit('resolution-error',
              {'doc': doc_name, 'reason': 'update too large or malformed'})
-        return
+        return _SYNC_REJECTED
 
     # (2) ACL re-check.
     try:
         resolved = resolve_doc(doc_name, user_id)
     except DocResolutionError:
-        return
+        return _SYNC_REJECTED
     if not resolved.get('can_write'):
         emit('permission-denied', {'doc': doc_name, 'reason': 'no write access'})
-        return
+        return _SYNC_REJECTED
 
     # (4) Merge into the server-authoritative Y.Doc. Only relay if the
     #     merge succeeded — a corrupt update stops here rather than
@@ -384,15 +396,21 @@ def on_sync(data):
         applied = apply_wire_update(doc_name, update_b64, user_id)
     except Exception:
         logger.exception('collab: apply_wire_update failed for %s', doc_name)
-        return
+        return _SYNC_REJECTED
     if applied is None:
-        return
+        return _SYNC_REJECTED
 
-    emit('sync', {
-        'doc': doc_name,
-        'update': update_b64,
-        'origin': _current_user_name(),
-    }, to=doc_name, skip_sid=request.sid)
+    # The update is stored: peers that miss the relay get it on their
+    # next join, so a relay failure must not fail the ack.
+    try:
+        emit('sync', {
+            'doc': doc_name,
+            'update': update_b64,
+            'origin': _current_user_name(),
+        }, to=doc_name, skip_sid=request.sid)
+    except Exception:
+        logger.exception('collab: relay failed for %s', doc_name)
+    return _SYNC_APPLIED
 
 
 @socket_io.on('awareness', namespace=NAMESPACE)

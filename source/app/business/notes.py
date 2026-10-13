@@ -30,6 +30,8 @@ from app.datamgmt.case.case_notes_db import get_note
 from app.datamgmt.case.case_notes_db import get_note_persisted_content
 from app.datamgmt.case.case_notes_db import update_note_revision
 from app.datamgmt.case.case_notes_db import delete_note
+from app.iris_engine.collab.sync import collab_current_markdown
+from app.iris_engine.collab.sync import collab_replace_markdown
 from app.iris_engine.module_handler.module_handler import call_modules_hook
 from app.iris_engine.notifications.hook_listeners import notifications_note_updated
 from app.iris_engine.utils.tracker import track_activity
@@ -228,9 +230,19 @@ def notes_restore_revision(identifier: int, revision_number: int):
             raise BusinessProcessingError('Invalid note revision number')
 
         notes_check_writable(note)
+        doc_name = f'note:{note.note_id}'
+        # Revisions are only written on save, and the column only catches
+        # up with the editor when its last user leaves: the content being
+        # replaced is the editor's.
+        note.note_content = collab_current_markdown(doc_name, note.note_content)
+        update_note_revision(iris_current_user.id, note)
+
         note.note_title = target.note_title
         note.note_content = target.note_content
         notes_update(iris_current_user, note)
+        # Else the editor keeps showing the old content, and its next
+        # flush writes it back over the restored one
+        collab_replace_markdown(doc_name, note.note_content or '')
 
         track_activity(
             f'restored note "{note.note_title}" to revision {revision_number}',
