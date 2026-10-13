@@ -176,6 +176,13 @@ class TestsGraphNodeConfig(TestCase):
         self.assertEqual('popup', self._errors(_node('ask', 'ask_analyst', question='?', fields=['x'],
                                                      popup='yes'))[0][0])
 
+    def test_suggest_should_check_its_audience(self):
+        self.assertEqual([], self._errors(_node('s', 'suggest', title='t')))
+        self.assertEqual('audience', self._errors(_node('s', 'suggest', title='t', audience='everyone'))[0][0])
+        self.assertEqual([('user_ids', 'Select at least one user')],
+                         self._errors(_node('s', 'suggest', title='t', audience='users')))
+        self.assertEqual([], self._errors(_node('s', 'suggest', title='t', audience='users', user_ids=[5])))
+
     def test_http_request_should_check_method_and_url(self):
         errors = dict(self._errors(_node('h', 'http_request', method='TRACE')))
         self.assertIn('method', errors)

@@ -234,7 +234,7 @@ _CATALOGUE = (
     _node_spec(NODE_SUGGEST, 'Suggest', 'Proposes something to the analysts, optionally with an action they '
                'accept in one click.', 'human', (PORT_OUT,),
                {'kind': SUGGESTION_GENERIC_ACTION, 'title': '', 'body': '', 'proposed_action': None,
-                'confidence': None, 'severity': None}),
+                'confidence': None, 'severity': None, 'audience': AUDIENCE_ENTITY, 'user_ids': []}),
     _node_spec(NODE_ACTION, 'Action', 'Runs an IRIS tool. Write tools must be on the workflow allowlist.',
                'iris', (PORT_OUT, PORT_ERROR), {'tool': '', 'arguments': {}}),
     _node_spec(NODE_NOTIFY, 'Notify', 'Sends an in-app notification.', 'human', (PORT_OUT,),
@@ -601,19 +601,19 @@ def _ask_analyst(ctx, config):
         suggestion = ai_workflows_suggestions_create(ctx.run, ctx.step, **fields)
         return NodeResult(output={'answer': None, 'answered_by': None, 'dry_run': True,
                                   'suggestion_id': suggestion.id}, port=PORT_TIMEOUT)
-    users, note = _ask_audience(ctx, config)
+    users, note = _addressed_audience(ctx, config, 'question')
     if users:
         fields['audience_user_ids'] = users
     return NodeResult(output={'note': note} if note else {},
                       wait={'kind': WAIT_USER_INPUT, 'minutes': minutes, 'suggestion': fields})
 
 
-def _ask_audience(ctx, config) -> tuple:
-    """(users, note): who the question goes to — None for the workflow's
-    suggestion audience — and why that is not the configured audience,
-    if so. `triggerer` is the user who started the run or whose action
-    fired the event. A question nobody configured can answer goes to
-    the workflow's suggestion audience rather than wait for nothing."""
+def _addressed_audience(ctx, config, subject) -> tuple:
+    """(users, note): who a question or suggestion goes to — None for the
+    workflow's suggestion audience — and why that is not the configured
+    audience, if so. `triggerer` is the user who started the run or whose
+    action fired the event. When nobody configured can be reached it goes
+    to the workflow's suggestion audience rather than to no one."""
     run = ctx.run
     audience = config.get('audience') or AUDIENCE_ENTITY
     if audience == AUDIENCE_OWNER:
@@ -630,8 +630,8 @@ def _ask_audience(ctx, config) -> tuple:
             users.append(user_id)
     if users:
         return users, None
-    return None, 'None of the users of the audience is active and can access the entity: the question went to ' \
-                 'the workflow suggestion audience instead'
+    return None, f'None of the users of the audience is active and can access the entity: the {subject} went ' \
+                 'to the workflow suggestion audience instead'
 
 
 def _find_related(ctx, config):
@@ -719,16 +719,24 @@ def _proposed_action(ctx, action, template):
 
 def _suggest(ctx, config):
     template = ctx.template_context()
-    suggestion = ai_workflows_suggestions_create(
-        ctx.run, ctx.step,
-        kind=config.get('kind') or SUGGESTION_GENERIC_ACTION,
-        title=ctx.mask(ai_workflows_context_render(config.get('title') or '', template, 'title')).strip(),
-        body=ctx.mask(ai_workflows_context_render(config.get('body') or '', template, 'body')).strip() or None,
-        proposed_action=_proposed_action(ctx, config.get('proposed_action'), template),
-        confidence=config.get('confidence'),
-        severity=config.get('severity'),
-    )
-    return NodeResult(output={'suggestion_id': suggestion.id})
+    fields = {
+        'kind': config.get('kind') or SUGGESTION_GENERIC_ACTION,
+        'title': ctx.mask(ai_workflows_context_render(config.get('title') or '', template, 'title')).strip(),
+        'body': ctx.mask(ai_workflows_context_render(config.get('body') or '', template, 'body')).strip() or None,
+        'proposed_action': _proposed_action(ctx, config.get('proposed_action'), template),
+        'confidence': config.get('confidence'),
+        'severity': config.get('severity'),
+    }
+    # A dry run only ever goes to whoever started it
+    users, note = (None, None) if ctx.run.is_dry_run else _addressed_audience(ctx, config, 'suggestion')
+    if users:
+        fields['audience_user_ids'] = users
+    suggestion = ai_workflows_suggestions_create(ctx.run, ctx.step, **fields)
+    # Who it was addressed to, so the run shows where it went
+    output = {'suggestion_id': suggestion.id, 'audience': list(getattr(suggestion, 'audience_user_ids', None) or [])}
+    if note:
+        output['note'] = note
+    return NodeResult(output=output)
 
 
 def _action(ctx, config):

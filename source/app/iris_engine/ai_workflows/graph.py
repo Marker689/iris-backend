@@ -473,6 +473,9 @@ def _check_suggest(check, allowlist):
     severity = check.config.get('severity')
     if severity not in (None, '') and severity not in SEVERITIES:
         check.add('severity', f'Must be one of {", ".join(SEVERITIES)}')
+    check.one_of('audience', (AUDIENCE_ENTITY, 'triggerer', AUDIENCE_OWNER, 'users'), AUDIENCE_ENTITY)
+    if check.config.get('audience') == 'users':
+        _check_user_ids(check)
     action = check.config.get('proposed_action')
     if action not in (None, {}):
         if not isinstance(action, dict):

@@ -220,3 +220,41 @@ class TestsNotifyAudience(EngineTestCase):
         step = [s for s in self.steps(run) if s.node_id == 'notify'][0]
         self.assertEqual([], step.output['notified'])
         self.assertIn('None of the users', step.output['note'])
+
+
+class TestsSuggestAudience(EngineTestCase):
+
+    def _suggest(self, config, reachable, dry_run=False):
+        node = {'id': 'suggest', 'type': 'suggest', 'config': {'title': 'Look at this', **config}}
+        with patch('app.iris_engine.ai_workflows.nodes.ai_workflows_entities_user_can_access',
+                   lambda user_id, *_args: user_id in reachable):
+            run = self.run_to_rest(workflow(chain(node)), dry_run=dry_run)
+        self.assertEqual('succeeded', run.status)
+        step = [s for s in self.steps(run) if s.node_id == 'suggest'][0]
+        return self.store.suggestions[-1], step.output
+
+    def test_default_audience_should_be_the_workflow_suggestion_audience(self):
+        suggestion, output = self._suggest({}, {5})
+        self.assertNotIn('audience_user_ids', vars(suggestion))
+        self.assertEqual([], output['audience'])
+        self.assertNotIn('note', output)
+
+    def test_users_audience_should_address_the_reachable_users(self):
+        suggestion, output = self._suggest({'audience': 'users', 'user_ids': [5, 6, 5]}, {5})
+        self.assertEqual([5], suggestion.audience_user_ids)
+        self.assertEqual([5], output['audience'])
+        self.assertEqual(suggestion.id, output['suggestion_id'])
+
+    def test_owner_audience_should_address_the_workflow_owner(self):
+        suggestion, _output = self._suggest({'audience': 'owner'}, {OWNER_ID})
+        self.assertEqual([OWNER_ID], suggestion.audience_user_ids)
+
+    def test_unreachable_audience_should_fall_back_and_say_why(self):
+        suggestion, output = self._suggest({'audience': 'users', 'user_ids': [5]}, set())
+        self.assertNotIn('audience_user_ids', vars(suggestion))
+        self.assertIn('the suggestion went to the workflow suggestion audience', output['note'])
+
+    def test_dry_run_should_ignore_the_audience(self):
+        suggestion, output = self._suggest({'audience': 'users', 'user_ids': [5]}, {5}, dry_run=True)
+        self.assertNotIn('audience_user_ids', vars(suggestion))
+        self.assertNotIn('note', output)
