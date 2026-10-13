@@ -56,6 +56,22 @@ _TASK_SUMMARY_FIELDS = (
 
 _task_summary_schema = CaseTaskSchema(only=_TASK_SUMMARY_FIELDS)
 
+# Fields `CaseTaskSchema` loads, for the callers (documentation only: the
+# schema validates the payload).
+_TASK_PAYLOAD_PROPERTIES: dict[str, dict] = {
+    'task_title': {'type': 'string', 'minLength': 2},
+    'task_status_id': {'type': 'integer', 'description': 'Task status id (`task_statuses` of `iris_taxonomies_list`).'},
+    'task_description': {'type': 'string', 'description': 'Markdown accepted.'},
+    'task_tags': {'type': 'string', 'description': 'Comma-separated tags.'},
+    'custom_attributes': {'type': 'object', 'description': 'Custom attribute values, by tab then field name.'},
+}
+
+_TASK_ASSIGNEES = {
+    'type': 'array',
+    'items': {'type': 'integer'},
+    'description': 'User ids assigned to the task (replaces the current assignees).',
+}
+
 
 def _get_task_in_case(task_id: int, case_id: int):
     task = tasks_get(task_id)
@@ -117,9 +133,11 @@ def iris_case_tasks_get(args: dict) -> dict:
         'properties': {
             'payload': {
                 'type': 'object',
-                'description': 'Task fields — see CaseTaskSchema.',
+                'description': 'Task fields.',
+                'properties': _TASK_PAYLOAD_PROPERTIES,
+                'required': ['task_title', 'task_status_id'],
             },
-            'task_assignees_id': {'type': 'array'},
+            'task_assignees_id': _TASK_ASSIGNEES,
         },
         'required': ['payload'],
     },
@@ -147,8 +165,12 @@ def iris_case_tasks_create(args: dict) -> dict:
         'type': 'object',
         'properties': {
             'task_identifier': {'type': 'integer'},
-            'payload': {'type': 'object'},
-            'task_assignees_id': {'type': 'array'},
+            'payload': {
+                'type': 'object',
+                'description': 'Task fields to change; the others are kept.',
+                'properties': _TASK_PAYLOAD_PROPERTIES,
+            },
+            'task_assignees_id': _TASK_ASSIGNEES,
         },
         'required': ['task_identifier', 'payload'],
     },

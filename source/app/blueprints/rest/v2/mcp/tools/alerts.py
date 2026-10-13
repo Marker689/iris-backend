@@ -129,6 +129,17 @@ def _alert_fields_schema(fields) -> AlertSchema | None:
 # lock-step with the REST endpoint's _ALERT_READONLY_UPDATE_FIELDS
 # (alert_id / alert_customer_id / alert_creation_time are immutable —
 # see GHSA-8hwq-v6vm-9grr / SBA-ADV-20260128-05 / CWE-863).
+_IOC_IMPORT_LIST = {
+    'type': 'array',
+    'items': {'type': 'string'},
+    'description': 'UUIDs (`ioc_uuid`) of the alert IOCs to copy into the case; none when omitted.',
+}
+_ASSET_IMPORT_LIST = {
+    'type': 'array',
+    'items': {'type': 'string'},
+    'description': 'UUIDs (`asset_uuid`) of the alert assets to copy into the case; none when omitted.',
+}
+
 _ALERT_UPDATE_PROPERTIES: dict[str, dict] = {
     'alert_title':                 {'type': 'string'},
     'alert_description':           {'type': 'string'},
@@ -323,8 +334,8 @@ def iris_alerts_get(args: dict) -> dict:
         'type': 'object',
         'properties': {
             'alert_identifier': {'type': 'integer'},
-            'iocs_import_list': {'type': 'array'},
-            'assets_import_list': {'type': 'array'},
+            'iocs_import_list': _IOC_IMPORT_LIST,
+            'assets_import_list': _ASSET_IMPORT_LIST,
             'note': {'type': 'string'},
             'import_as_event': {'type': 'boolean'},
             'case_tags': {'type': 'string'},
@@ -362,8 +373,8 @@ def iris_alerts_escalate(args: dict) -> dict:
         'properties': {
             'alert_identifier': {'type': 'integer'},
             'target_case_id': {'type': 'integer'},
-            'iocs_import_list': {'type': 'array'},
-            'assets_import_list': {'type': 'array'},
+            'iocs_import_list': _IOC_IMPORT_LIST,
+            'assets_import_list': _ASSET_IMPORT_LIST,
             'note': {'type': 'string'},
             'import_as_event': {'type': 'boolean'},
             'case_tags': {'type': 'string'},

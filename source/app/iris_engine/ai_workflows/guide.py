@@ -65,9 +65,16 @@ def _arguments(schema) -> str:
     required = set((schema or {}).get('required') or [])
     parts = []
     for name, spec in properties.items():
-        kind = spec.get('type') if isinstance(spec, dict) else None
+        spec = spec if isinstance(spec, dict) else {}
+        kind = spec.get('type')
         kind = '|'.join(kind) if isinstance(kind, list) else kind
-        parts.append(f'`{name}`{"*" if name in required else ""}{f" ({kind})" if kind else ""}')
+        items = spec.get('items') if isinstance(spec.get('items'), dict) else {}
+        if kind == 'array' and isinstance(items.get('type'), str):
+            kind = f'array of {items["type"]}'
+        if 'enum' in spec:
+            kind = ' | '.join(json.dumps(value) for value in spec['enum'])
+        nested = f' {{{_arguments(spec)}}}' if spec.get('properties') else ''
+        parts.append(f'`{name}`{"*" if name in required else ""}{f" ({kind})" if kind else ""}{nested}')
     return ', '.join(parts)
 
 

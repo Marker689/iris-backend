@@ -54,6 +54,28 @@ _ASSET_SUMMARY_FIELDS = (
 
 _asset_summary_schema = CaseAssetsSchema(only=_ASSET_SUMMARY_FIELDS)
 
+# Fields `CaseAssetsSchema` loads, for the callers (documentation only:
+# the schema validates the payload).
+_ASSET_PAYLOAD_PROPERTIES: dict[str, dict] = {
+    'asset_name': {'type': 'string', 'description': 'Asset name (hostname, account, …); unique per type in a case.'},
+    'asset_type_id': {'type': 'integer', 'description': 'Asset type id (`asset_types` of `iris_taxonomies_list`).'},
+    'asset_description': {'type': 'string', 'description': 'Markdown accepted.'},
+    'asset_domain': {'type': 'string'},
+    'asset_ip': {'type': 'string'},
+    'asset_info': {'type': 'string', 'description': 'Free-form additional information.'},
+    'asset_tags': {'type': 'string', 'description': 'Comma-separated tags.'},
+    'analysis_status_id': {
+        'type': 'integer',
+        'description': 'Analysis status id (`analysis_statuses` of `iris_taxonomies_list`).',
+    },
+    'asset_compromise_status_id': {
+        'type': 'integer',
+        'enum': [0, 1, 2, 3],
+        'description': '0 to be determined, 1 compromised, 2 not compromised, 3 unknown.',
+    },
+    'custom_attributes': {'type': 'object', 'description': 'Custom attribute values, by tab then field name.'},
+}
+
 
 def _get_asset_in_case(asset_id: int, case_id: int):
     asset = assets_get(asset_id)
@@ -119,8 +141,17 @@ def iris_case_assets_get(args: dict) -> dict:
     input_schema={
         'type': 'object',
         'properties': {
-            'payload': {'type': 'object'},
-            'ioc_links': {'type': 'array'},
+            'payload': {
+                'type': 'object',
+                'description': 'Asset fields.',
+                'properties': _ASSET_PAYLOAD_PROPERTIES,
+                'required': ['asset_name', 'asset_type_id'],
+            },
+            'ioc_links': {
+                'type': 'array',
+                'items': {'type': 'integer'},
+                'description': 'Ids of IOCs of the case to link to the asset.',
+            },
         },
         'required': ['payload'],
     },
@@ -156,7 +187,11 @@ def iris_case_assets_create(args: dict) -> dict:
         'type': 'object',
         'properties': {
             'asset_identifier': {'type': 'integer'},
-            'payload': {'type': 'object'},
+            'payload': {
+                'type': 'object',
+                'description': 'Asset fields to change; the others are kept.',
+                'properties': _ASSET_PAYLOAD_PROPERTIES,
+            },
         },
         'required': ['asset_identifier', 'payload'],
     },

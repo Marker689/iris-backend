@@ -87,3 +87,25 @@ class TestsAiWorkflowsGuideLibrary(TestCase):
             else:
                 self.assertIn(f'- **{example["name"]}** (`{example["file"]}`, workflow) — ', library)
                 self.assertNotIn(example['file'], shipped.split('## Shipped examples')[1])
+
+
+class TestsAiWorkflowsGuideToolArguments(TestCase):
+
+    def test_tool_arguments_should_show_payload_fields(self):
+        tool = {'name': 'iris_case_assets_create', 'classification': 'write', 'description': 'Create an asset.',
+                'input_schema': {
+                    'type': 'object',
+                    'properties': {
+                        'case_identifier': {'type': 'integer'},
+                        'payload': {'type': 'object',
+                                    'properties': {'asset_name': {'type': 'string'},
+                                                   'asset_compromise_status_id': {'type': 'integer',
+                                                                                  'enum': [0, 1]}},
+                                    'required': ['asset_name']},
+                        'ioc_links': {'type': 'array', 'items': {'type': 'integer'}},
+                    },
+                    'required': ['case_identifier', 'payload'],
+                }}
+        guide = ai_workflows_guide_render({**_CATALOGUE, 'tools': [tool]}, examples=[])
+        self.assertIn('Arguments: `case_identifier`* (integer), `payload`* (object) {`asset_name`* (string), '
+                      '`asset_compromise_status_id` (0 | 1)}, `ioc_links` (array of integer)', guide)

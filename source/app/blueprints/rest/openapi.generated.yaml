@@ -17513,8 +17513,15 @@ paths:
                   type: integer
                 iocs_import_list:
                   type: array
+                  items:
+                    type: string
+                  description: UUIDs (`ioc_uuid`) of the alert IOCs to copy into the case; none when omitted.
                 assets_import_list:
                   type: array
+                  items:
+                    type: string
+                  description: UUIDs (`asset_uuid`) of the alert assets to copy into the case; none when
+                    omitted.
                 note:
                   type: string
                 import_as_event:
@@ -17715,8 +17722,15 @@ paths:
                   type: integer
                 iocs_import_list:
                   type: array
+                  items:
+                    type: string
+                  description: UUIDs (`ioc_uuid`) of the alert IOCs to copy into the case; none when omitted.
                 assets_import_list:
                   type: array
+                  items:
+                    type: string
+                  description: UUIDs (`asset_uuid`) of the alert assets to copy into the case; none when
+                    omitted.
                 note:
                   type: string
                 import_as_event:
@@ -18137,8 +18151,49 @@ paths:
               properties:
                 payload:
                   type: object
+                  description: Asset fields.
+                  properties:
+                    asset_name:
+                      type: string
+                      description: "Asset name (hostname, account, \u2026); unique per type in a case."
+                    asset_type_id:
+                      type: integer
+                      description: Asset type id (`asset_types` of `iris_taxonomies_list`).
+                    asset_description:
+                      type: string
+                      description: Markdown accepted.
+                    asset_domain:
+                      type: string
+                    asset_ip:
+                      type: string
+                    asset_info:
+                      type: string
+                      description: Free-form additional information.
+                    asset_tags:
+                      type: string
+                      description: Comma-separated tags.
+                    analysis_status_id:
+                      type: integer
+                      description: Analysis status id (`analysis_statuses` of `iris_taxonomies_list`).
+                    asset_compromise_status_id:
+                      type: integer
+                      enum:
+                      - 0
+                      - 1
+                      - 2
+                      - 3
+                      description: 0 to be determined, 1 compromised, 2 not compromised, 3 unknown.
+                    custom_attributes:
+                      type: object
+                      description: Custom attribute values, by tab then field name.
+                  required:
+                  - asset_name
+                  - asset_type_id
                 ioc_links:
                   type: array
+                  items:
+                    type: integer
+                  description: Ids of IOCs of the case to link to the asset.
                 case_identifier:
                   type: integer
                   description: Numeric ID of the IRIS case this call targets.
@@ -18328,6 +18383,41 @@ paths:
                   type: integer
                 payload:
                   type: object
+                  description: Asset fields to change; the others are kept.
+                  properties:
+                    asset_name:
+                      type: string
+                      description: "Asset name (hostname, account, \u2026); unique per type in a case."
+                    asset_type_id:
+                      type: integer
+                      description: Asset type id (`asset_types` of `iris_taxonomies_list`).
+                    asset_description:
+                      type: string
+                      description: Markdown accepted.
+                    asset_domain:
+                      type: string
+                    asset_ip:
+                      type: string
+                    asset_info:
+                      type: string
+                      description: Free-form additional information.
+                    asset_tags:
+                      type: string
+                      description: Comma-separated tags.
+                    analysis_status_id:
+                      type: integer
+                      description: Analysis status id (`analysis_statuses` of `iris_taxonomies_list`).
+                    asset_compromise_status_id:
+                      type: integer
+                      enum:
+                      - 0
+                      - 1
+                      - 2
+                      - 3
+                      description: 0 to be determined, 1 compromised, 2 not compromised, 3 unknown.
+                    custom_attributes:
+                      type: object
+                      description: Custom attribute values, by tab then field name.
                 case_identifier:
                   type: integer
                   description: Numeric ID of the IRIS case this call targets.
@@ -18370,7 +18460,29 @@ paths:
               properties:
                 payload:
                   type: object
-                  description: IOC fields; see IocSchemaForAPIV2.
+                  description: IOC fields.
+                  properties:
+                    ioc_value:
+                      type: string
+                      description: The indicator; checked against the format of its type.
+                    ioc_type_id:
+                      type: integer
+                      description: IOC type id (`ioc_types` of `iris_taxonomies_list`).
+                    ioc_tlp_id:
+                      type: integer
+                      description: TLP id (`tlps` of `iris_taxonomies_list`).
+                    ioc_description:
+                      type: string
+                      description: Markdown accepted.
+                    ioc_tags:
+                      type: string
+                      description: Comma-separated tags.
+                    custom_attributes:
+                      type: object
+                      description: Custom attribute values, by tab then field name.
+                  required:
+                  - ioc_value
+                  - ioc_type_id
                 case_identifier:
                   type: integer
                   description: Numeric ID of the IRIS case this call targets.
@@ -18559,6 +18671,26 @@ paths:
                   type: integer
                 payload:
                   type: object
+                  description: IOC fields to change; the others are kept.
+                  properties:
+                    ioc_value:
+                      type: string
+                      description: The indicator; checked against the format of its type.
+                    ioc_type_id:
+                      type: integer
+                      description: IOC type id (`ioc_types` of `iris_taxonomies_list`).
+                    ioc_tlp_id:
+                      type: integer
+                      description: TLP id (`tlps` of `iris_taxonomies_list`).
+                    ioc_description:
+                      type: string
+                      description: Markdown accepted.
+                    ioc_tags:
+                      type: string
+                      description: Comma-separated tags.
+                    custom_attributes:
+                      type: object
+                      description: Custom attribute values, by tab then field name.
                 case_identifier:
                   type: integer
                   description: Numeric ID of the IRIS case this call targets.
@@ -18908,9 +19040,31 @@ paths:
               properties:
                 payload:
                   type: object
-                  description: "Task fields \u2014 see CaseTaskSchema."
+                  description: Task fields.
+                  properties:
+                    task_title:
+                      type: string
+                      minLength: 2
+                    task_status_id:
+                      type: integer
+                      description: Task status id (`task_statuses` of `iris_taxonomies_list`).
+                    task_description:
+                      type: string
+                      description: Markdown accepted.
+                    task_tags:
+                      type: string
+                      description: Comma-separated tags.
+                    custom_attributes:
+                      type: object
+                      description: Custom attribute values, by tab then field name.
+                  required:
+                  - task_title
+                  - task_status_id
                 task_assignees_id:
                   type: array
+                  items:
+                    type: integer
+                  description: User ids assigned to the task (replaces the current assignees).
                 case_identifier:
                   type: integer
                   description: Numeric ID of the IRIS case this call targets.
@@ -19102,8 +19256,28 @@ paths:
                   type: integer
                 payload:
                   type: object
+                  description: Task fields to change; the others are kept.
+                  properties:
+                    task_title:
+                      type: string
+                      minLength: 2
+                    task_status_id:
+                      type: integer
+                      description: Task status id (`task_statuses` of `iris_taxonomies_list`).
+                    task_description:
+                      type: string
+                      description: Markdown accepted.
+                    task_tags:
+                      type: string
+                      description: Comma-separated tags.
+                    custom_attributes:
+                      type: object
+                      description: Custom attribute values, by tab then field name.
                 task_assignees_id:
                   type: array
+                  items:
+                    type: integer
+                  description: User ids assigned to the task (replaces the current assignees).
                 case_identifier:
                   type: integer
                   description: Numeric ID of the IRIS case this call targets.
@@ -19539,8 +19713,7 @@ paths:
     post:
       operationId: mcp_tool_iris_cases_filter
       summary: Filter cases by structured fields (customer, classification, owner, severity, state, SOC
-        id, dates) and/or an advanced `filters` tree (owner logins, tags, state names...). Returns paginated
-        case summaries.
+        id, dates). Returns paginated case summaries.
       tags:
       - MCP
       - MCP:tools
@@ -19610,16 +19783,6 @@ paths:
                 end_open_date:
                   type: string
                   description: ISO date
-                filters:
-                  type: object
-                  description: 'Advanced filter, as in the cases page: a group {"logic": "and"|"or", "items":
-                    [...]} whose items are conditions {"fieldId", "operation", "value"} or nested groups.
-                    fieldId: title, case_id, outcome, open_date, classification, customer, state (name),
-                    owner (login), severity (name), tags. operation: equals, not, contains, not_contains,
-                    starts_with, not_starts_with, ends_with, not_ends_with, empty, not_empty. Text matches
-                    other than equals / not ignore case. Example: {"logic": "and", "items": [{"logic":
-                    "or", "items": [{"fieldId": "owner", "operation": "equals", "value": "jdoe"}]}, {"fieldId":
-                    "tags", "operation": "not_contains", "value": "red team"}]}.'
       responses:
         '200':
           description: "Tool result \u2014 JSON-RPC content wrapper."

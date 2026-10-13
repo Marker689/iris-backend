@@ -32,6 +32,17 @@ from app.schema.marshables import IocSchema, IocSchemaForAPIV2
 _ioc_schema = IocSchemaForAPIV2()
 _ioc_update_schema = IocSchema()
 
+# Fields the IOC schemas load, for the callers (documentation only: the
+# schemas validate the payload).
+_IOC_PAYLOAD_PROPERTIES: dict[str, dict] = {
+    'ioc_value': {'type': 'string', 'description': 'The indicator; checked against the format of its type.'},
+    'ioc_type_id': {'type': 'integer', 'description': 'IOC type id (`ioc_types` of `iris_taxonomies_list`).'},
+    'ioc_tlp_id': {'type': 'integer', 'description': 'TLP id (`tlps` of `iris_taxonomies_list`).'},
+    'ioc_description': {'type': 'string', 'description': 'Markdown accepted.'},
+    'ioc_tags': {'type': 'string', 'description': 'Comma-separated tags.'},
+    'custom_attributes': {'type': 'object', 'description': 'Custom attribute values, by tab then field name.'},
+}
+
 # Default projection for `iris_case_iocs_list`. Drops `ioc_enrichment`
 # and `ioc_misp` — third-party enrichment documents whose size is set by
 # whatever module wrote them — plus `modification_history`, `link` and
@@ -109,8 +120,12 @@ def iris_case_iocs_get(args: dict) -> dict:
     input_schema={
         'type': 'object',
         'properties': {
-            'payload': {'type': 'object',
-                        'description': 'IOC fields; see IocSchemaForAPIV2.'},
+            'payload': {
+                'type': 'object',
+                'description': 'IOC fields.',
+                'properties': _IOC_PAYLOAD_PROPERTIES,
+                'required': ['ioc_value', 'ioc_type_id'],
+            },
         },
         'required': ['payload'],
     },
@@ -142,7 +157,11 @@ def iris_case_iocs_create(args: dict) -> dict:
         'type': 'object',
         'properties': {
             'ioc_identifier': {'type': 'integer'},
-            'payload': {'type': 'object'},
+            'payload': {
+                'type': 'object',
+                'description': 'IOC fields to change; the others are kept.',
+                'properties': _IOC_PAYLOAD_PROPERTIES,
+            },
         },
         'required': ['ioc_identifier', 'payload'],
     },
