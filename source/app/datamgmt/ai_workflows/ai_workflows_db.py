@@ -28,6 +28,7 @@ from sqlalchemy import func
 from sqlalchemy import or_
 from sqlalchemy import select
 from sqlalchemy import text
+from sqlalchemy import tuple_
 from sqlalchemy import update
 
 from app.db import db
@@ -412,10 +413,13 @@ def ai_workflows_db_get_suggestion(suggestion_id, lock=False):
 
 def ai_workflows_db_list_suggestions(entity_type=None, entity_id=None, statuses=None, run_id=None, limit=200,
                                      workflow_id=None, severity=None, audience_user_id=None, with_unaddressed=False,
-                                     without_entity=False):
+                                     without_entity=False, before=None):
     """Newest first. `audience_user_id`: only the suggestions addressed to
-    that user (plus, `with_unaddressed`, those addressed to no one)."""
+    that user (plus, `with_unaddressed`, those addressed to no one).
+    `before`: a (created_at, id) keyset, only the suggestions after it."""
     query = AiSuggestion.query
+    if before is not None:
+        query = query.filter(tuple_(AiSuggestion.created_at, AiSuggestion.id) < tuple_(*before))
     if workflow_id is not None:
         query = query.filter(AiSuggestion.workflow_id == workflow_id)
     if severity:

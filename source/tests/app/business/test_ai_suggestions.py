@@ -21,6 +21,8 @@ once), dismiss, answer validation, wait resumption and sibling expiry.
 The DB helpers, the engine and the tool executor are patched."""
 
 import uuid
+from datetime import datetime
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import MagicMock
@@ -412,3 +414,83 @@ class TestsInboxList(_SuggestionsTestCase):
     def test_unknown_severity_should_be_refused(self):
         with self.assertRaises(BusinessProcessingError):
             ai_suggestions_list(_ANALYST, severity='urgent')
+
+
+class TestsInboxPaging(_SuggestionsTestCase):
+    """A fake table honouring the keyset and the limit, newest first."""
+
+    def setUp(self):
+        super().setUp()
+        start = datetime(2026, 10, 1, 12, 0, 0)
+        # Two rows share a timestamp: the id breaks the tie
+        self.rows = [_suggestion(i, created_at=start + timedelta(seconds=i // 2)) for i in range(1, 13)]
+        self.hidden = set()
+        self.queries = []
+        patchers = [
+            patch(f'{_BUSINESS}.ai_workflows_db_list_suggestions', side_effect=self._query),
+            patch(f'{_BUSINESS}.ai_workflows_suggestions_user_can_see',
+                  side_effect=lambda _user_id, s: s.id not in self.hidden),
+        ]
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _query(self, limit=200, before=None, **_kwargs):
+        self.queries.append(before)
+        rows = sorted(self.rows, key=lambda s: (s.created_at, s.id), reverse=True)
+        if before is not None:
+            rows = [s for s in rows if (s.created_at, s.id) < before]
+        return rows[:limit]
+
+    def _ids(self, page):
+        return [s['id'] for s in page['data']]
+
+    def test_pages_should_walk_every_row_once(self):
+        seen = []
+        cursor = None
+        for _ in range(10):
+            page = ai_suggestions_list(_ANALYST, limit=5, cursor=cursor)
+            seen.extend(self._ids(page))
+            cursor = page['next_cursor']
+            if cursor is None:
+                break
+        self.assertEqual(list(range(12, 0, -1)), seen)
+
+    def test_last_page_should_have_no_cursor(self):
+        page = ai_suggestions_list(_ANALYST, limit=50)
+        self.assertEqual(12, len(page['data']))
+        self.assertIsNone(page['next_cursor'])
+
+    def test_hidden_rows_should_not_shorten_a_page(self):
+        self.hidden = {12, 11, 9}
+        page = ai_suggestions_list(_ANALYST, limit=4)
+        self.assertEqual([10, 8, 7, 6], self._ids(page))
+        following = ai_suggestions_list(_ANALYST, limit=4, cursor=page['next_cursor'])
+        self.assertEqual([5, 4, 3, 2], self._ids(following))
+
+    def test_a_page_filled_inside_a_short_batch_should_keep_a_cursor(self):
+        self.hidden = {12, 11, 10}
+        page = ai_suggestions_list(_ANALYST, limit=5)
+        self.assertEqual([9, 8, 7, 6, 5], self._ids(page))
+        following = ai_suggestions_list(_ANALYST, limit=5, cursor=page['next_cursor'])
+        self.assertEqual([4, 3, 2, 1], self._ids(following))
+        self.assertIsNone(following['next_cursor'])
+
+    def test_scan_should_stop_at_its_bound(self):
+        self.hidden = {s.id for s in self.rows}
+        with patch(f'{_BUSINESS}._MAX_LIST_SCAN', 6):
+            page = ai_suggestions_list(_ANALYST, limit=4)
+        self.assertEqual([], page['data'])
+        self.assertIsNotNone(page['next_cursor'])
+        following = ai_suggestions_list(_ANALYST, limit=4, cursor=page['next_cursor'])
+        self.assertEqual([], following['data'])
+        self.assertIsNone(following['next_cursor'])
+
+    def test_bad_cursor_should_be_refused(self):
+        with self.assertRaises(BusinessProcessingError):
+            ai_suggestions_list(_ANALYST, cursor='yesterday')
+
+    def test_unknown_run_should_give_an_empty_last_page(self):
+        with patch(f'{_BUSINESS}.ai_workflows_db_get_run_by_uuid', return_value=None):
+            page = ai_suggestions_list(_ANALYST, run_uuid=str(uuid.uuid4()))
+        self.assertEqual({'data': [], 'next_cursor': None}, page)

@@ -129,7 +129,7 @@ class TestsResolverOnlyData(_SuggestionsTestCase):
         with patch('app.business.ai_suggestions.ai_workflows_db_list_suggestions',
                    return_value=list(self.suggestions.values())):
             listed = ai_suggestions_list(_OTHER, status='all')
-        self.assertIsNone(listed[0]['result'])
+        self.assertIsNone(listed['data'][0]['result'])
 
     def test_answer_should_be_hidden_from_others(self):
         suggestion = self._add(_suggestion(kind=SUGGESTION_INFO_REQUEST, wait_id=self._add_wait().id,

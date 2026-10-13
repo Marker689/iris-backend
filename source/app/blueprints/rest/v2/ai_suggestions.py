@@ -86,14 +86,16 @@ ai_suggestions_blueprint = Blueprint('ai_suggestions_rest_v2', __name__, url_pre
 
 @ai_suggestions_blueprint.get('')
 @ac_api_requires()
-@api_doc(tags=['AiSuggestions'], summary='List the AI suggestions the user can see',
+@api_doc(tags=['AiSuggestions'], summary='List the AI suggestions the user can see, newest first, a page at a '
+                                         'time: {"data": [...], "next_cursor": null on the last page}',
          query_params=[('entity_type', 'string', "Entity type, 'none' for the suggestions about no entity"),
                        ('entity_id', 'integer'),
                        ('status', 'string', "Suggestion status, or several comma-separated: 'open' by default, "
                                              "'all' for every status"),
                        ('run_uuid', 'string'), ('workflow_id', 'integer'), ('severity', 'string'),
                        ('mine', 'boolean', 'Only the suggestions addressed to the current user'),
-                       ('limit', 'integer', 'At most this many suggestions (200 by default, 500 at most)')])
+                       ('limit', 'integer', 'Page size (200 by default, 500 at most)'),
+                       ('cursor', 'string', 'The next_cursor of the previous page, for the page after it')])
 def list_ai_suggestions_route():
     def _operation():
         return ai_suggestions_list(
@@ -107,6 +109,7 @@ def list_ai_suggestions_route():
             severity=request.args.get('severity') or None,
             mine=request.args.get('mine', '').lower() in ('1', 'true', 'yes'),
             limit=_int_arg('limit'),
+            cursor=request.args.get('cursor') or None,
         )
     return _handle(_operation)
 

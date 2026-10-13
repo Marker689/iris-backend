@@ -385,6 +385,7 @@ class AiSuggestion(db.Model):
         Index('ix_ai_suggestion_run', 'run_id'),
         Index('ix_ai_suggestion_step', 'step_id'),
         Index('ix_ai_suggestion_wait', 'wait_id'),
+        Index('ix_ai_suggestion_created', 'created_at', 'id'),
     )
 
     id = Column(BigInteger, primary_key=True)

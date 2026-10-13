@@ -36,7 +36,8 @@ paths:
   /api/v2/ai-suggestions:
     get:
       operationId: list_ai_suggestions_route_get
-      summary: List the AI suggestions the user can see
+      summary: 'List the AI suggestions the user can see, newest first, a page at a time: {"data": [...],
+        "next_cursor": null on the last page}'
       tags:
       - AiSuggestions
       security:
@@ -86,7 +87,13 @@ paths:
         required: false
         schema:
           type: integer
-        description: At most this many suggestions (200 by default, 500 at most)
+        description: Page size (200 by default, 500 at most)
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          type: string
+        description: The next_cursor of the previous page, for the page after it
       responses:
         '200':
           description: Success
@@ -19532,7 +19539,8 @@ paths:
     post:
       operationId: mcp_tool_iris_cases_filter
       summary: Filter cases by structured fields (customer, classification, owner, severity, state, SOC
-        id, dates). Returns paginated case summaries.
+        id, dates) and/or an advanced `filters` tree (owner logins, tags, state names...). Returns paginated
+        case summaries.
       tags:
       - MCP
       - MCP:tools
@@ -19602,6 +19610,16 @@ paths:
                 end_open_date:
                   type: string
                   description: ISO date
+                filters:
+                  type: object
+                  description: 'Advanced filter, as in the cases page: a group {"logic": "and"|"or", "items":
+                    [...]} whose items are conditions {"fieldId", "operation", "value"} or nested groups.
+                    fieldId: title, case_id, outcome, open_date, classification, customer, state (name),
+                    owner (login), severity (name), tags. operation: equals, not, contains, not_contains,
+                    starts_with, not_starts_with, ends_with, not_ends_with, empty, not_empty. Text matches
+                    other than equals / not ignore case. Example: {"logic": "and", "items": [{"logic":
+                    "or", "items": [{"fieldId": "owner", "operation": "equals", "value": "jdoe"}]}, {"fieldId":
+                    "tags", "operation": "not_contains", "value": "red team"}]}.'
       responses:
         '200':
           description: "Tool result \u2014 JSON-RPC content wrapper."

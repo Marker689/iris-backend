@@ -37,6 +37,8 @@ only; the rest of the audience sees who resolved it. Resolving needs
 `AI_WORKFLOWS_ENABLED`. Locks: the run, then its wait.
 """
 
+from datetime import datetime
+
 from app.business.ai_workflows import ai_workflows_require_enabled
 from app.business.ai_workflows import ai_workflows_suggestion_public
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_commit
@@ -93,6 +95,8 @@ _MAX_TEXT_ANSWER = 20000
 _MAX_COUNT_IDS = 500
 _DEFAULT_LIST = 200
 _MAX_LIST = 500
+# Rows a listing page reads at most while filling itself with visible ones
+_MAX_LIST_SCAN = 2000
 _NO_ENTITY = 'none'
 _FIELD_TYPES = ('text', 'textarea', 'number', 'boolean', 'select')
 
@@ -352,12 +356,34 @@ def _statuses(status):
     return statuses
 
 
+def _cursor_of(suggestion) -> str:
+    return f'{suggestion.created_at.isoformat()}_{suggestion.id}'
+
+
+def _parse_cursor(cursor):
+    """(created_at, id) of an opaque `next_cursor`."""
+    if not cursor:
+        return None
+    try:
+        created_at, _, identifier = str(cursor).rpartition('_')
+        return datetime.fromisoformat(created_at), int(identifier)
+    except ValueError:
+        raise BusinessProcessingError('Invalid cursor', data={'cursor': ['Use the next_cursor of a previous page']})
+
+
 def ai_suggestions_list(user_id, entity_type=None, entity_id=None, status=None, run_uuid=None,
-                        scope_mask=None, workflow_id=None, severity=None, mine=False, limit=None) -> list:
-    """Newest first. `entity_type` `none`: the suggestions about no
-    entity. `mine`: only those addressed to the user — always the case
-    for a non-administrator, who also sees the ones addressed to no one
-    on an entity they can access."""
+                        scope_mask=None, workflow_id=None, severity=None, mine=False, limit=None,
+                        cursor=None) -> dict:
+    """{"data": a page of suggestions, newest first, "next_cursor": what
+    to pass as `cursor` for the next page, null on the last one}.
+    `entity_type` `none`: the suggestions about no entity. `mine`: only
+    those addressed to the user — always the case for a
+    non-administrator, who also sees the ones addressed to no one on an
+    entity they can access.
+
+    Visibility is checked row by row, so the page reads batches until it
+    holds `limit` visible suggestions; past `_MAX_LIST_SCAN` rows it
+    stops short and still hands a cursor out."""
     without_entity = entity_type == _NO_ENTITY
     if without_entity:
         entity_type = None
@@ -366,21 +392,39 @@ def ai_suggestions_list(user_id, entity_type=None, entity_id=None, status=None, 
     if severity and severity not in SEVERITIES:
         raise BusinessProcessingError('Invalid severity filter', data={'severity': [f'Unknown severity {severity}']})
     statuses = _statuses(status)
+    before = _parse_cursor(cursor)
     run_id = None
     if run_uuid:
         run = ai_workflows_db_get_run_by_uuid(run_uuid)
         if run is None:
-            return []
+            return {'data': [], 'next_cursor': None}
         run_id = run.id
     limit = max(1, min(int(limit or _DEFAULT_LIST), _MAX_LIST))
     is_admin = _is_admin(user_id)
     audience = {}
     if mine or not is_admin:
         audience = {'audience_user_id': user_id, 'with_unaddressed': not mine}
-    rows = ai_workflows_db_list_suggestions(entity_type=entity_type or None, entity_id=entity_id,
-                                            statuses=statuses, run_id=run_id, limit=limit, workflow_id=workflow_id,
-                                            severity=severity or None, without_entity=without_entity, **audience)
-    return [ai_workflows_suggestion_public(s, user_id) for s in rows if _visible(s, user_id, scope_mask)]
+    page = []
+    last = None
+    scanned = 0
+    while len(page) < limit and scanned < _MAX_LIST_SCAN:
+        batch = min(limit, _MAX_LIST_SCAN - scanned)
+        rows = ai_workflows_db_list_suggestions(entity_type=entity_type or None, entity_id=entity_id,
+                                                statuses=statuses, run_id=run_id, limit=batch, workflow_id=workflow_id,
+                                                severity=severity or None, without_entity=without_entity,
+                                                before=before, **audience)
+        for suggestion in rows:
+            last = suggestion
+            scanned += 1
+            if _visible(suggestion, user_id, scope_mask):
+                page.append(ai_workflows_suggestion_public(suggestion, user_id))
+                if len(page) == limit:
+                    break
+        if len(rows) < batch and (not rows or last is rows[-1]):
+            # Read to the end: no further page
+            return {'data': page, 'next_cursor': None}
+        before = (last.created_at, last.id)
+    return {'data': page, 'next_cursor': _cursor_of(last)}
 
 
 def ai_suggestions_counts(user_id, entity_type, entity_ids, scope_mask=None) -> dict:
