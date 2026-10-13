@@ -327,8 +327,15 @@ def iris_cases_create(args: dict) -> dict:
                 'properties': _CASE_PAYLOAD_PROPERTIES,
                 'additionalProperties': False,
             },
-            'protagonists': {'type': 'array'},
-            'tags': {'type': 'string'},
+            'protagonists': {
+                'type': 'array',
+                'description': 'Replaces every protagonist of the case. Omit to keep them; [] removes them all.',
+            },
+            'tags': {
+                'type': 'string',
+                'description': 'Comma-separated list replacing every tag of the case. Omit to keep them; '
+                               '"" removes them all.',
+            },
         },
         'required': ['payload'],
     },
@@ -358,10 +365,12 @@ def iris_cases_update(args: dict) -> dict:
         updated = _case_schema.load(
             payload, instance=case, partial=True, session=db.session
         )
+        # None leaves them as they are: an update that does not mention
+        # them must not wipe the tags and protagonists of the case
         case = cases_update(
             case, updated,
-            args.get('protagonists') or [],
-            args.get('tags') or '',
+            args.get('protagonists'),
+            args.get('tags'),
             previous_case_state=previous_case_state,
             previous_reviewer_id=previous_reviewer_id,
             previous_owner_id=previous_owner_id,
