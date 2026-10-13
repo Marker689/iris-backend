@@ -4284,6 +4284,29 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/v2/cases/{case_identifier}/events/convert-date:
+    post:
+      operationId: convert_event_date_post
+      summary: Parse a free-form date into event date, time and timezone
+      tags:
+      - CaseEvents
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v2/cases/{case_identifier}/evidences:
     get:
       operationId: search_evidences_get

@@ -17,6 +17,7 @@
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 from datetime import datetime
+from datetime import timezone
 
 from app.db import db
 from app.blueprints.iris_user import iris_current_user
@@ -140,6 +141,40 @@ def events_delete(user, event: CasesEvent):
     call_modules_hook('on_postload_event_delete', event.event_id, caseid=event.case_id)
     collab_notify(event.case_id, 'events', 'deletion', event.event_id)
     track_activity(f'deleted event "{event.event_title}" in timeline', event.case_id)
+
+
+def events_convert_date(date_value: str) -> dict:
+    """Best-effort parse of a free-form date into the event form's date/time/tz fields.
+
+    Backs the "magic" date converter of the event dialog. Unix timestamps
+    (seconds or milliseconds) are read as UTC; naive dates default to +00:00.
+    """
+    value = (date_value or '').strip()
+    if not value:
+        raise BusinessProcessingError('No date provided')
+
+    if value.isdigit() and len(value) in (10, 13):
+        seconds = int(value) / 1000 if len(value) == 13 else int(value)
+        parsed_date = datetime.fromtimestamp(seconds, tz=timezone.utc)
+    else:
+        parsed_date = parse_bf_date_format(value)
+
+    if parsed_date is None:
+        raise BusinessProcessingError('Unable to find a matching date format')
+
+    tz = '+00:00'
+    offset = parsed_date.utcoffset()
+    if offset is not None:
+        total_minutes = int(offset.total_seconds()) // 60
+        sign = '-' if total_minutes < 0 else '+'
+        hours, minutes = divmod(abs(total_minutes), 60)
+        tz = f'{sign}{hours:02d}:{minutes:02d}'
+
+    return {
+        'date': parsed_date.strftime('%Y-%m-%d'),
+        'time': parsed_date.strftime('%H:%M:%S.%f')[:-3],
+        'tz': tz
+    }
 
 
 def events_list_filtered(case_identifier, filters, page: int = 1, per_page: int = 0):

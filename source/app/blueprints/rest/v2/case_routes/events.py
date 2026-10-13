@@ -29,6 +29,7 @@ from app.blueprints.rest.endpoints import response_api_deleted
 from app.blueprints.rest.endpoints import response_api_error
 from app.blueprints.rest.endpoints import response_api_not_found
 from app.blueprints.access_controls import ac_api_return_access_denied
+from app.business.events import events_convert_date
 from app.business.events import events_create
 from app.business.events import events_get
 from app.business.events import events_get_assets_ids
@@ -116,6 +117,24 @@ class Events:
 
         except ValidationError as e:
             return response_api_error('Data error', data=e.normalized_messages())
+        except BusinessProcessingError as e:
+            return response_api_error(e.get_message(), data=e.get_data())
+
+    @staticmethod
+    def convert_date(case_identifier):
+        if not cases_exists(case_identifier):
+            return response_api_not_found()
+        if not ac_fast_check_current_user_has_case_access(
+                case_identifier, [CaseAccessLevel.read_only, CaseAccessLevel.full_access]):
+            return ac_api_return_access_denied(caseid=case_identifier)
+
+        request_data = request.get_json(silent=True) or {}
+        date_value = request_data.get('date_value')
+        if not isinstance(date_value, str):
+            return response_api_error('date_value must be a string')
+
+        try:
+            return response_api_success(events_convert_date(date_value))
         except BusinessProcessingError as e:
             return response_api_error(e.get_message(), data=e.get_data())
 
@@ -271,6 +290,13 @@ def list_events(case_identifier):
          tags=['CaseEvents'], summary='Create a case event')
 def create_event(case_identifier):
     return events.create(case_identifier)
+
+
+@case_events_blueprint.post('/convert-date')
+@ac_api_requires()
+@api_doc(tags=['CaseEvents'], summary='Parse a free-form date into event date, time and timezone')
+def convert_event_date(case_identifier):
+    return events.convert_date(case_identifier)
 
 
 @case_events_blueprint.get('/<int:identifier>')
