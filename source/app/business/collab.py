@@ -36,6 +36,7 @@ import base64
 import datetime
 
 from app.business.access_controls import ac_fast_check_user_has_case_access
+from app.datamgmt.collab_db import collab_lock_doc
 from app.db import db
 from app.iris_engine.collab.render import markdown_to_ydoc_update
 from app.iris_engine.collab.render import normalize_markdown
@@ -325,18 +326,24 @@ def apply_wire_update(doc_name, update_b64, user_id):
     Returns None if the update is malformed or the doc has never been
     initialised (caller should have called `ensure_snapshot` first).
     """
-    row = CollabDoc.query.filter_by(doc_name=doc_name).first()
-    if row is None or not row.y_state:
-        # Should be unreachable — the socket handler calls
-        # `ensure_snapshot` on join, so every write path sees an
-        # initialised row. If we get here it's a bug in the caller.
-        return None
-
     try:
         update_bytes = base64.b64decode(update_b64) if update_b64 else b''
     except (TypeError, ValueError):
         return None
     if not update_bytes:
+        return None
+
+    # The row is locked until the commit. Socket.IO runs every event in
+    # its own greenlet, so two updates (even two keystrokes of the same
+    # editor) are merged concurrently: unlocked, both read the same
+    # state and the last write drops the other update — and with it
+    # every later update that builds on it, which then never renders.
+    row = collab_lock_doc(doc_name)
+    if row is None or not row.y_state:
+        # Should be unreachable — the socket handler calls
+        # `ensure_snapshot` on join, so every write path sees an
+        # initialised row. If we get here it's a bug in the caller.
+        db.session.rollback()
         return None
 
     from pycrdt import merge_updates
@@ -350,6 +357,7 @@ def apply_wire_update(doc_name, update_b64, user_id):
     except Exception:
         # Malformed update — drop it. Peers won't see the broadcast
         # either (caller checks the return value).
+        db.session.rollback()
         return None
 
     row.y_state = new_state

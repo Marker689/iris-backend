@@ -43,6 +43,7 @@ import base64
 import datetime
 import logging
 
+from app.datamgmt.collab_db import collab_lock_doc
 from app.db import db
 from app.iris_engine.collab.render import append_markdown_to_ydoc_update
 from app.iris_engine.collab.render import replace_markdown_in_ydoc_update
@@ -79,7 +80,8 @@ def collab_append_markdown(doc_name: str, md: str) -> None:
     meanwhile.
     """
     try:
-        row = CollabDoc.query.filter_by(doc_name=doc_name).first()
+        # Locked: an editor's update merged meanwhile would be lost
+        row = collab_lock_doc(doc_name)
         if row is None:
             return
 
@@ -145,7 +147,8 @@ def collab_replace_markdown(doc_name: str, md: str) -> None:
     `collab_append_markdown`).
     """
     try:
-        row = CollabDoc.query.filter_by(doc_name=doc_name).first()
+        # Locked: an editor's update merged meanwhile would be lost
+        row = collab_lock_doc(doc_name)
         if row is None:
             return
 

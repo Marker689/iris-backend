@@ -42,10 +42,11 @@ class TestCollabReplaceMarkdown(TestCase):
     def _run(self, row, md='# New\n\nBody.\n'):
         db = MagicMock()
         broadcast = MagicMock()
-        with patch.object(sync, 'CollabDoc', _collab_doc(row)), \
+        with patch.object(sync, 'collab_lock_doc', return_value=row) as lock, \
                 patch.object(sync, 'db', db), \
                 patch.object(sync, '_broadcast_state', broadcast):
             sync.collab_replace_markdown('note:1', md)
+        lock.assert_called_once_with('note:1')
         return db, broadcast
 
     def test_never_opened_document_is_left_to_the_source_column(self):
@@ -83,10 +84,11 @@ class TestCollabAppendMarkdown(TestCase):
     def _run(self, row):
         db = MagicMock()
         broadcast = MagicMock()
-        with patch.object(sync, 'CollabDoc', _collab_doc(row)), \
+        with patch.object(sync, 'collab_lock_doc', return_value=row) as lock, \
                 patch.object(sync, 'db', db), \
                 patch.object(sync, '_broadcast_state', broadcast):
             sync.collab_append_markdown('case-summary:1', 'Escalated.\n')
+        lock.assert_called_once_with('case-summary:1')
         return db, broadcast
 
     def test_connected_editors_get_the_appended_state(self):
