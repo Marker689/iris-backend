@@ -13,8 +13,7 @@ This guide is for people and for LLMs. It explains how to write an IRIS AI workf
   "workflow": {
     "name": "Short name",
     "description": "What it does and why",
-    "trigger_type": "event",
-    "trigger_config": {"hooks": ["on_postload_alert_create"]},
+    "triggers": [{"type": "event", "config": {"hooks": ["on_postload_alert_create"]}}],
     "graph": {"nodes": [], "edges": []},
     "write_tool_allowlist": [],
     "max_runs_per_hour": 60,
@@ -26,6 +25,7 @@ This guide is for people and for LLMs. It explains how to write an IRIS AI workf
 ```
 
 - A bare `workflow` object without the envelope is also accepted.
+- A single `trigger_type` with its `trigger_config` is still accepted in place of `triggers`.
 - `requirements`, `warnings`, `exported_at` and `iris_version` are informative and ignored on import.
 - An imported workflow is created **inactive** and owned by the importer, with no customer scope. Review it, create the keystore entries it needs, then activate it.
 
@@ -61,7 +61,7 @@ A block is a reusable fragment of graph (for example "look a hash up on VirusTot
 ```
 
 - **Node ids** are 1–64 characters from letters, digits, `_ . : -`, and are unique. Use short meaningful ids (`vt`, `summary`): later nodes reference outputs as `nodes.<id>.output`.
-- **Triggers.** A workflow has exactly **one** `trigger` node. Every node must be reachable from it, and no edge may lead back to it.
+- **Triggers.** A workflow has exactly **one** `trigger` node, whichever of its triggers starts the run. Every node must be reachable from it, and no edge may lead back to it.
 - **Edges** leave a node through a **port** (`source_port`, default `out`). The ports of each node type are listed in the catalogue, for example a condition has `true`/`false` and an HTTP request has `out`/`error`/`timeout`. Several edges may leave one port; their targets run in order.
 - **Errors.** When a node fails, the run follows its `error` port if one is wired; otherwise the run fails.
 - **Loops** are allowed: an edge may lead back to an earlier node (never to the trigger). Exit the loop with a `condition`, for example on a counter kept by a `set_variables` node, and read each pass through `vars` or `nodes.<id>.output`, which holds the output of the latest pass. A run fails once it has executed `IRIS_AI_WORKFLOWS_MAX_STEPS_PER_RUN` nodes (1000 by default), so a loop that never exits stops there; every node of every pass counts.
@@ -70,12 +70,15 @@ A block is a reusable fragment of graph (for example "look a hash up on VirusTot
 
 ## 3. Triggers
 
-| `trigger_type` | `trigger_config` |
+`triggers` is a list of `{type, config}`, with at most one trigger of each type. A workflow can, for example, run on an event, every night and from a menu. The run starts at the `trigger` node whichever trigger fired; `trigger.type` tells which one.
+
+| `type` | `config` |
 |---|---|
 | `event` | `hooks`: list of `on_postload_*` event names (see the catalogue) or `["*"]`. Optional `condition`: a Jinja expression over `event`, `data`, `hook`, `entity_type`, `entity_id`; e.g. `data.alert_severity_id >= 4`. Optional `dedup_minutes`: ignore the same entity again for that long. Optional `skip_if_active` (default `true`): don't start while a run on the same entity is active. |
 | `cron` | `cron`: 5-field expression (`*/15 * * * *`). `target`: `none`, `war_rooms` or `cases` (one run per open target the owner can access), and `max_targets`. |
 | `manual` | Optional `entity_types`: restricts and requires the entity it runs on (`alert`, `alert_cluster`, `case`, `war_room`). Optional `menus` (`alert`, `case`, `asset`, `ioc`, `note`, `event`, `evidence`, `task`) and `menu_label`: shows the workflow in those object menus; a click runs it as the analyst who clicked (their access and personal keys), with the object as `trigger.payload`. The menus need `entity_types` to accept `alert` (alert menu) or `case` (the others). |
 | `webhook` | Inbound HTTP endpoint (the token is created after import). Optional `require_signature`, `entity_type` with `entity_id_path`. |
+| `workflow` | No config. Lets other workflows call this one with a `run_workflow` node; the inputs are in `trigger.payload.inputs` and the caller in `trigger.payload.caller`. |
 
 **What a run is about.**
 - Alert, alert cluster, case and war room events run on that entity.
@@ -186,6 +189,12 @@ The config fields are listed with their defaults in the catalogue. Highlights:
 - **`notify`**: an in-app notification.
   - Config: `audience` is `entity`, `owner` or `users` (with `user_ids`), plus `title` and `body`.
   - `entity` is the entity's owner (a war room: its members) plus the user who triggered the run or whose action fired the event; when none of them can see the entity, the workflow owner is notified instead. Only active users who can see the entity are notified. The output is `{notified: [user ids]}`, with a `note` when the list differs from the audience.
+- **`run_workflow`**: ports `out`, `error`, `timeout`. It starts another workflow, which must be active and have a `workflow` trigger.
+  - Config: `workflow_id`; `inputs`, a list of `{name, value}` (a template or a `$path` object) given to the called workflow as `trigger.payload.inputs`; `mode`; `timeout_minutes` (1–43200, 60 by default).
+  - The called run is about the same entity and acts as the calling run: the same run-as user and access. It counts towards the chain depth (`AI_WORKFLOWS_MAX_CHAIN_DEPTH`).
+  - `mode: "wait"` (the default) waits for the called run. Output: `run_uuid`, `workflow_id`, `workflow_name`, `status`, `error`, `vars` and `output` (the output of its last node). A failed or cancelled run leaves through `error` if it is wired, otherwise the calling run fails. Past `timeout_minutes` the node leaves through `timeout`; the called run goes on.
+  - `mode: "async"` starts the run and goes on at once. Output: `run_uuid`, `workflow_id`, `workflow_name`, `status`.
+  - In a dry run nothing is started.
 - **`delay`**: waits `minutes`.
 - **`stop`**: ends the run, with `status` `succeeded` or `failed` and a `reason`.
 

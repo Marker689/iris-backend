@@ -117,6 +117,8 @@ from app.models.ai_workflows import WAIT_EXPIRED
 from app.models.ai_workflows import WAIT_PENDING
 from app.models.ai_workflows import WAIT_RESOLVED
 from app.models.ai_workflows import WAIT_USER_INPUT
+from app.models.ai_workflows import WAIT_WORKFLOW
+from app.models.ai_workflows import ai_workflow_triggers
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +189,7 @@ def _sha256(payload):
 
 def _snapshot(workflow) -> dict:
     snapshot = {name: getattr(workflow, name, None) for name in _SNAPSHOT_FIELDS}
+    snapshot['triggers'] = ai_workflow_triggers(workflow)
     snapshot['id'] = workflow.id
     snapshot['uuid'] = str(workflow.uuid) if getattr(workflow, 'uuid', None) else None
     return ai_workflows_tools_json_safe(snapshot)
@@ -319,14 +322,16 @@ def ai_workflows_engine_insert_run(workflow, trigger_type, *, denial=None, trigg
                                    entity_type=None, entity_id=None, sub_entity=None, payload=None, dry_run=False,
                                    dedup_key=None, chain_depth=0, parent_run_id=None, enqueue=True,
                                    scope_mask=None, replay=None, tested_node=None,
-                                   run_as_user_id=None) -> AiWorkflowRun:
+                                   run_as_user_id=None, caller_wait_uuid=None) -> AiWorkflowRun:
     """Insert (and commit) the run once `ai_workflows_engine_access_denial`
     returned `denial`: the trigger path checks access before taking the
     workflow lock (the check may commit), then inserts under the lock.
     `replay` (`{step_id, node_id, context}`) starts the run at that node
     with that context instead of at the trigger; with `tested_node` the
     run executes that node definition alone. `run_as_user_id` (the
-    owner when None) must be the user `denial` was computed for."""
+    owner when None) must be the user `denial` was computed for.
+    `caller_wait_uuid`: the wait of the `run_workflow` node that called
+    the run, resumed when it ends."""
     common = {
         'run_as_user_id': workflow.owner_id if run_as_user_id is None else run_as_user_id,
         'triggered_by_user_id': triggered_by_user_id,
@@ -361,6 +366,8 @@ def ai_workflows_engine_insert_run(workflow, trigger_type, *, denial=None, trigg
         run.definition_snapshot = {**run.definition_snapshot,
                                    'graph': ai_workflows_tools_json_safe({'nodes': [tested_node], 'edges': []})}
         run.tested_node_id = tested_node['id']
+    if caller_wait_uuid:
+        _set_context(run, caller_wait=str(caller_wait_uuid))
     ai_workflows_db_add(run)
     ai_workflows_db_commit()
     ai_workflows_live_emit(run)
@@ -530,12 +537,76 @@ def _run_payload(run) -> dict:
     }
 
 
+def _called_result(run) -> dict:
+    """What a called run gives back to the workflow that called it."""
+    context = run.context or {}
+    last = context.get('last')
+    stored = ((context.get('nodes') or {}).get(last) or {}) if last else {}
+    return {
+        'run_uuid': str(run.uuid) if run.uuid else None,
+        'workflow_id': run.workflow_id,
+        'workflow_name': run.workflow_name,
+        'status': run.status,
+        'error': run.error,
+        'stop_reason': context.get('stop_reason'),
+        'vars': context.get('vars') or {},
+        'output': stored.get('output'),
+    }
+
+
+def _caller_wait_uuid(run):
+    """The wait of the `run_workflow` node that started the run (not
+    carried over by a re-run nor a replay)."""
+    return (run.context or {}).get('caller_wait') if run.parent_run_id else None
+
+
+def _resume_caller(run):
+    """A run started by a `run_workflow` node in wait mode ended: the
+    caller continues through `out` (succeeded) or `error`, and fails when
+    `error` leads nowhere, like a failed node."""
+    wait_uuid = _caller_wait_uuid(run)
+    if not wait_uuid:
+        return
+    caller, wait = ai_workflows_engine_lock_run_then_wait(wait_uuid=wait_uuid)
+    if wait is None or caller is None or caller.id != run.parent_run_id or wait.kind != WAIT_WORKFLOW \
+            or wait.status != WAIT_PENDING:
+        ai_workflows_db_commit()
+        return
+    result = ai_workflows_tools_json_safe(_called_result(run))
+    if run.status == RUN_SUCCEEDED:
+        ai_workflows_engine_resume_wait(wait, result, port=PORT_OUT)
+        return
+    if ai_workflows_graph_targets(_graph(caller), wait.node_id, PORT_ERROR):
+        ai_workflows_engine_resume_wait(wait, result, port=PORT_ERROR)
+        return
+    wait.status = WAIT_RESOLVED
+    wait.resolved_payload = result
+    wait.resolved_at = ai_workflows_db_utcnow()
+    alive = caller.status in RUN_ACTIVE_STATUSES
+    expired = []
+    if alive:
+        node = ai_workflows_graph_nodes(_graph(caller)).get(wait.node_id) or {}
+        _finish(caller, RUN_FAILED, f'{node.get("label") or wait.node_id}: the called workflow '
+                                    f'{run.workflow_name} {run.status}' + (f': {run.error}' if run.error else ''))
+        expired = _close_waits(caller)
+    ai_workflows_db_commit()
+    if alive:
+        _emit_all(expired)
+        ai_workflows_live_emit(caller)
+        _publish_complete(caller)
+
+
 def _publish_complete(run):
     """`on_postload_ai_workflow_run_complete`, inside the run's chain so
-    the workflows it triggers count one level deeper. Not for dry runs
-    nor node tests."""
+    the workflows it triggers count one level deeper, and the workflow
+    that called the run continues. Not for dry runs nor node tests."""
     from app.iris_engine.module_handler.module_handler import call_modules_hook
 
+    try:
+        _resume_caller(run)
+    except Exception:
+        logger.exception(f'AI workflow run {run.uuid} could not resume the run that called it')
+        ai_workflows_db_rollback()
     if run.is_dry_run or run.tested_node_id:
         return
     try:
@@ -931,6 +1002,10 @@ def _resume_output(run, wait, payload, port) -> dict:
             return {**initial, 'payload': None, 'timed_out': True}
         return {'status_code': initial.get('status_code'), 'body': initial.get('body'), 'payload': payload,
                 'received_at': _iso(ai_workflows_db_utcnow())}
+    if wait.kind == WAIT_WORKFLOW:
+        if port == PORT_TIMEOUT:
+            return {**initial, 'timed_out': True}
+        return dict(payload) if isinstance(payload, dict) else {}
     if wait.kind == WAIT_USER_INPUT:
         output = dict(payload) if isinstance(payload, dict) else {}
         output.setdefault('answer', None)

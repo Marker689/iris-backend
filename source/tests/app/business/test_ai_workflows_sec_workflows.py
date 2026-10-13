@@ -127,7 +127,7 @@ class _WorkflowsTestCase(TestCase):
             patch(f'{_BUSINESS}.access_controls_user_accessible_customers',
                   side_effect=lambda user, _permissions: self.accessible_customers.get(user.id)),
             patch(f'{_BUSINESS}.ai_workflows_tools_catalogue', return_value=_TOOLS),
-            patch(f'{_BUSINESS}.ai_workflows_graph_validate_trigger_config', return_value=[]),
+            patch(f'{_BUSINESS}.ai_workflows_graph_validate_triggers', return_value=[]),
             patch(f'{_BUSINESS}.ai_workflows_graph_validate', return_value=[]),
             patch(f'{_BUSINESS}.ai_workflows_entities_user_can_access', self.can_access),
             patch(f'{_BUSINESS}.ai_workflows_engine_start_run', self.start_run),

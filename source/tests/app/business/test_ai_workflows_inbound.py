@@ -339,7 +339,7 @@ class TestsTrigger(InboundTestCase):
     def test_non_webhook_workflow_should_be_rejected(self):
         self.workflow.trigger_type = TRIGGER_MANUAL
         self._trigger_refused(_bearer())
-        self._assert_logged(INBOUND_TRIGGER, 'rejected', 'not webhook')
+        self._assert_logged(INBOUND_TRIGGER, 'rejected', 'no webhook trigger')
 
     def test_inactive_workflow_should_be_rejected(self):
         self.workflow.is_active = False

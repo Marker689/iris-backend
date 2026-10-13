@@ -82,6 +82,7 @@ from app.models.ai_workflows import ENTITY_TYPES
 from app.models.ai_workflows import INBOUND_CALLBACK
 from app.models.ai_workflows import INBOUND_TRIGGER
 from app.models.ai_workflows import TRIGGER_WEBHOOK
+from app.models.ai_workflows import ai_workflow_trigger_config
 from app.models.ai_workflows import WAIT_CALLBACK
 from app.models.ai_workflows import WAIT_PENDING
 
@@ -372,7 +373,7 @@ def _trigger_entity(workflow, payload):
     payload, or (None, None). Whether the entity exists or the owner can
     access it is left to the run start (a refused run is skipped), so the
     answer is the same either way."""
-    config = workflow.trigger_config or {}
+    config = ai_workflow_trigger_config(workflow, TRIGGER_WEBHOOK) or {}
     entity_type = config.get('entity_type')
     path = config.get('entity_id_path')
     if not entity_type or not path:
@@ -406,8 +407,8 @@ def _check_workflow(workflow, headers):
         raise AiWorkflowsInboundError(401, 'missing bearer token')
     if not _token_matches(token, workflow.inbound_token_hash):
         raise AiWorkflowsInboundError(401, 'bad token')
-    if workflow.trigger_type != TRIGGER_WEBHOOK:
-        raise AiWorkflowsInboundError(401, f'workflow trigger is {workflow.trigger_type}, not webhook')
+    if ai_workflow_trigger_config(workflow, TRIGGER_WEBHOOK) is None:
+        raise AiWorkflowsInboundError(401, 'workflow has no webhook trigger')
     if not workflow.is_active:
         raise AiWorkflowsInboundError(401, 'workflow is inactive')
     if not app.config.get('AI_WORKFLOWS_ENABLED', True):
@@ -461,7 +462,7 @@ def ai_workflows_inbound_trigger(workflow_uuid, headers, raw_body, source_ip, co
     try:
         _check_size(raw_body, content_length)
         _check_workflow(workflow, headers)
-        required = bool((workflow.trigger_config or {}).get('require_signature'))
+        required = bool((ai_workflow_trigger_config(workflow, TRIGGER_WEBHOOK) or {}).get('require_signature'))
         signature_sha256 = _check_signature(headers, _signing_key(workflow), raw_body, required=required)
         payload = ai_workflows_inbound_parse(raw_body)
         entity_type, entity_id = _trigger_entity(workflow, payload)

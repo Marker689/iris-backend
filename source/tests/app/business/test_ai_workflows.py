@@ -117,7 +117,7 @@ class _WorkflowsTestCase(TestCase):
             patch(f'{_BUSINESS}.access_controls_user_accessible_customers',
                   side_effect=lambda user, _permissions: self.accessible_customers.get(user.id)),
             patch(f'{_BUSINESS}.ai_workflows_tools_catalogue', return_value=_TOOLS),
-            patch(f'{_BUSINESS}.ai_workflows_graph_validate_trigger_config', return_value=[]),
+            patch(f'{_BUSINESS}.ai_workflows_graph_validate_triggers', return_value=[]),
             patch(f'{_BUSINESS}.ai_workflows_graph_validate', side_effect=lambda *_args, **_kwargs: self.graph_errors),
             patch(f'{_BUSINESS}.ai_workflows_entities_user_can_access', self.can_access),
             patch(f'{_BUSINESS}.ai_workflows_engine_start_run', self.start_run),
@@ -217,6 +217,54 @@ class TestsUpdate(_WorkflowsTestCase):
         workflow = self.workflows[3] = _stored_workflow(trigger_type='webhook', trigger_config={},
                                                         inbound_token_hash='abc')
         ai_workflows_update(3, {'trigger_type': TRIGGER_EVENT, 'trigger_config': {'hook': 'x'}}, _OWNER, False)
+        self.assertIsNone(workflow.inbound_token_hash)
+
+
+class TestsTriggers(_WorkflowsTestCase):
+
+    _CRON = {'type': 'cron', 'config': {'cron': '0 * * * *', 'target': 'cases'}}
+    _MANUAL = {'type': TRIGGER_MANUAL, 'config': {'entity_types': ['alert']}}
+
+    def test_create_with_several_triggers_should_mirror_the_first(self):
+        data = ai_workflows_create(_body(triggers=[self._CRON, {'type': 'workflow'}]), _OWNER, False)
+        self.assertEqual([self._CRON, {'type': 'workflow', 'config': {}}], data['triggers'])
+        self.assertEqual(('cron', self._CRON['config']), (data['trigger_type'], data['trigger_config']))
+
+    def test_single_trigger_body_should_replace_the_first_trigger_only(self):
+        workflow = self.workflows[3] = _stored_workflow(triggers=[self._MANUAL, self._CRON])
+        ai_workflows_update(3, {'trigger_type': TRIGGER_EVENT, 'trigger_config': {'hooks': ['x']}}, _OWNER, False)
+        self.assertEqual([{'type': TRIGGER_EVENT, 'config': {'hooks': ['x']}}, self._CRON], workflow.triggers)
+        self.assertEqual(TRIGGER_EVENT, workflow.trigger_type)
+
+    def test_single_trigger_body_of_another_listed_type_should_not_duplicate_it(self):
+        workflow = self.workflows[3] = _stored_workflow(triggers=[self._MANUAL, self._CRON])
+        ai_workflows_update(3, {'trigger_type': 'cron', 'trigger_config': {'cron': '5 * * * *'}}, _OWNER, False)
+        self.assertEqual([{'type': 'cron', 'config': {'cron': '5 * * * *'}}], workflow.triggers)
+
+    def test_triggers_should_replace_every_trigger_and_be_kept_otherwise(self):
+        workflow = self.workflows[3] = _stored_workflow(triggers=[self._MANUAL, self._CRON])
+        ai_workflows_update(3, {'name': 'Renamed'}, _OWNER, False)
+        self.assertEqual([self._MANUAL, self._CRON], workflow.triggers)
+        ai_workflows_update(3, {'triggers': [self._CRON]}, _OWNER, False)
+        self.assertEqual(([self._CRON], 'cron'), (workflow.triggers, workflow.trigger_type))
+
+    def test_stored_single_trigger_should_be_read_as_a_list(self):
+        workflow = self.workflows[3] = _stored_workflow()
+        ai_workflows_update(3, {'name': 'Renamed'}, _OWNER, False)
+        self.assertEqual([self._MANUAL], workflow.triggers)
+
+    def test_malformed_triggers_should_be_rejected(self):
+        for triggers in ('manual', ['manual']):
+            errors = self._invalid(_body(triggers=triggers))
+            self.assertEqual(['triggers'], [e['field'] for e in errors])
+
+    def test_leaving_the_webhook_trigger_should_drop_the_token_but_keeping_it_should_not(self):
+        webhook = {'type': 'webhook', 'config': {}}
+        workflow = self.workflows[3] = _stored_workflow(triggers=[webhook], inbound_token_hash='abc')
+        with app.app_context():
+            ai_workflows_update(3, {'triggers': [self._MANUAL, webhook]}, _OWNER, False)
+        self.assertEqual('abc', workflow.inbound_token_hash)
+        ai_workflows_update(3, {'triggers': [self._MANUAL]}, _OWNER, False)
         self.assertIsNone(workflow.inbound_token_hash)
 
 
@@ -396,7 +444,8 @@ class TestsTestNode(_WorkflowsTestCase):
 
     def test_trigger_and_waiting_nodes_should_be_rejected(self):
         for node in (self._node(type='trigger', config={}), self._node(type='delay', config={'minutes': 5}),
-                     self._node(type='ask_analyst', config={'question': 'Why?'})):
+                     self._node(type='ask_analyst', config={'question': 'Why?'}),
+                     self._node(type='run_workflow', config={'workflow_id': 4, 'mode': 'async'})):
             with self.assertRaises(BusinessProcessingError):
                 ai_workflows_test_node(3, {'node': node}, _OWNER, False)
         self.test_node.assert_not_called()

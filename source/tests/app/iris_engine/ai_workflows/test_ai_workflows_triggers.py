@@ -192,6 +192,22 @@ class TestsEventTrigger(EngineTestCase):
         wf.is_active = False
         self.assertEqual([], self._fire(wf))
 
+    def test_event_trigger_among_several_should_start_an_event_run(self):
+        wf = self._workflow()
+        wf.trigger_type, wf.trigger_config = 'cron', {'cron': '0 * * * *'}
+        wf.triggers = [{'type': 'cron', 'config': {'cron': '0 * * * *'}},
+                       {'type': 'event', 'config': {'hooks': ['on_postload_alert_create'], 'dedup_minutes': 30}}]
+        run = self._fire(wf)[0]
+        self.assertEqual(('running', 'event'), (run.status, run.trigger_type))
+        # The suppression rules are those of the event trigger
+        self.dedup_hit = object()
+        self.assertEqual([], self._fire(wf))
+
+    def test_workflow_without_an_event_trigger_should_not_start(self):
+        wf = self._workflow()
+        wf.triggers = [{'type': 'manual', 'config': {}}, {'type': 'workflow', 'config': {}}]
+        self.assertEqual([], self._fire(wf))
+
 
 class TestsMenuTrigger(EngineTestCase):
     """Runs started from an object menu act as the analyst who clicked."""
@@ -278,6 +294,14 @@ class TestsMenuTrigger(EngineTestCase):
         with patch.dict('app.app.config', {'AI_WORKFLOWS_ENABLED': False}):
             self.assertEqual((None, 'This workflow is not offered on these objects'), self._click())
 
+    def test_manual_trigger_among_several_should_offer_the_menu(self):
+        self.wf.trigger_type, self.wf.trigger_config = 'event', {'hooks': ['on_postload_ioc_create']}
+        self.wf.triggers = [{'type': 'event', 'config': {'hooks': ['on_postload_ioc_create']}},
+                            {'type': 'manual', 'config': {'entity_types': ['case'], 'menus': ['ioc']}}]
+        run, reason = self._click()
+        self.assertIsNone(reason)
+        self.assertEqual(('running', 'manual'), (run.status, run.trigger_type))
+
 
 class TestsCronTrigger(EngineTestCase):
 
@@ -304,6 +328,13 @@ class TestsCronTrigger(EngineTestCase):
         self.assertEqual('cron', runs[0].trigger_type)
         self.assertEqual(now.replace(second=0), self.wf.last_fired_at)
         self.assertEqual([], ai_workflows_triggers_cron_tick(now))
+
+    def test_cron_trigger_among_several_should_fire(self):
+        self.wf.trigger_type, self.wf.trigger_config = 'manual', {}
+        self.wf.triggers = [{'type': 'manual', 'config': {}},
+                            {'type': 'cron', 'config': {'cron': '*/5 * * * *', 'target': 'cases'}}]
+        run_ids = ai_workflows_triggers_cron_tick(datetime.datetime(2026, 10, 5, 10, 15))
+        self.assertEqual(['cron', 'cron'], [self.store.runs[i].trigger_type for i in run_ids])
 
     def test_not_due_schedule_should_not_start(self):
         self.assertEqual([], ai_workflows_triggers_cron_tick(datetime.datetime(2026, 10, 5, 10, 16)))

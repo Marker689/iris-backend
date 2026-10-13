@@ -22,12 +22,13 @@ they are or after an edit. A library document is never modified by an
 import; an added workflow is a copy."""
 
 from app.iris_engine.ai_workflows.guide import ai_workflows_guide_examples
+from app.models.ai_workflows import ai_workflow_triggers
 
 _DEFAULT_CATEGORY = 'Other'
 
 
 def ai_workflows_library_describe(document, default_name='') -> dict:
-    """`{name, description, category, trigger_type, trigger_config,
+    """`{name, description, category, triggers, trigger_type, trigger_config,
     uses_ai, requirements, document}` of a workflow document."""
     workflow = document.get('workflow') or {}
     nodes = (workflow.get('graph') or {}).get('nodes') or []
@@ -35,6 +36,7 @@ def ai_workflows_library_describe(document, default_name='') -> dict:
         'name': workflow.get('name') or default_name,
         'description': workflow.get('description') or '',
         'category': document.get('category') or _DEFAULT_CATEGORY,
+        'triggers': ai_workflow_triggers(workflow),
         'trigger_type': workflow.get('trigger_type'),
         'trigger_config': workflow.get('trigger_config') or {},
         'uses_ai': any(isinstance(n, dict) and n.get('type') == 'ai_agent' for n in nodes),
@@ -49,7 +51,7 @@ def ai_workflows_library_sort_key(entry) -> tuple:
 
 def ai_workflows_library_entries() -> list:
     """The shipped workflows, `[{id, file, name, description, category,
-    trigger_type, trigger_config, uses_ai, requirements, document}]`, by
+    triggers, trigger_type, trigger_config, uses_ai, requirements, document}]`, by
     category then name. `id` is the file name without its extensions."""
     entries = []
     for example in ai_workflows_guide_examples():

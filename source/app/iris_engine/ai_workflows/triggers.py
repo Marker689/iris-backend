@@ -16,7 +16,8 @@
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-"""What starts runs: IRIS events, schedules and object menus.
+"""What starts runs: IRIS events, schedules, object menus and the
+`run_workflow` node of another workflow.
 
 The hook listener runs inside the save flow that fired the hook, so it
 only builds the event envelope and hands it to Celery; the
@@ -47,6 +48,7 @@ from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_active_run
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_commit
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_count_runs_since
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_get
+from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_get_user
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_list_active
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_lock_workflow
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_open_case_ids
@@ -54,6 +56,7 @@ from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_open_war_r
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_recent_dedup_run
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_rollback
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_utcnow
+from app.iris_engine.access_control.utils import ac_get_effective_permissions_of_user
 from app.iris_engine.ai_workflows.context import ai_workflows_context_eval_expression
 from app.iris_engine.ai_workflows.cron import ai_workflows_cron_is_due
 from app.iris_engine.ai_workflows.engine import ai_workflows_engine_access_denial
@@ -73,6 +76,9 @@ from app.models.ai_workflows import MENU_ENTITY_TYPES
 from app.models.ai_workflows import TRIGGER_CRON
 from app.models.ai_workflows import TRIGGER_EVENT
 from app.models.ai_workflows import TRIGGER_MANUAL
+from app.models.ai_workflows import TRIGGER_WORKFLOW
+from app.models.ai_workflows import ai_workflow_trigger_config
+from app.models.authorization import ac_has_permission_server_administrator
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +104,8 @@ _SKIP_DUPLICATE = 'Duplicate within the dedup window'
 _SKIP_ACTIVE = 'A run is still active on the entity'
 _SKIP_HOURLY = 'Hourly run limit reached'
 _NOT_IN_MENU = 'This workflow is not offered on these objects'
+_NOT_CALLABLE = ('The workflow does not exist, is not active, has no "Called by a workflow" trigger or belongs '
+                 'to another user')
 
 
 def _enabled() -> bool:
@@ -112,10 +120,6 @@ def _hooks_match(hooks, hook_name) -> bool:
     if not isinstance(hooks, list) or not isinstance(hook_name, str):
         return False
     return hook_name in hooks or ('*' in hooks and _wildcard_matches(hook_name))
-
-
-def _hook_matches(trigger_config, hook_name) -> bool:
-    return _hooks_match((trigger_config or {}).get('hooks'), hook_name)
 
 
 def _event_hooks() -> list:
@@ -220,8 +224,8 @@ def _condition_holds(workflow, condition) -> bool:
         return False
 
 
-def _suppression(workflow, entity_type, entity_id, dedup_key, dedup_minutes, now):
-    trigger_config = workflow.trigger_config or {}
+def _suppression(workflow, trigger_type, entity_type, entity_id, dedup_key, dedup_minutes, now):
+    trigger_config = ai_workflow_trigger_config(workflow, trigger_type) or {}
     if dedup_key and dedup_minutes and ai_workflows_db_recent_dedup_run(
             workflow.id, dedup_key, now - datetime.timedelta(minutes=dedup_minutes)) is not None:
         return _SKIP_DUPLICATE
@@ -267,7 +271,7 @@ def _guarded_start(workflow, trigger_type, *, entity_type, entity_id, sub_entity
     if workflow is None or not workflow.is_active:
         ai_workflows_db_commit()
         return None
-    reason = _suppression(workflow, entity_type, entity_id, dedup_key, dedup_minutes, ai_workflows_db_utcnow())
+    reason = _suppression(workflow, trigger_type, entity_type, entity_id, dedup_key, dedup_minutes, ai_workflows_db_utcnow())
     if reason is not None:
         # Commits, releasing the lock
         ai_workflows_engine_skip_run(workflow, trigger_type, reason)
@@ -288,10 +292,9 @@ def ai_workflows_triggers_process_event(event, workflow_ids, chain_depth=None, p
     for workflow_id in workflow_ids or []:
         try:
             workflow = ai_workflows_db_get(workflow_id)
-            if workflow is None or not workflow.is_active or workflow.trigger_type != TRIGGER_EVENT \
-                    or not _hook_matches(workflow.trigger_config, hook_name):
+            config = ai_workflow_trigger_config(workflow, TRIGGER_EVENT) if workflow is not None else None
+            if config is None or not workflow.is_active or not _hooks_match(config.get('hooks'), hook_name):
                 continue
-            config = workflow.trigger_config or {}
             expression = config.get('condition')
             condition = (expression, _condition_context(event, entity_type, entity_id)) if expression else None
             sub_key = f':{sub_entity.get("type")}:{sub_entity.get("id")}' if sub_entity else ''
@@ -335,8 +338,12 @@ def _accessible_targets(workflow, entity_type, fetch, limit, scope=None) -> list
     return [(entity_type, i) for i in targets[:limit]]
 
 
+def _cron_expression(workflow) -> str:
+    return (ai_workflow_trigger_config(workflow, TRIGGER_CRON) or {}).get('cron') or ''
+
+
 def _cron_targets(workflow) -> list:
-    config = workflow.trigger_config or {}
+    config = ai_workflow_trigger_config(workflow, TRIGGER_CRON) or {}
     target = config.get('target') or 'none'
     limit = _int(config.get('max_targets')) or _DEFAULT_MAX_TARGETS
     if target == 'war_rooms':
@@ -355,8 +362,8 @@ def _claim_cron(workflow_id, now):
     """Lock the workflow and record the fire; None when not due (any
     more: another tick took it)."""
     workflow = ai_workflows_db_lock_workflow(workflow_id)
-    expression = ((workflow.trigger_config or {}).get('cron') if workflow is not None else None) or ''
-    if workflow is None or not workflow.is_active or workflow.trigger_type != TRIGGER_CRON \
+    expression = _cron_expression(workflow) if workflow is not None else ''
+    if workflow is None or not workflow.is_active or not expression \
             or not ai_workflows_cron_is_due(expression, now, workflow.last_fired_at):
         ai_workflows_db_commit()
         return None
@@ -371,8 +378,8 @@ def ai_workflows_triggers_cron_tick(now=None) -> list:
     run_ids = []
     for candidate in ai_workflows_db_list_active(TRIGGER_CRON):
         try:
-            expression = (candidate.trigger_config or {}).get('cron') or ''
-            if not ai_workflows_cron_is_due(expression, now, candidate.last_fired_at):
+            expression = _cron_expression(candidate)
+            if not expression or not ai_workflows_cron_is_due(expression, now, candidate.last_fired_at):
                 continue
             workflow = _claim_cron(candidate.id, now)
             if workflow is None:
@@ -395,9 +402,9 @@ def ai_workflows_triggers_cron_tick(now=None) -> list:
 
 def ai_workflows_triggers_menu_types(workflow) -> list:
     """Object menus (`on_manual_trigger_<type>`) an active manual workflow shows in."""
-    if workflow is None or not workflow.is_active or workflow.trigger_type != TRIGGER_MANUAL:
+    if workflow is None or not workflow.is_active:
         return []
-    menus = (workflow.trigger_config or {}).get('menus')
+    menus = (ai_workflow_trigger_config(workflow, TRIGGER_MANUAL) or {}).get('menus')
     return [m for m in menus if m in MENU_ENTITY_TYPES] if isinstance(menus, list) else []
 
 
@@ -437,9 +444,87 @@ def ai_workflows_triggers_start_from_menu(workflow_id, event, user_id, scope_mas
     if not ai_workflows_triggers_menu_types(workflow):
         ai_workflows_db_commit()
         return None, _NOT_IN_MENU
-    if (workflow.max_runs_per_hour or 0) > 0 and ai_workflows_db_count_runs_since(
-            workflow.id, ai_workflows_db_utcnow() - datetime.timedelta(hours=1)) >= workflow.max_runs_per_hour:
+    if _hourly_cap_reached(workflow):
         # Commits, releasing the lock
         ai_workflows_engine_skip_run(workflow, TRIGGER_MANUAL, _SKIP_HOURLY)
         return None, _SKIP_HOURLY
     return ai_workflows_engine_insert_run(workflow, TRIGGER_MANUAL, **common), None
+
+
+# ---- Called by another workflow -------------------------------------------------
+
+def _hourly_cap_reached(workflow) -> bool:
+    return (workflow.max_runs_per_hour or 0) > 0 and ai_workflows_db_count_runs_since(
+        workflow.id, ai_workflows_db_utcnow() - datetime.timedelta(hours=1)) >= workflow.max_runs_per_hour
+
+
+def _callable(workflow) -> bool:
+    return workflow is not None and workflow.is_active \
+        and ai_workflow_trigger_config(workflow, TRIGGER_WORKFLOW) is not None
+
+
+def _may_call(caller, workflow) -> bool:
+    """A workflow calls only the workflows of its owner, unless that
+    owner is a server administrator (who sees every workflow)."""
+    if caller.owner_id is not None and caller.owner_id == workflow.owner_id:
+        return True
+    owner = ai_workflows_db_get_user(caller.owner_id) if caller.owner_id is not None else None
+    return owner is not None and ac_has_permission_server_administrator(ac_get_effective_permissions_of_user(owner))
+
+
+def ai_workflows_triggers_start_from_workflow(caller, node_id, workflow_id, inputs, wait_uuid=None) -> tuple:
+    """Start a run of workflow `workflow_id` from the `run_workflow` node
+    `node_id` of the run `caller`; the caller's owner must own it or be a
+    server administrator. The called run is on the caller's
+    entity and acts as the caller's user within its API key scope, so
+    calling a workflow never gives more access than the caller has; it
+    is one level deeper in the caller's chain. `trigger.payload` is
+    `{inputs, caller}`; `wait_uuid` is the caller's wait the called run
+    resumes when it ends (None: the caller does not wait).
+
+    Returns (run, reason) like `ai_workflows_triggers_start_from_menu`."""
+    workflow = ai_workflows_db_get(workflow_id) if workflow_id else None
+    if not _enabled() or not _callable(workflow) or not _may_call(caller, workflow):
+        return None, _NOT_CALLABLE
+    max_depth = int(current_app.config.get('AI_WORKFLOWS_MAX_CHAIN_DEPTH', 2))
+    depth = (caller.chain_depth or 0) + 1
+    if depth > max_depth:
+        ai_workflows_engine_skip_run(workflow, TRIGGER_WORKFLOW, _SKIP_CHAIN)
+        return None, f'{_SKIP_CHAIN} (AI_WORKFLOWS_MAX_CHAIN_DEPTH is {max_depth})'
+    payload = {
+        'inputs': inputs or {},
+        'caller': {
+            'run_uuid': str(caller.uuid) if caller.uuid else None,
+            'workflow_id': caller.workflow_id,
+            'workflow_name': caller.workflow_name,
+            'node_id': node_id,
+        },
+    }
+    common = {
+        'entity_type': caller.entity_type,
+        'entity_id': caller.entity_id,
+        'sub_entity': caller.sub_entity,
+        'payload': payload,
+        'triggered_by_user_id': caller.triggered_by_user_id,
+        'run_as_user_id': caller.run_as_user_id,
+        'scope_mask': caller.scope_mask,
+        'chain_depth': depth,
+        'parent_run_id': caller.id,
+    }
+    # Access first, unlocked (the check may commit)
+    denial = ai_workflows_engine_access_denial(workflow, caller.run_as_user_id, caller.entity_type,
+                                               caller.entity_id, caller.scope_mask)
+    if denial is not None:
+        return ai_workflows_engine_insert_run(workflow, TRIGGER_WORKFLOW, denial=denial, **common), denial
+
+    # Hourly cap under the workflow lock; no dedup nor active-run rule:
+    # the calling workflow asked for this run
+    workflow = ai_workflows_db_lock_workflow(workflow_id)
+    if not _callable(workflow):
+        ai_workflows_db_commit()
+        return None, _NOT_CALLABLE
+    if _hourly_cap_reached(workflow):
+        # Commits, releasing the lock
+        ai_workflows_engine_skip_run(workflow, TRIGGER_WORKFLOW, _SKIP_HOURLY)
+        return None, _SKIP_HOURLY
+    return ai_workflows_engine_insert_run(workflow, TRIGGER_WORKFLOW, caller_wait_uuid=wait_uuid, **common), None

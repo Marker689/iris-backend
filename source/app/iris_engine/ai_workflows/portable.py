@@ -43,7 +43,7 @@ FORMAT_BLOCK = 'iris-ai-workflow-block'
 FORMAT_VERSION = 1
 
 # Workflow fields a document carries
-WORKFLOW_FIELDS = ('name', 'description', 'trigger_type', 'trigger_config', 'graph', 'write_tool_allowlist',
+WORKFLOW_FIELDS = ('name', 'description', 'triggers', 'trigger_type', 'trigger_config', 'graph', 'write_tool_allowlist',
                    'max_runs_per_hour', 'token_budget_per_run', 'suggestion_audience')
 BLOCK_FIELDS = ('name', 'description', 'category', 'nodes', 'edges')
 
@@ -351,6 +351,12 @@ def _requirements(nodes, allowlist=()) -> dict:
     }
 
 
+def _trigger_config(config) -> dict:
+    if not isinstance(config, dict):
+        return {}
+    return {k: v for k, v in config.items() if k in TRIGGER_CONFIG_FIELDS}
+
+
 def ai_workflows_portable_export_workflow(definition, exported_at=None, instance_version=None) -> dict:
     """The document of a workflow definition (`_definition` of the
     business layer); keeps only `WORKFLOW_FIELDS`."""
@@ -360,7 +366,13 @@ def ai_workflows_portable_export_workflow(definition, exported_at=None, instance
     workflow['graph'] = {'nodes': nodes, 'edges': copy.deepcopy(graph.get('edges') or [])}
     trigger_config = workflow.get('trigger_config')
     if isinstance(trigger_config, dict):
-        workflow['trigger_config'] = {k: v for k, v in trigger_config.items() if k in TRIGGER_CONFIG_FIELDS}
+        workflow['trigger_config'] = _trigger_config(trigger_config)
+    if isinstance(workflow.get('triggers'), list):
+        workflow['triggers'] = [{'type': t.get('type'), 'config': _trigger_config(t.get('config'))}
+                                for t in workflow['triggers'] if isinstance(t, dict)]
+    else:
+        # A definition saved before multiple triggers
+        workflow.pop('triggers', None)
     return {
         'format': FORMAT_WORKFLOW,
         'format_version': FORMAT_VERSION,

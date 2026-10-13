@@ -25,6 +25,7 @@ from app.iris_engine.ai_workflows.graph import ai_workflows_graph_targets
 from app.iris_engine.ai_workflows.graph import ai_workflows_graph_validate
 from app.iris_engine.ai_workflows.graph import ai_workflows_graph_validate_fragment
 from app.iris_engine.ai_workflows.graph import ai_workflows_graph_validate_trigger_config
+from app.iris_engine.ai_workflows.graph import ai_workflows_graph_validate_triggers
 
 _WRITE_TOOL = 'iris_case_notes_create'
 _READ_TOOL = 'iris_cases_get'
@@ -129,6 +130,16 @@ class TestsGraphNodeConfig(TestCase):
         node = _node('note', 'action', tool=_WRITE_TOOL)
         self.assertEqual('tool', self._errors(node)[0][0])
         self.assertEqual([], self._errors(node, allowlist=[_WRITE_TOOL]))
+
+    def test_run_workflow_should_name_a_workflow_and_valid_inputs(self):
+        node = _node('call', 'run_workflow', workflow_id=4, mode='wait', timeout_minutes=30,
+                     inputs=[{'name': 'ioc', 'value': '{{ trigger.payload.data.ioc_value }}'},
+                             {'name': 'data', 'value': {'$path': 'nodes.x.output'}}])
+        self.assertEqual([], self._errors(node))
+        node = _node('call', 'run_workflow', workflow_id=None, mode='later', timeout_minutes=0,
+                     inputs=[{'name': '1x', 'value': ''}, {'name': 'a', 'value': '{{'}, {'name': 'a', 'value': ''}])
+        self.assertEqual(['workflow_id', 'mode', 'timeout_minutes', 'inputs.0.name', 'inputs.1.value',
+                          'inputs.2.name'], [field for field, _message in self._errors(node)])
 
     def test_suggest_may_propose_a_write_tool_not_allowlisted(self):
         node = _node('s', 'suggest', title='Add a note', proposed_action={'tool': _WRITE_TOOL, 'arguments': {}})
@@ -244,6 +255,40 @@ class TestsTriggerConfig(TestCase):
     def test_unknown_trigger_type(self):
         self.assertEqual(['trigger_type'],
                          [e['field'] for e in ai_workflows_graph_validate_trigger_config('telepathy', {})])
+
+    def test_workflow_trigger_should_have_no_config(self):
+        self.assertEqual([], ai_workflows_graph_validate_trigger_config('workflow', {}))
+        self.assertEqual(['trigger_config'],
+                         [e['field'] for e in ai_workflows_graph_validate_trigger_config('workflow', {'x': 1})])
+
+
+class TestsTriggers(TestCase):
+
+    def test_several_triggers_of_distinct_types_should_pass(self):
+        self.assertEqual([], ai_workflows_graph_validate_triggers([
+            {'type': 'cron', 'config': {'cron': '0 * * * *', 'target': 'cases'}},
+            {'type': 'manual', 'config': {'entity_types': ['case']}},
+            {'type': 'workflow', 'config': {}},
+        ]))
+
+    def test_triggers_should_not_be_empty(self):
+        for triggers in ([], None, 'manual'):
+            self.assertEqual(['triggers'], [e['field'] for e in ai_workflows_graph_validate_triggers(triggers)])
+
+    def test_a_type_should_appear_once(self):
+        errors = ai_workflows_graph_validate_triggers([{'type': 'manual', 'config': {}},
+                                                       {'type': 'manual', 'config': {}}])
+        self.assertEqual([('triggers.1.type', 'There is already a manual trigger')],
+                         [(e['field'], e['message']) for e in errors])
+
+    def test_errors_should_point_at_the_trigger(self):
+        errors = ai_workflows_graph_validate_triggers([
+            {'type': 'manual', 'config': {}},
+            {'type': 'cron', 'config': {'cron': '61 * * * *'}},
+            {'type': 'telepathy', 'config': {}},
+            'oops',
+        ])
+        self.assertEqual(['triggers.1.config.cron', 'triggers.2.type', 'triggers.3'], [e['field'] for e in errors])
 
 
 class TestsGraphLimits(TestCase):

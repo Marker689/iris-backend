@@ -170,6 +170,19 @@ class TestsPortableExport(TestCase):
         self.assertEqual(['iris_case_iocs_update'], document['requirements']['tools'])
         self.assertEqual(1, len(document['warnings']))
 
+    def test_every_trigger_config_should_be_scrubbed(self):
+        definition = self._definition()
+        definition['triggers'] = [{'type': 'webhook', 'config': definition['trigger_config']},
+                                  {'type': 'workflow', 'config': None}]
+        document = ai_workflows_portable_export_workflow(definition)
+        self.assertEqual([{'type': 'webhook', 'config': {'entity_type': 'case'}},
+                          {'type': 'workflow', 'config': {}}], document['workflow']['triggers'])
+        self.assertNotIn('SuperSecretSig99', str(document))
+
+    def test_definition_without_triggers_should_export_its_single_trigger_only(self):
+        document = ai_workflows_portable_export_workflow(self._definition())
+        self.assertNotIn('triggers', document['workflow'])
+
     def test_export_should_round_trip_through_import(self):
         document = ai_workflows_portable_export_workflow(self._definition())
         body = ai_workflows_portable_read_workflow(document)

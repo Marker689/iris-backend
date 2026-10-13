@@ -45,6 +45,7 @@ from app.iris_engine.ai_workflows.nodes import NODE_HTTP_REQUEST
 from app.iris_engine.ai_workflows.nodes import NODE_NOTIFY
 from app.iris_engine.ai_workflows.nodes import NODE_PORTS
 from app.iris_engine.ai_workflows.nodes import NODE_PYTHON
+from app.iris_engine.ai_workflows.nodes import NODE_RUN_WORKFLOW
 from app.iris_engine.ai_workflows.nodes import NODE_SET_VARIABLES
 from app.iris_engine.ai_workflows.nodes import NODE_STOP
 from app.iris_engine.ai_workflows.nodes import NODE_SUGGEST
@@ -72,6 +73,7 @@ from app.models.ai_workflows import TRIGGER_EVENT
 from app.models.ai_workflows import TRIGGER_MANUAL
 from app.models.ai_workflows import TRIGGER_TYPES
 from app.models.ai_workflows import TRIGGER_WEBHOOK
+from app.models.ai_workflows import TRIGGER_WORKFLOW
 
 logger = logging.getLogger(__name__)
 
@@ -277,7 +279,36 @@ def ai_workflows_graph_validate_trigger_config(trigger_type, trigger_config) -> 
         return _manual_config_errors(trigger_config)
     if trigger_type == TRIGGER_WEBHOOK:
         return _webhook_config_errors(trigger_config)
+    if trigger_type == TRIGGER_WORKFLOW and trigger_config:
+        return [_error(None, 'trigger_config', 'A workflow trigger has no settings')]
     return []
+
+
+def ai_workflows_graph_validate_triggers(triggers) -> list:
+    """Errors of a workflow's triggers `[{type, config}]`: at least one,
+    at most one per type, each config valid (fields
+    `triggers.<index>.config.<key>`)."""
+    if not isinstance(triggers, list) or not triggers:
+        return [_error(None, 'triggers', 'Add at least one trigger')]
+    errors = []
+    seen = set()
+    for index, trigger in enumerate(triggers):
+        if not isinstance(trigger, dict):
+            errors.append(_error(None, f'triggers.{index}', 'Must be an object'))
+            continue
+        trigger_type = trigger.get('type')
+        if trigger_type in seen:
+            errors.append(_error(None, f'triggers.{index}.type', f'There is already a {trigger_type} trigger'))
+            continue
+        seen.add(trigger_type)
+        for error in ai_workflows_graph_validate_trigger_config(trigger_type, trigger.get('config')):
+            field = error['field'] or ''
+            if field == 'trigger_type':
+                field = f'triggers.{index}.type'
+            elif field.startswith('trigger_config'):
+                field = f'triggers.{index}.config{field[len("trigger_config"):]}'
+            errors.append({**error, 'field': field})
+    return errors
 
 
 # ---- Node configs ---------------------------------------------------------------
@@ -541,6 +572,27 @@ def _check_python(check):
     check.integer('max_steps', 1000, MAX_STEPS)
 
 
+def _check_run_workflow(check):
+    if not _int_in(check.config.get('workflow_id'), 1, 2 ** 62):
+        check.add('workflow_id', 'Select the workflow to run')
+    check.one_of('mode', ('wait', 'async'), 'wait')
+    check.integer('timeout_minutes', 1, 60 * 24 * 30)
+    inputs = check.config.get('inputs') or []
+    if not isinstance(inputs, list):
+        check.add('inputs', 'Must be a list')
+        return
+    names = set()
+    for index, item in enumerate(inputs):
+        if not isinstance(item, dict) or not isinstance(item.get('name'), str) \
+                or not _VARIABLE_NAME.match(item.get('name')):
+            check.add(f'inputs.{index}.name', 'Letters, digits and underscores, not starting with a digit')
+            continue
+        if item['name'] in names:
+            check.add(f'inputs.{index}.name', f'{item["name"]} is set twice')
+        names.add(item['name'])
+        check.templates_in(f'inputs.{index}.value', item.get('value'))
+
+
 def _size_errors(node_id, field, value, errors):
     """Strings over the config caps (prompts are capped tighter)."""
     if isinstance(value, str):
@@ -602,6 +654,8 @@ def _check_node(node, allowlist, errors):
         _check_set_variables(check)
     elif node_type == NODE_PYTHON:
         _check_python(check)
+    elif node_type == NODE_RUN_WORKFLOW:
+        _check_run_workflow(check)
     elif node_type == NODE_STOP:
         check.one_of('status', (RUN_SUCCEEDED, RUN_FAILED), RUN_SUCCEEDED)
         check.template('reason')
@@ -726,7 +780,9 @@ def ai_workflows_graph_validate_node(node, write_tool_allowlist) -> list:
     return errors
 
 
-def ai_workflows_graph_validate(graph, trigger_type, trigger_config, write_tool_allowlist) -> list:
+def ai_workflows_graph_validate(graph, trigger_type, trigger_config, write_tool_allowlist, triggers=None) -> list:
+    """Errors of a workflow graph; `triggers` ([{type, config}]) when the
+    workflow has several, else its single `trigger_type`."""
     if not isinstance(graph, dict):
         return [_error(None, 'graph', 'Must be an object')]
     nodes = graph.get('nodes')
@@ -758,7 +814,11 @@ def ai_workflows_graph_validate(graph, trigger_type, trigger_config, write_tool_
     for node in by_id.values():
         _check_node(node, allowlist, errors)
 
-    if trigger_type == TRIGGER_CRON and (trigger_config or {}).get('target') in (None, 'none'):
+    if triggers is None:
+        triggers = [{'type': trigger_type, 'config': trigger_config}]
+    entityless = any(isinstance(t, dict) and t.get('type') == TRIGGER_CRON
+                     and (t.get('config') or {}).get('target') in (None, 'none') for t in triggers)
+    if entityless:
         for node in by_id.values():
             if node.get('type') in (NODE_FIND_RELATED, NODE_FIND_WAR_ROOM_TASKS) \
                     and (node.get('config') or {}).get('source') != 'search':

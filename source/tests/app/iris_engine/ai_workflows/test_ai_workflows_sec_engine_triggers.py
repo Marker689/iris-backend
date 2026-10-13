@@ -169,12 +169,12 @@ class TestsWildcard(EngineTestCase):
         config = {'hooks': ['*']}
         for hook in ('on_postload_ai_workflow_run_complete', 'on_postload_ai_suggestion_create',
                      'on_postload_ai_suggestion_update', 'on_postload_notification_create'):
-            self.assertFalse(triggers._hook_matches(config, hook), hook)
-        self.assertTrue(triggers._hook_matches(config, 'on_postload_alert_create'))
+            self.assertFalse(triggers._hooks_match(config['hooks'], hook), hook)
+        self.assertTrue(triggers._hooks_match(config['hooks'], 'on_postload_alert_create'))
 
     def test_listed_hooks_should_still_match(self):
         config = {'hooks': ['on_postload_ai_workflow_run_complete']}
-        self.assertTrue(triggers._hook_matches(config, 'on_postload_ai_workflow_run_complete'))
+        self.assertTrue(triggers._hooks_match(config['hooks'], 'on_postload_ai_workflow_run_complete'))
 
 
 class TestsHookListener(EngineTestCase):

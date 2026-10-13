@@ -38,6 +38,7 @@ from app.iris_engine.webhooks.dispatch import webhooks_current_actor
 from app.iris_engine.webhooks.events import MANUAL_PREFIX
 from app.models.ai_workflows import RUN_SKIPPED
 from app.models.ai_workflows import TRIGGER_MANUAL
+from app.models.ai_workflows import ai_workflow_trigger_config
 from app.models.errors import BusinessProcessingError
 
 # `module_name` of the workflow entries in the object menus. Not a module:
@@ -49,6 +50,11 @@ def _enabled() -> bool:
     return bool(app.config.get('AI_WORKFLOWS_ENABLED', True))
 
 
+def _menu_label(workflow) -> str:
+    config = ai_workflow_trigger_config(workflow, TRIGGER_MANUAL) or {}
+    return (config.get('menu_label') or '').strip() or workflow.name
+
+
 def ai_workflow_menus_options(hook_type) -> list:
     """Menu entries of the active manual workflows shown on `hook_type`
     objects. Same shape as the module entries, plus `workflow_id`."""
@@ -56,8 +62,7 @@ def ai_workflow_menus_options(hook_type) -> list:
         return []
     return [
         {
-            'manual_hook_ui_name': ((workflow.trigger_config or {}).get('menu_label') or '').strip()
-                                   or workflow.name,
+            'manual_hook_ui_name': _menu_label(workflow),
             'hook_name': f'{MANUAL_PREFIX}{hook_type}',
             'module_name': AI_WORKFLOWS_MENU_MODULE_NAME,
             'workflow_id': workflow.id,

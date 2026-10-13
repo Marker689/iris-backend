@@ -87,12 +87,14 @@ from app.models.ai_workflows import EXEC_ALLOWLISTED_WRITE
 from app.models.ai_workflows import EXEC_AUTO_READ
 from app.models.ai_workflows import EXEC_SUGGESTED
 from app.models.ai_workflows import RUN_FAILED
+from app.models.ai_workflows import RUN_SKIPPED
 from app.models.ai_workflows import RUN_SUCCEEDED
 from app.models.ai_workflows import SUGGESTION_GENERIC_ACTION
 from app.models.ai_workflows import SUGGESTION_INFO_REQUEST
 from app.models.ai_workflows import WAIT_CALLBACK
 from app.models.ai_workflows import WAIT_DELAY
 from app.models.ai_workflows import WAIT_USER_INPUT
+from app.models.ai_workflows import WAIT_WORKFLOW
 
 NODE_TRIGGER = 'trigger'
 NODE_AI_AGENT = 'ai_agent'
@@ -108,6 +110,7 @@ NODE_DELAY = 'delay'
 NODE_SET_VARIABLES = 'set_variables'
 NODE_PYTHON = 'python'
 NODE_STOP = 'stop'
+NODE_RUN_WORKFLOW = 'run_workflow'
 
 PORT_OUT = 'out'
 PORT_ERROR = 'error'
@@ -203,8 +206,8 @@ def _node_spec(node_type, label, description, category, ports, config_defaults):
 
 
 _CATALOGUE = (
-    _node_spec(NODE_TRIGGER, 'Trigger', 'Where every run starts: the event, schedule, manual run or inbound '
-               'webhook configured on the workflow.', 'trigger', (PORT_OUT,), {}),
+    _node_spec(NODE_TRIGGER, 'Trigger', 'Where every run starts: the events, schedule, manual run, inbound '
+               'webhook or calling workflow configured on the workflow.', 'trigger', (PORT_OUT,), {}),
     _node_spec(NODE_AI_AGENT, 'AI agent', 'Runs the AI assistant with a prompt and a set of tools. Reads run; '
                'writes run only when allowlisted on the workflow, otherwise they become suggestions.', 'ai',
                (PORT_OUT, PORT_ERROR),
@@ -249,6 +252,11 @@ _CATALOGUE = (
                 'max_steps': DEFAULT_MAX_STEPS}),
     _node_spec(NODE_STOP, 'Stop', 'Ends the run with a status.', 'flow', (),
                {'status': RUN_SUCCEEDED, 'reason': ''}),
+    _node_spec(NODE_RUN_WORKFLOW, 'Run workflow', 'Runs another workflow (one with a "Called by a workflow" '
+               'trigger) on the same entity, as the same user, with `trigger.payload.inputs` set from the '
+               'inputs. In wait mode the run continues once it ends, with its status, `vars` and last output.',
+               'flow', (PORT_OUT, PORT_ERROR, PORT_TIMEOUT),
+               {'workflow_id': None, 'inputs': [], 'mode': 'wait', 'timeout_minutes': 60}),
 )
 
 NODE_PORTS = {spec['type']: tuple(spec['ports']) for spec in _CATALOGUE}
@@ -267,6 +275,8 @@ def ai_workflows_nodes_is_waiting(node) -> bool:
     if node_type == NODE_DELAY:
         # A 0-minute delay passes straight through: it does not park
         return _int(config.get('minutes'), 5, 0, _MAX_WAIT_MINUTES) > 0
+    if node_type == NODE_RUN_WORKFLOW:
+        return config.get('mode', 'wait') != 'async'
     return node_type == NODE_ASK_ANALYST
 
 
@@ -416,9 +426,9 @@ def _dry_run_body(body):
     return body
 
 
-def _prepare_wait(ctx, wait_uuid, token_hash, minutes):
-    """Commit the callback wait before the request goes out, so a fast
-    callback finds it. Only when the engine adopts a prepared wait
+def _prepare_wait(ctx, wait_uuid, token_hash, minutes, kind=WAIT_CALLBACK):
+    """Commit the wait before the request goes out or the called run
+    starts, so a fast callback or called run finds it. Only when the engine adopts a prepared wait
     (`spec['wait_id']`); None otherwise or when it could not be created
     (the engine then creates it when the node returns)."""
     from app.iris_engine.ai_workflows import engine
@@ -426,10 +436,10 @@ def _prepare_wait(ctx, wait_uuid, token_hash, minutes):
         return None
     try:
         return ai_workflows_runtime_db_create_wait(
-            ctx.run.id, ctx.node.get('id') if isinstance(ctx.node, dict) else None, WAIT_CALLBACK, wait_uuid,
+            ctx.run.id, ctx.node.get('id') if isinstance(ctx.node, dict) else None, kind, wait_uuid,
             token_hash, ai_workflows_db_utcnow() + datetime.timedelta(minutes=minutes))
     except Exception as e:
-        current_app.logger.warning(f'AI workflow run {ctx.run.uuid}: could not prepare the callback wait '
+        current_app.logger.warning(f'AI workflow run {ctx.run.uuid}: could not prepare the {kind} wait '
                                    f'({e.__class__.__name__})')
         return None
 
@@ -440,7 +450,7 @@ def _cancel_prepared_wait(ctx, wait_id):
     try:
         ai_workflows_runtime_db_cancel_wait(wait_id)
     except Exception as e:
-        current_app.logger.warning(f'AI workflow run {ctx.run.uuid}: could not cancel the callback wait '
+        current_app.logger.warning(f'AI workflow run {ctx.run.uuid}: could not cancel the wait '
                                    f'#{wait_id} ({e.__class__.__name__})')
 
 
@@ -898,6 +908,49 @@ def _stop(ctx, config):
                       stop_reason=reason)
 
 
+def _run_workflow(ctx, config):
+    from app.iris_engine.ai_workflows.triggers import ai_workflows_triggers_start_from_workflow
+
+    run = ctx.run
+    workflow_id = config.get('workflow_id')
+    template = ctx.template_context()
+    inputs = {}
+    for index, item in enumerate(config.get('inputs') or []):
+        if isinstance(item, dict) and item.get('name'):
+            inputs[str(item['name'])] = ai_workflows_context_render_arguments(item.get('value'), template,
+                                                                                f'inputs.{index}')
+    inputs = ctx.mask(inputs)
+    waits = config.get('mode', 'wait') != 'async'
+    called = {'workflow_id': workflow_id, 'mode': 'wait' if waits else 'async', 'inputs': inputs}
+    if run.is_dry_run:
+        # A dry run starts nothing
+        return NodeResult(output={'dry_run': True, **called}, input=called)
+
+    minutes = _int(config.get('timeout_minutes'), 60, 1, _MAX_WAIT_MINUTES)
+    wait_uuid = uuid.uuid4() if waits else None
+    wait_id = None
+    if waits:
+        # The called run may end before this node returns
+        wait_id = _prepare_wait(ctx, wait_uuid, None, minutes, kind=WAIT_WORKFLOW)
+        if wait_id is None:
+            raise AiWorkflowNodeError('The wait for the called workflow could not be prepared')
+    try:
+        child, reason = ai_workflows_triggers_start_from_workflow(run, ctx.node.get('id'), workflow_id, inputs,
+                                                                  wait_uuid=wait_uuid)
+    except Exception:
+        _cancel_prepared_wait(ctx, wait_id)
+        raise
+    if child is None or child.status == RUN_SKIPPED:
+        _cancel_prepared_wait(ctx, wait_id)
+        raise AiWorkflowNodeError(reason or (child.error if child is not None else None)
+                                  or 'The workflow could not be started')
+    output = {'run_uuid': str(child.uuid), 'workflow_id': child.workflow_id, 'workflow_name': child.workflow_name}
+    if not waits:
+        return NodeResult(output={**output, 'status': child.status}, input=called)
+    return NodeResult(output=output, input=called,
+                      wait={'kind': WAIT_WORKFLOW, 'uuid': wait_uuid, 'minutes': minutes, 'wait_id': wait_id})
+
+
 _EXECUTORS = {
     NODE_TRIGGER: _trigger,
     NODE_AI_AGENT: _ai_agent,
@@ -913,6 +966,7 @@ _EXECUTORS = {
     NODE_SET_VARIABLES: _set_variables,
     NODE_PYTHON: _python,
     NODE_STOP: _stop,
+    NODE_RUN_WORKFLOW: _run_workflow,
 }
 
 

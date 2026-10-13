@@ -69,7 +69,9 @@ TRIGGER_EVENT = 'event'
 TRIGGER_CRON = 'cron'
 TRIGGER_MANUAL = 'manual'
 TRIGGER_WEBHOOK = 'webhook'
-TRIGGER_TYPES = (TRIGGER_EVENT, TRIGGER_CRON, TRIGGER_MANUAL, TRIGGER_WEBHOOK)
+# Started by the run_workflow node of another workflow
+TRIGGER_WORKFLOW = 'workflow'
+TRIGGER_TYPES = (TRIGGER_EVENT, TRIGGER_CRON, TRIGGER_MANUAL, TRIGGER_WEBHOOK, TRIGGER_WORKFLOW)
 
 RUN_RUNNING = 'running'
 RUN_WAITING = 'waiting'
@@ -94,6 +96,8 @@ EXEC_DENIED = 'denied'
 WAIT_CALLBACK = 'callback'
 WAIT_USER_INPUT = 'user_input'
 WAIT_DELAY = 'delay'
+# A run_workflow node waiting for the run it called
+WAIT_WORKFLOW = 'workflow'
 
 WAIT_PENDING = 'pending'
 WAIT_RESOLVED = 'resolved'
@@ -147,6 +151,32 @@ INBOUND_TRIGGER = 'trigger'
 INBOUND_CALLBACK = 'callback'
 
 
+def _field(source, name):
+    return source.get(name) if isinstance(source, dict) else getattr(source, name, None)
+
+
+def ai_workflow_triggers(source) -> list:
+    """[{type, config}] of a workflow, a definition dict or a snapshot;
+    a definition saved before multiple triggers has its single one."""
+    triggers = _field(source, 'triggers')
+    if isinstance(triggers, list) and triggers:
+        return [{'type': t.get('type'), 'config': t.get('config') if isinstance(t.get('config'), dict) else {}}
+                for t in triggers if isinstance(t, dict)]
+    trigger_type = _field(source, 'trigger_type')
+    if not trigger_type:
+        return []
+    config = _field(source, 'trigger_config')
+    return [{'type': trigger_type, 'config': config if isinstance(config, dict) else {}}]
+
+
+def ai_workflow_trigger_config(source, trigger_type):
+    """The config of the `trigger_type` trigger, None when it has none."""
+    for trigger in ai_workflow_triggers(source):
+        if trigger['type'] == trigger_type:
+            return trigger['config']
+    return None
+
+
 class AiWorkflow(db.Model):
     __tablename__ = 'ai_workflow'
 
@@ -156,11 +186,15 @@ class AiWorkflow(db.Model):
     description = Column(Text, nullable=True)
     is_active = Column(Boolean, nullable=False, default=False)
 
-    trigger_type = Column(String(16), nullable=False, default=TRIGGER_MANUAL)
-    # event: {hooks: [...], condition, dedup_window_seconds, skip_if_active}
-    # cron: {cron, target: none|war_rooms|open_cases, max_targets}
+    # What starts the workflow: [{type, config}], at most one per type.
+    # event: {hooks: [...], condition, dedup_minutes, skip_if_active}
+    # cron: {cron, target: none|war_rooms|cases, max_targets}
     # manual: {entity_types, menus, menu_label}
-    # webhook: {hmac_keystore_entry}
+    # webhook: {require_signature, entity_type, entity_id_path}
+    # workflow: {} (other workflows may call it with a run_workflow node)
+    triggers = Column(JSONB, nullable=False, default=list, server_default='[]')
+    # The first trigger, kept for the readers of a single trigger
+    trigger_type = Column(String(16), nullable=False, default=TRIGGER_MANUAL)
     trigger_config = Column(JSONB, nullable=False, default=dict)
     # Customer ids the workflow is limited to; null/empty = every customer
     # the owner can access
