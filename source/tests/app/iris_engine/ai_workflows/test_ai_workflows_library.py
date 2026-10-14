@@ -34,7 +34,8 @@ class TestsAiWorkflowsLibraryEntries(TestCase):
 
     def test_every_shipped_workflow_should_be_listed(self):
         self.assertEqual(['detection_rule_feedback', 'virustotal_ioc_enrichment', 'ioc_estate_hunt',
-                          'case_closure_documentation_review', 'case_kickoff', 'alert_sla_watchdog', 'shift_handover', 'alert_triage'],
+                          'case_closure_documentation_review', 'case_kickoff', 'defender_device_timeline',
+                          'alert_sla_watchdog', 'shift_handover', 'alert_triage', 'watchtowr_hunt_intake'],
                          [e['id'] for e in ai_workflows_library_entries()])
 
     def test_blocks_should_not_be_listed(self):
@@ -44,7 +45,8 @@ class TestsAiWorkflowsLibraryEntries(TestCase):
         entries = ai_workflows_library_entries()
         keys = [(e['category'].lower(), e['name'].lower()) for e in entries]
         self.assertEqual(sorted(keys), keys)
-        self.assertEqual({'Detection engineering', 'Enrichment', 'Hunting', 'Investigation', 'Operations', 'Triage'},
+        self.assertEqual({'Detection engineering', 'Enrichment', 'Hunting', 'Investigation', 'Operations', 'Triage',
+                          'Vulnerability management'},
                          {e['category'] for e in entries})
 
     def test_entries_should_tell_what_each_workflow_is(self):

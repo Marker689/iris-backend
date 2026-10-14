@@ -28,6 +28,7 @@ them to a host the entry is not allowed on (`check_url`).
 
 import base64
 import json
+from contextlib import contextmanager
 from urllib.parse import quote
 from urllib.parse import quote_plus
 from urllib.parse import urlsplit
@@ -100,6 +101,9 @@ class KeystoreResolver:
         self._used = set()
         self._lost = set()
         self._placeholders = {}
+        # Credentials obtained during the run (an OAuth access token):
+        # masked like secret entries, never stored
+        self._ephemeral = set()
 
     def _load(self) -> dict:
         if self._entries is None:
@@ -125,6 +129,8 @@ class KeystoreResolver:
         """Plain value of `name`; marks it used and stamps `last_used_at`
         (flush only, the caller commits)."""
         if name in self._values:
+            # Used again, possibly after `confined` released it
+            self._used.add(name)
             return self._values[name]
         entry = self._entry(name)
         if entry.is_secret:
@@ -173,6 +179,25 @@ class KeystoreResolver:
             return f'[secret:{name}]'
         return self.get(name)
 
+    def add_ephemeral(self, value):
+        """Mask `value` (a credential obtained with keystore entries) from
+        now on."""
+        if isinstance(value, str) and value:
+            self._ephemeral.add(value)
+
+    @contextmanager
+    def confined(self):
+        """Entries first used inside the block are not `used` after it:
+        they stay masked, but their host restrictions only apply to the
+        `check_url` calls made inside it and are not remembered for the
+        next steps. For a value sent to one place and never copied into
+        the run (an OAuth client secret)."""
+        before = set(self._used)
+        try:
+            yield
+        finally:
+            self._used = before
+
     @property
     def used(self) -> set:
         return set(self._used)
@@ -184,6 +209,7 @@ class KeystoreResolver:
             if entries[name].is_secret and isinstance(value, str) and len(value) >= _MIN_MASK_LENGTH
         }
         values |= {value for value in self._placeholders.values() if len(value) >= _MIN_MASK_LENGTH}
+        values |= {value for value in self._ephemeral if len(value) >= _MIN_MASK_LENGTH}
         variants = set()
         for value in values:
             variants |= _encoded_variants(value)

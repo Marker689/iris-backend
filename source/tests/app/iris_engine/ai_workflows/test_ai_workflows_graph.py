@@ -202,6 +202,42 @@ class TestsGraphNodeConfig(TestCase):
         self.assertIn('method', errors)
         self.assertEqual('Required', errors['url'])
 
+    def test_oauth_client_credentials_should_need_an_https_token_url_and_a_client(self):
+        node = _node('h', 'http_request', url='https://graph.example.org/x', auth_type='oauth2_client_credentials')
+        self.assertEqual({'oauth_token_url', 'oauth_client_id', 'oauth_client_secret'}, set(dict(self._errors(node))))
+        node['config'].update(oauth_token_url='http://login.example.org/{{ vars.tenant }}/token',
+                              oauth_client_id='app', oauth_client_secret='{{ key("APP_SECRET") }}',
+                              oauth_client_auth='header')
+        errors = dict(self._errors(node))
+        self.assertIn('https', errors['oauth_token_url'])
+        self.assertIn('oauth_client_auth', errors)
+        node['config'].update(oauth_token_url='https://login.example.org/{{ vars.tenant }}/token',
+                              oauth_client_auth='basic')
+        self.assertEqual([], self._errors(node))
+
+    def test_war_room_members_add_should_be_refused_to_agents_only(self):
+        tool = 'iris_war_room_members_add'
+        self.assertEqual([('tools.0', f'{tool} cannot be given to an agent: use an Action node')],
+                         self._errors(_node('ai', 'ai_agent', prompt='x', tools=[tool]), allowlist=[tool]))
+        self.assertEqual([], self._errors(_node('a', 'action', tool=tool), allowlist=[tool]))
+
+    def test_notify_about_should_name_an_entity_type_and_an_identifier(self):
+        for about in (None, {}, {'entity_type': 'war_room', 'entity_id': 4},
+                      {'entity_type': 'case', 'entity_id': '{{ vars.case_id }}'},
+                      {'entity_type': 'alert', 'entity_id': {'$path': 'nodes.a.output.result.alert_id'}}):
+            self.assertEqual([], self._errors(_node('n', 'notify', title='Hi', about=about)), about)
+        cases = (
+            ('x', ['about']),
+            ({'entity_type': 'user', 'entity_id': 4}, ['about.entity_type']),
+            ({'entity_id': 4}, ['about.entity_type']),
+            ({'entity_type': 'war_room'}, ['about.entity_id']),
+            ({'entity_type': 'war_room', 'entity_id': '{{'}, ['about.entity_id']),
+            ({'entity_type': 'war_room', 'entity_id': {'$path': 'not a path'}}, ['about.entity_id']),
+        )
+        for about, fields in cases:
+            errors = self._errors(_node('n', 'notify', title='Hi', about=about))
+            self.assertEqual(fields, [field for field, _message in errors], about)
+
     def test_cron_without_target_should_flag_entity_nodes(self):
         node = _node('related', 'find_related')
         errors = self._errors(node, trigger_type='cron', trigger_config={'cron': '* * * * *'})

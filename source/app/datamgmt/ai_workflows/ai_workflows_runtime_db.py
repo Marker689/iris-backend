@@ -32,6 +32,8 @@ from sqlalchemy import update
 
 from app.db import db
 from app.models.ai_workflows import AiSuggestion
+from app.models.ai_workflows import AiWorkflowRun
+from app.models.ai_workflows import AiWorkflowToolCall
 from app.models.ai_workflows import AiWorkflowWait
 from app.models.ai_workflows import WAIT_CANCELLED
 from app.models.ai_workflows import WAIT_PENDING
@@ -87,6 +89,28 @@ def ai_workflows_runtime_db_war_room_case_ids(war_room_id) -> set:
     with db.engine.connect() as connection:
         rows = connection.execute(select(table.c.case_id).where(table.c.war_room_id == int(war_room_id)))
         return {row[0] for row in rows}
+
+
+def ai_workflows_runtime_db_workflow_war_room_ids(workflow_id, war_room_ids) -> set:
+    """Those of `war_room_ids` the runs of a workflow created (with the
+    tool calls of the runs the retention has not pruned yet)."""
+    ids = _ids(war_room_ids)
+    if workflow_id is None or not ids:
+        return set()
+    call = AiWorkflowToolCall.__table__
+    run = AiWorkflowRun.__table__
+    created = call.c.result['war_room_id'].astext
+    statement = (
+        select(created)
+        .select_from(call.join(run, run.c.id == call.c.run_id))
+        .where(run.c.workflow_id == int(workflow_id),
+               call.c.tool_name == 'iris_war_rooms_create',
+               call.c.error.is_(None),
+               created.in_([str(i) for i in ids]))
+        .distinct()
+    )
+    with db.engine.connect() as connection:
+        return {int(row[0]) for row in connection.execute(statement)}
 
 
 def ai_workflows_runtime_db_customer_case_ids(customer_ids, limit=_MAX_IDS) -> list:

@@ -311,6 +311,34 @@ class TestsRestVulnerabilities(TestCase):
         response = self._subject.get(_VULNERABILITIES_URL, {'search': alias}).json()
         self.assertEqual([identifier], [entry['vulnerability_id'] for entry in response['data']])
 
+    def test_search_vulnerabilities_should_filter_on_vendor_and_product(self):
+        marker = uuid4().hex
+        vendor = f'Vendor {marker}'
+        both = self._create_identifier(title=f'{marker} a', affected_products=[
+            {'vendor': vendor, 'product': 'Gateway'}, {'vendor': vendor, 'product': 'ADC'}])
+        gateway = self._create_identifier(title=f'{marker} b', affected_products=[
+            {'vendor': vendor.upper(), 'product': 'gateway'}])
+        self._create_identifier(title=f'{marker} c', affected_products=[{'vendor': 'Other', 'product': 'ADC'}])
+
+        response = self._subject.get(_VULNERABILITIES_URL, {'search': marker, 'vendor': vendor}).json()
+        self.assertEqual({both, gateway}, {entry['vulnerability_id'] for entry in response['data']})
+        response = self._subject.get(_VULNERABILITIES_URL, {'vendor': vendor, 'product': 'ADC'}).json()
+        self.assertEqual([both], [entry['vulnerability_id'] for entry in response['data']])
+
+    def test_list_vulnerability_technologies_should_count_the_entries_of_each_pair(self):
+        vendor = f'Vendor {uuid4().hex}'
+        self._create_identifier(affected_products=[{'vendor': vendor, 'product': 'Gateway'},
+                                                   {'vendor': vendor, 'product': 'ADC'}])
+        self._create_identifier(affected_products=[{'vendor': vendor.upper(), 'product': 'gateway'}])
+        self._create_identifier(affected_products=[{'product': f'Product {vendor}'}])
+
+        response = self._subject.get(f'{_VULNERABILITIES_URL}/technologies')
+        self.assertEqual(200, response.status_code, response.text)
+        counts = {(pair['vendor'] or '').lower() + '|' + pair['product'].lower(): pair['vulnerabilities']
+                  for pair in response.json() if vendor.lower() in (pair['vendor'] or pair['product']).lower()}
+        self.assertEqual({f'{vendor.lower()}|gateway': 2, f'{vendor.lower()}|adc': 1,
+                          f'|product {vendor.lower()}': 1}, counts)
+
     def test_search_vulnerabilities_should_return_400_when_a_filter_is_invalid(self):
         for parameters in ({'severity': 'apocalyptic'}, {'kind': 'bogus'}, {'kev': 'maybe'},
                            {'order_by': 'password'}, {'sort_dir': 'sideways'}):

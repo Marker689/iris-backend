@@ -23,7 +23,7 @@ instance (keystore entry names, tools) — never a secret. Secrets live in
 the keystore and a definition only references them with `key("NAME")`;
 the export replaces a literal credential a definition still holds with
 a reference to a keystore entry to create, and says so in `warnings`:
-in an HTTP request, an `auth_secret`, a secret or credential-named header
+in an HTTP request, an `auth_secret` or `oauth_client_secret`, a secret or credential-named header
 or query parameter, URL credentials; in any string of any node, a
 recognisable token (`AKIA…`, `ghp_…`, a JWT, a private key…), a quoted
 `"password": "…"` style assignment or a `?apikey=…` query. String
@@ -273,6 +273,8 @@ def _scrub_value(value, node, field, warnings, templated, depth=0):
 
 # Config keys that are not Jinja templates
 _UNTEMPLATED = ('code',)
+# HTTP request keys `_scrub_http` handles
+_HTTP_SCRUBBED = ('auth_secret', 'auth_username', 'oauth_client_secret', 'headers', 'query_params')
 
 
 def _scrub_any_node(node, warnings):
@@ -283,8 +285,7 @@ def _scrub_any_node(node, warnings):
     if not isinstance(config, dict):
         return
     for key in list(config):
-        if node.get('type') == 'http_request' and key in ('auth_secret', 'auth_username', 'headers',
-                                                          'query_params'):
+        if node.get('type') == 'http_request' and key in _HTTP_SCRUBBED:
             continue
         config[key] = _scrub_value(config[key], node, key, warnings, templated=key not in _UNTEMPLATED,
                                    depth=1 if key in ('arguments', 'variables', 'inputs') else 0)
@@ -319,6 +320,10 @@ def _scrub_http(node, warnings):
         config['auth_secret'] = ''
     if _holds_secret(config.get('auth_username'), always=False):
         config['auth_username'] = replace('auth_username', config['auth_username'])
+    if _holds_secret(config.get('oauth_client_secret'), always=True):
+        config['oauth_client_secret'] = replace('oauth_client_secret', config['oauth_client_secret'])
+    elif auth_type != 'oauth2_client_credentials' and config.get('oauth_client_secret'):
+        config['oauth_client_secret'] = ''
     for key in ('headers', 'query_params'):
         entries = config.get(key)
         if not isinstance(entries, list):

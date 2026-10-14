@@ -667,3 +667,5 @@ code_generator_class  # Jinja Environment attribute (iris_engine/webhooks/render
 limited_concat  # called by the code render.py's CodeGenerator emits
 get_connection  # requests HTTPAdapter hook (iris_engine/webhooks/sender.py)
 get_connection_with_tls_context  # requests HTTPAdapter hook (iris_engine/webhooks/sender.py)
+key_values  # Column of models/customers.py:Client, read through CustomerSchema(attribute='key_values')
+customer_key_values  # marshmallow field of schema/marshables.py:CustomerSchema, consumed reflectively

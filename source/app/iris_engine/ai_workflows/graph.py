@@ -33,7 +33,9 @@ from app.iris_engine.ai_workflows.context import AiWorkflowTemplateError
 from app.iris_engine.ai_workflows.context import ai_workflows_context_path_reference
 from app.iris_engine.ai_workflows.context import ai_workflows_context_split_url
 from app.iris_engine.ai_workflows.cron import ai_workflows_cron_parse
+from app.iris_engine.ai_workflows.nodes import AUTH_OAUTH2_CLIENT_CREDENTIALS
 from app.iris_engine.ai_workflows.nodes import FORM_FIELD_TYPES
+from app.iris_engine.ai_workflows.nodes import HTTP_AUTH_TYPES
 from app.iris_engine.ai_workflows.nodes import NODE_ACTION
 from app.iris_engine.ai_workflows.nodes import NODE_AI_AGENT
 from app.iris_engine.ai_workflows.nodes import NODE_ASK_ANALYST
@@ -50,6 +52,7 @@ from app.iris_engine.ai_workflows.nodes import NODE_SET_VARIABLES
 from app.iris_engine.ai_workflows.nodes import NODE_STOP
 from app.iris_engine.ai_workflows.nodes import NODE_SUGGEST
 from app.iris_engine.ai_workflows.nodes import NODE_TRIGGER
+from app.iris_engine.ai_workflows.nodes import OAUTH_CLIENT_AUTH
 from app.iris_engine.ai_workflows.sandbox import MAX_STEPS
 from app.iris_engine.ai_workflows.sandbox import MAX_TIMEOUT_SECONDS
 from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_check
@@ -499,12 +502,32 @@ def _check_http_request(check):
                 check.add(f'{key}.{index}', 'Must be an object')
                 continue
             check.template(f'{key}.{index}', entry.get('value') or '')
-    check.one_of('auth_type', ('none', 'basic', 'bearer'), 'none')
+    check.one_of('auth_type', HTTP_AUTH_TYPES, 'none')
+    if config.get('auth_type') == AUTH_OAUTH2_CLIENT_CREDENTIALS:
+        _check_oauth(check)
     check.one_of('body_mode', ('default', 'template', 'none'), 'default')
     check.one_of('mode', ('sync', 'async'), 'sync')
     check.one_of('response_format', ('json', 'text'), 'json')
     check.integer('timeout_seconds', 1, 120)
     check.integer('wait_timeout_minutes', 1, 60 * 24 * 30)
+
+
+def _check_oauth(check):
+    config = check.config
+    if check.required('oauth_token_url'):
+        check.template('oauth_token_url')
+        try:
+            base, _rest = ai_workflows_context_split_url(config['oauth_token_url'])
+        except AiWorkflowTemplateError as e:
+            check.add('oauth_token_url', e.message)
+        else:
+            if base.lower().startswith('http://'):
+                check.add('oauth_token_url', 'Must be https: the client secret travels in the request')
+    for field in ('oauth_client_id', 'oauth_client_secret'):
+        if check.required(field):
+            check.template(field)
+    check.template('oauth_scope')
+    check.one_of('oauth_client_auth', OAUTH_CLIENT_AUTH, 'body')
 
 
 def _check_ask_analyst(check):
@@ -580,6 +603,9 @@ def _check_action(check, allowlist):
         check.templates_in('arguments', arguments)
 
 
+_NOTIFY_ABOUT_TYPES = ('case', 'alert', 'war_room')
+
+
 def _check_notify(check):
     check.one_of('audience', (AUDIENCE_ENTITY, 'triggerer', AUDIENCE_OWNER, 'users'), AUDIENCE_ENTITY)
     if check.config.get('audience') == 'users':
@@ -587,6 +613,23 @@ def _check_notify(check):
     if check.required('title'):
         check.template('title')
     check.template('body')
+    about = check.config.get('about')
+    if about in (None, {}):
+        return
+    if not isinstance(about, dict):
+        check.add('about', 'Must be an object')
+        return
+    if about.get('entity_type') in (None, ''):
+        if about.get('entity_id') not in (None, ''):
+            check.add('about.entity_type', f'Must be one of {", ".join(_NOTIFY_ABOUT_TYPES)}')
+        return
+    if about.get('entity_type') not in _NOTIFY_ABOUT_TYPES:
+        check.add('about.entity_type', f'Must be one of {", ".join(_NOTIFY_ABOUT_TYPES)}')
+    entity_id = about.get('entity_id')
+    if entity_id in (None, ''):
+        check.add('about.entity_id', 'Required')
+    elif not isinstance(entity_id, int) or isinstance(entity_id, bool):
+        check.templates_in('about.entity_id', entity_id)
 
 
 def _check_set_variables(check):

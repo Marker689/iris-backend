@@ -56,6 +56,19 @@ class TestsPortableScrub(TestCase):
         self.assertEqual('{{ key("CALL_AUTH_SECRET") }}', config['auth_secret'])
         self.assertEqual([('call', 'auth_secret')], [(w['node_id'], w['field']) for w in warnings])
 
+    def test_literal_oauth_client_secret_should_become_a_key_reference(self):
+        config, warnings = _scrubbed(_http(auth_type='oauth2_client_credentials', oauth_client_id='app-id',
+                                           oauth_client_secret='short'))
+        self.assertEqual('{{ key("CALL_OAUTH_CLIENT_SECRET") }}', config['oauth_client_secret'])
+        self.assertEqual('app-id', config['oauth_client_id'])
+        self.assertEqual([('call', 'oauth_client_secret')], [(w['node_id'], w['field']) for w in warnings])
+
+    def test_oauth_client_id_guid_should_be_kept(self):
+        client_id = '0b8a5f1e-1234-4abc-9def-0123456789ab'
+        config, warnings = _scrubbed(_http(auth_type='oauth2_client_credentials', oauth_client_id=client_id,
+                                           oauth_client_secret='{{ key("APP_SECRET") }}'))
+        self.assertEqual((client_id, []), (config['oauth_client_id'], warnings))
+
     def test_key_references_should_be_kept(self):
         node = _http(auth_type='bearer', auth_secret='{{ key("VT") }}',
                      headers=[{'name': 'x-apikey', 'value': '{{ key("VT") }}', 'secret': True}])

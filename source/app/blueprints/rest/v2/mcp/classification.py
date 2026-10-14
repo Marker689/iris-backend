@@ -35,6 +35,7 @@ from __future__ import annotations
 READ_ONLY_TOOLS: frozenset[str] = frozenset({
     'iris_cases_list', 'iris_cases_filter', 'iris_cases_get',
     'iris_case_access_list',
+    'iris_customers_get', 'iris_customers_list',
     'iris_alerts_list', 'iris_alerts_get', 'iris_alerts_related_get',
     # Alerts — lookup reads (needed before iris_alerts_update)
     'iris_alerts_status_list', 'iris_alerts_resolution_list',
@@ -79,6 +80,8 @@ WRITE_TOOLS: frozenset[str] = frozenset({
     'iris_case_tasks_create', 'iris_case_tasks_update',
     'iris_case_tasks_set_status',
     # War rooms — writes
+    'iris_war_rooms_create',
+    'iris_war_room_cases_attach', 'iris_war_room_members_add',
     'iris_war_room_chat_post',
     'iris_war_room_sitreps_create',
     'iris_war_room_notes_create', 'iris_war_room_notes_update',

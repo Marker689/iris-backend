@@ -236,6 +236,67 @@ class TestsNotifyAudience(EngineTestCase):
         self.assertIn('None of the users', step.output['note'])
 
 
+class TestsNotifyAbout(EngineTestCase):
+    """A notification about an entity of the run's scope other than its
+    entity: a war room a webhook run created."""
+
+    def _notify_about(self, about, reachable=frozenset({8}), checked=None, owners=(8, 9)):
+        node = {'id': 'notify', 'type': 'notify', 'config': {'audience': 'entity', 'title': 'Hello',
+                                                              'about': about}}
+        checks = []
+
+        def _check(run, key, value):
+            checks.append((key, value))
+            if checked is not None:
+                checked(key, value)
+
+        with patch('app.iris_engine.ai_workflows.nodes.ai_workflows_agent_check_identifier', _check), \
+                patch('app.iris_engine.ai_workflows.nodes.ai_workflows_db_entity_owner_ids',
+                      lambda entity_type, entity_id: owners if (entity_type, entity_id) == ('war_room', 11) else ()), \
+                patch('app.iris_engine.ai_workflows.nodes.ai_workflows_entities_user_can_access',
+                      lambda user_id, entity_type, entity_id: (entity_type, entity_id) == ('war_room', 11)
+                      and user_id in reachable), \
+                patch('app.iris_engine.notifications.service.notify_many') as notify_many:
+            run = self.run_to_rest(workflow(chain(_vars(room='11'), node)), entity_type=None, entity_id=None)
+        return run, notify_many, checks
+
+    def test_entityless_run_should_notify_about_a_war_room_of_its_scope(self):
+        run, notify_many, checks = self._notify_about({'entity_type': 'war_room',
+                                                       'entity_id': {'$path': 'vars.room'}})
+        self.assertEqual('succeeded', run.status)
+        self.assertEqual([('war_room_id', 11)], checks)
+        self.assertEqual([8], notify_many.call_args.args[0])
+        self.assertEqual('/war-rooms/11', notify_many.call_args.kwargs['link'])
+        step = [s for s in self.steps(run) if s.node_id == 'notify'][0]
+        self.assertEqual({'entity_type': 'war_room', 'entity_id': 11}, step.output['about'])
+
+    def test_template_identifier_should_be_accepted(self):
+        run, notify_many, _checks = self._notify_about({'entity_type': 'war_room', 'entity_id': '{{ vars.room }}'})
+        self.assertEqual('succeeded', run.status)
+        self.assertEqual('/war-rooms/11', notify_many.call_args.kwargs['link'])
+
+    def test_entity_outside_the_run_scope_should_fail_the_node(self):
+        from app.iris_engine.ai_workflows.agent import AiWorkflowScopeError
+
+        def _refuse(_key, _value):
+            raise AiWorkflowScopeError('war_room_id=11: this run is not about that war room')
+
+        run, notify_many, _checks = self._notify_about({'entity_type': 'war_room', 'entity_id': 11}, checked=_refuse)
+        self.assertEqual('failed', run.status)
+        notify_many.assert_not_called()
+
+    def test_identifier_that_is_not_an_id_should_fail_the_node(self):
+        for value in ('vpn', 0, True, '{{ vars.missing }}'):
+            run, notify_many, _checks = self._notify_about({'entity_type': 'war_room', 'entity_id': value})
+            self.assertEqual('failed', run.status, value)
+            notify_many.assert_not_called()
+
+    def test_other_entity_types_should_fail_the_node(self):
+        run, notify_many, _checks = self._notify_about({'entity_type': 'user', 'entity_id': 11})
+        self.assertEqual('failed', run.status)
+        notify_many.assert_not_called()
+
+
 class TestsSuggestAudience(EngineTestCase):
 
     def _suggest(self, config, reachable, dry_run=False):

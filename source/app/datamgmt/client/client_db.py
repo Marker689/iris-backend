@@ -69,8 +69,11 @@ def get_client_list(current_user_id: int, is_server_administrator: bool) -> List
     return output
 
 
-def get_paginated_customers(pagination_parameters: PaginationParameters, current_user_identifier: int, is_server_administrator: bool, search: Optional[str] = None) -> Pagination:
+def get_paginated_customers(pagination_parameters: PaginationParameters, current_user_identifier: int, is_server_administrator: bool, search: Optional[str] = None,
+                            identifiers: Optional[list] = None) -> Pagination:
     query = Client.query
+    if identifiers is not None:
+        query = query.filter(Client.client_id.in_(identifiers))
 
     if not is_server_administrator:
         query = query.filter(

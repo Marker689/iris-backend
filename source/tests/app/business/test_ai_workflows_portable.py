@@ -113,8 +113,10 @@ class TestsWorkflowExportImport(_PortableTestCase):
         self.assertTrue(any(w['field'] == 'keystore' and 'VT' in w['message'] for w in result['warnings']))
 
     def test_shipped_examples_should_import(self):
-        tools = [{'name': name, 'classification': 'write' if 'update' in name else 'read'}
-                 for name in ('iris_case_iocs_get', 'iris_case_iocs_update')]
+        documents = [e['document'] for e in ai_workflows_guide_examples() if e['kind'] == 'workflow']
+        writes = {name for d in documents for name in d['workflow']['write_tool_allowlist']}
+        tools = [{'name': name, 'classification': 'write' if name in writes else 'read'}
+                 for name in sorted({name for d in documents for name in d['requirements']['tools']} | writes)]
         with patch(f'{_BUSINESS}.ai_workflows_tools_catalogue', return_value=tools):
             for example in ai_workflows_guide_examples():
                 if example['kind'] != 'workflow':

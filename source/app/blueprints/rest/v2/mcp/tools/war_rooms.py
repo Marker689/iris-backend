@@ -16,14 +16,15 @@ Authorization mirrors `war_rooms/access.py`: reads declare
 from `mcp/classification.py`). Server admins pass either way, as they
 do on the REST routes.
 
-Read, creation and note-edit tools are exposed. Delete / archive is
-deliberately excluded — the analyst can perform those from the UI,
+Read, creation (of a room too), case attachment, membership and
+note-edit tools are exposed. Delete / archive is deliberately excluded — the analyst can perform those from the UI,
 and letting an LLM propose them would be a common footgun.
 """
 from __future__ import annotations
 
 from marshmallow import ValidationError
 
+from app.blueprints.access_controls import ac_fast_check_current_user_has_case_access
 from app.blueprints.access_controls import ac_fast_check_current_user_has_cases_access
 from app.blueprints.iris_user import iris_current_user
 from app.blueprints.rest.v2.mcp import protocol
@@ -40,7 +41,9 @@ from app.business import (
     war_room_tasks as war_room_tasks_biz,
     war_rooms as war_rooms_biz,
 )
+from app.business.users import users_get_active
 from app.models.authorization import CaseAccessLevel
+from app.models.authorization import WarRoomAccessLevel
 from app.models.authorization import Permissions
 from app.models.errors import BusinessProcessingError, ObjectNotFoundError
 
@@ -94,6 +97,146 @@ def iris_war_rooms_get(args: dict) -> dict:
     except ObjectNotFoundError as exc:
         raise MCPError(protocol.INVALID_PARAMS, 'War room not found.') from exc
     return _room_summary(room)
+
+
+@mcp_tool(
+    name='iris_war_rooms_create',
+    description=(
+        'Create a war room. You become its lead, with full access; add the other people with '
+        'iris_war_room_members_add and the cases with iris_war_room_cases_attach. state is one of '
+        'open (default), active, standby, closed; severity_id comes from iris_taxonomies_list.'
+    ),
+    input_schema={
+        'type': 'object',
+        'properties': {
+            'name': {'type': 'string', 'minLength': 1, 'maxLength': 256},
+            'description': {'type': 'string'},
+            'state': {'type': 'string', 'enum': ['open', 'active', 'standby', 'closed']},
+            'severity_id': {'type': 'integer'},
+        },
+        'required': ['name'],
+    },
+    permissions=(Permissions.war_rooms_create, Permissions.server_administrator),
+    mvp=True,
+)
+def iris_war_rooms_create(args: dict) -> dict:
+    user_obj = iris_current_user._get_current_object()  # type: ignore[attr-defined]
+    try:
+        room = war_rooms_biz.war_room_create(
+            name=args.get('name'),
+            description=args.get('description'),
+            state=args.get('state'),
+            severity_id=args.get('severity_id'),
+            created_by_id=user_obj.id,
+        )
+    except BusinessProcessingError as exc:
+        raise MCPError(protocol.INVALID_PARAMS, exc.get_message()) from exc
+    return _room_summary(room)
+
+
+@mcp_tool(
+    name='iris_war_room_cases_attach',
+    description=(
+        'Attach a case to a war room. Needs full access on the case. Attaching a case already '
+        'attached only updates its note.'
+    ),
+    input_schema={
+        'type': 'object',
+        'properties': {
+            'case_id': {'type': 'integer'},
+            'note': {'type': 'string', 'description': 'Why the case is in the room.'},
+        },
+        'required': ['case_id'],
+    },
+    permissions=(Permissions.war_rooms_write, Permissions.server_administrator),
+    war_room_scoped=True,
+    mvp=True,
+)
+def iris_war_room_cases_attach(args: dict) -> dict:
+    user_obj = iris_current_user._get_current_object()  # type: ignore[attr-defined]
+    war_room_id = args['war_room_id']
+    case_id = args.get('case_id')
+    # Same gate as the REST route: write access on the room is not
+    # enough, attaching hands the case to everyone in the room.
+    if not ac_fast_check_current_user_has_case_access(case_id, [CaseAccessLevel.full_access]):
+        raise MCPError(protocol.IRIS_ACCESS_DENIED, f'No full access to case #{case_id}.')
+    note = args.get('note') or None
+    try:
+        link = war_rooms_biz.war_room_attach_case(war_room_id, case_id, attached_by_id=user_obj.id, note=note)
+    except BusinessProcessingError as exc:
+        raise MCPError(protocol.INVALID_PARAMS, exc.get_message()) from exc
+    war_room_chat_biz.emit_system_event(
+        war_room_id, 'case_attached',
+        f'Attached case #{case_id}' + (f' — {note}' if note else ''),
+        author_id=user_obj.id,
+        ref_type='case', ref_id=case_id, ref_case_id=case_id,
+        activity_type='case.attached',
+    )
+    return {
+        'war_room_id': link.war_room_id,
+        'case_id': link.case_id,
+        'attached_at': _iso(link.attached_at),
+        'note': link.note,
+    }
+
+
+_MEMBER_ACCESS_LEVELS = {
+    'full_access': WarRoomAccessLevel.full_access.value,
+    'read_only': WarRoomAccessLevel.read_only.value,
+}
+
+
+@mcp_tool(
+    name='iris_war_room_members_add',
+    description=(
+        'Add a user to a war room, or change the role and access of a member. role is lead, '
+        'responder (default) or observer; access is full_access (default) or read_only.'
+    ),
+    input_schema={
+        'type': 'object',
+        'properties': {
+            'user_id': {'type': 'integer'},
+            'role': {'type': 'string', 'enum': ['lead', 'responder', 'observer']},
+            'access': {'type': 'string', 'enum': sorted(_MEMBER_ACCESS_LEVELS)},
+        },
+        'required': ['user_id'],
+    },
+    permissions=(Permissions.war_rooms_write, Permissions.server_administrator),
+    war_room_scoped=True,
+)
+def iris_war_room_members_add(args: dict) -> dict:
+    user_obj = iris_current_user._get_current_object()  # type: ignore[attr-defined]
+    war_room_id = args['war_room_id']
+    user_id = args.get('user_id')
+    try:
+        users_get_active(user_id)
+    except ObjectNotFoundError as exc:
+        raise MCPError(protocol.INVALID_PARAMS, f'No active user #{user_id}.') from exc
+    try:
+        war_rooms_biz.war_room_add_member(
+            war_room_id, user_id,
+            role=args.get('role'),
+            added_by_id=user_obj.id,
+            access_level=_MEMBER_ACCESS_LEVELS[args.get('access') or 'full_access'],
+        )
+    except BusinessProcessingError as exc:
+        raise MCPError(protocol.INVALID_PARAMS, exc.get_message()) from exc
+    member = next((r for r in war_rooms_biz.war_room_members_list(war_room_id) if r.user_id == user_id), None)
+    if member is None:
+        raise MCPError(protocol.INTERNAL_ERROR, f'User #{user_id} was not added.')
+    war_room_chat_biz.emit_system_event(
+        war_room_id, 'system',
+        f'Added member {member.name or member.login} as {member.role}',
+        author_id=user_obj.id,
+    )
+    return {
+        'war_room_id': war_room_id,
+        'user_id': member.user_id,
+        'user_login': member.login,
+        'user_name': member.name,
+        'role': member.role,
+        'access': args.get('access') or 'full_access',
+    }
 
 
 # ---- Chat ----------------------------------------------------------

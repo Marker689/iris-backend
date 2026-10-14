@@ -18,6 +18,7 @@ mocking Flask.
 import datetime
 import re
 
+from app.datamgmt.manage.manage_common import get_severity_by_id
 from app.datamgmt.war_rooms.war_rooms_db import apply_search_filter as _apply_search_filter
 from app.datamgmt.war_rooms.war_rooms_db import state_priority_expr as _state_priority_expr_builder
 from app.datamgmt.war_rooms.war_rooms_db import war_room_case_attachments_rows
@@ -66,6 +67,14 @@ def _validate_color(color):
     if not isinstance(color, str) or not _HEX_COLOR_RE.match(color):
         raise BusinessProcessingError('Color must be a hex string like #RRGGBB')
     return color
+
+
+def _validate_severity(severity_id):
+    if severity_id is None:
+        return None
+    if isinstance(severity_id, bool) or not isinstance(severity_id, int) or get_severity_by_id(severity_id) is None:
+        raise BusinessProcessingError('Unknown severity_id')
+    return severity_id
 
 
 def _validate_state(state):
@@ -201,6 +210,7 @@ def war_room_create(name, description=None, state=None, severity_id=None,
     name = _validate_name(name)
     color = _validate_color(color)
     state = _validate_state(state) or WarRoomState.open.value
+    severity_id = _validate_severity(severity_id)
 
     war_room = WarRoom()
     war_room.name = name

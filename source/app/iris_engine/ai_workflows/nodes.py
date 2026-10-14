@@ -32,13 +32,19 @@ used are restored in every node so that they stay masked and their host
 restrictions keep applying.
 """
 
+import base64
 import datetime
+import hashlib
 import json
 import posixpath
+import threading
+import time
 import uuid
 from dataclasses import dataclass
 from dataclasses import field
+from urllib.parse import quote
 from urllib.parse import unquote
+from urllib.parse import urlencode
 from urllib.parse import urlsplit
 
 from flask import current_app
@@ -50,6 +56,7 @@ from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_utcnow
 from app.datamgmt.ai_workflows.ai_workflows_runtime_db import ai_workflows_runtime_db_cancel_wait
 from app.datamgmt.ai_workflows.ai_workflows_runtime_db import ai_workflows_runtime_db_create_wait
 from app.datamgmt.manage.manage_webhooks_db import webhooks_db_proxies
+from app.iris_engine.ai_workflows.agent import ai_workflows_agent_check_identifier
 from app.iris_engine.ai_workflows.agent import ai_workflows_agent_pin_arguments
 from app.iris_engine.ai_workflows.agent import ai_workflows_agent_run
 from app.iris_engine.ai_workflows.context import MAX_RENDERED_CHARS
@@ -77,11 +84,13 @@ from app.iris_engine.ai_workflows.tools import CLASSIFICATION_WRITE
 from app.iris_engine.ai_workflows.tools import ai_workflows_tools_classification
 from app.iris_engine.ai_workflows.tools import ai_workflows_tools_execute
 from app.iris_engine.ai_workflows.tools import ai_workflows_tools_record
+from app.iris_engine.webhooks.render import MASK
 from app.iris_engine.webhooks.render import webhooks_render_request
 from app.iris_engine.webhooks.sender import webhooks_send
 from app.models.ai_workflows import AUDIENCE_ENTITY
 from app.models.ai_workflows import AUDIENCE_OWNER
 from app.models.ai_workflows import ENTITY_ALERT
+from app.models.ai_workflows import ENTITY_CASE
 from app.models.ai_workflows import ENTITY_WAR_ROOM
 from app.models.ai_workflows import EXEC_ALLOWLISTED_WRITE
 from app.models.ai_workflows import EXEC_AUTO_READ
@@ -131,6 +140,23 @@ _MAX_DRY_RUN_BODY = 10_000
 # answer still parses; a body kept as text is cut to _MAX_TEXT_BODY
 _MAX_HTTP_RESPONSE_CHARS = 1024 * 1024
 _MAX_TEXT_BODY = 64 * 1024
+
+# `auth_type` of an HTTP request fetching its bearer token from an OAuth 2
+# token endpoint (client credentials grant) before sending
+AUTH_OAUTH2_CLIENT_CREDENTIALS = 'oauth2_client_credentials'
+HTTP_AUTH_TYPES = ('none', 'basic', 'bearer', AUTH_OAUTH2_CLIENT_CREDENTIALS)
+# How the client authenticates to the token endpoint: client_secret_post
+# or client_secret_basic
+OAUTH_CLIENT_AUTH = ('body', 'basic')
+# Tokens are reused until shortly before they expire, across runs: the
+# cache key is derived from the client secret, so only a run holding it
+# gets the token
+_OAUTH_CACHE_MAX = 256
+_OAUTH_EXPIRY_MARGIN_SECONDS = 60
+_OAUTH_DEFAULT_EXPIRES_IN = 3600
+_OAUTH_MAX_ERROR = 300
+_oauth_tokens = {}
+_oauth_tokens_lock = threading.Lock()
 
 # Paths of this instance's own inbound endpoints: a request to them would
 # start (hooks) or resume (callbacks) runs, i.e. loop
@@ -221,7 +247,9 @@ _CATALOGUE = (
                'for the system to call back `callback.url` with `callback.token`.', 'integration',
                (PORT_OUT, PORT_ERROR, PORT_TIMEOUT),
                {'method': 'POST', 'url': '', 'query_params': [], 'auth_type': 'none', 'auth_username': '',
-                'auth_secret': '', 'headers': [], 'body_mode': 'default', 'body_template': '',
+                'auth_secret': '', 'oauth_token_url': '', 'oauth_client_id': '', 'oauth_client_secret': '',
+                'oauth_scope': '', 'oauth_client_auth': 'body', 'headers': [], 'body_mode': 'default',
+                'body_template': '',
                 'content_type': 'application/json', 'mode': 'sync', 'timeout_seconds': 15,
                 'wait_timeout_minutes': 60, 'verify_tls': True, 'use_proxy': True, 'response_format': 'json'}),
     _node_spec(NODE_ASK_ANALYST, 'Ask an analyst', 'Asks the audience a question with a form and waits for '
@@ -242,7 +270,7 @@ _CATALOGUE = (
     _node_spec(NODE_ACTION, 'Action', 'Runs an IRIS tool. Write tools must be on the workflow allowlist.',
                'iris', (PORT_OUT, PORT_ERROR), {'tool': '', 'arguments': {}}),
     _node_spec(NODE_NOTIFY, 'Notify', 'Sends an in-app notification.', 'human', (PORT_OUT,),
-               {'audience': AUDIENCE_ENTITY, 'user_ids': [], 'title': '', 'body': ''}),
+               {'audience': AUDIENCE_ENTITY, 'user_ids': [], 'title': '', 'body': '', 'about': None}),
     _node_spec(NODE_DELAY, 'Delay', 'Waits before continuing.', 'flow', (PORT_OUT,), {'minutes': 5}),
     _node_spec(NODE_SET_VARIABLES, 'Set variables', 'Stores values under `vars` for later nodes.', 'flow',
                (PORT_OUT,), {'variables': []}),
@@ -456,6 +484,157 @@ def _cancel_prepared_wait(ctx, wait_id):
                                    f'#{wait_id} ({e.__class__.__name__})')
 
 
+def _oauth_cache_get(key):
+    with _oauth_tokens_lock:
+        entry = _oauth_tokens.get(key)
+        if entry is None:
+            return None
+        token, expires_at = entry
+        if expires_at <= time.monotonic():
+            del _oauth_tokens[key]
+            return None
+        return token
+
+
+def _oauth_cache_put(key, token, expires_in):
+    lifetime = expires_in - _OAUTH_EXPIRY_MARGIN_SECONDS
+    if lifetime <= 0:
+        return
+    now = time.monotonic()
+    with _oauth_tokens_lock:
+        if len(_oauth_tokens) >= _OAUTH_CACHE_MAX:
+            for stale in [k for k, (_, expires_at) in _oauth_tokens.items() if expires_at <= now]:
+                del _oauth_tokens[stale]
+            while len(_oauth_tokens) >= _OAUTH_CACHE_MAX:
+                # Oldest first
+                del _oauth_tokens[next(iter(_oauth_tokens))]
+        _oauth_tokens[key] = (token, now + lifetime)
+
+
+def _oauth_cache_drop(key):
+    with _oauth_tokens_lock:
+        _oauth_tokens.pop(key, None)
+
+
+def _oauth_request(ctx, config, template) -> dict:
+    """The rendered and checked token request of an
+    `oauth2_client_credentials` HTTP request: `{request, log, key}`."""
+    from app.iris_engine.ai_workflows.keystore import KeystoreError
+
+    try:
+        base_template, rest_template = ai_workflows_context_split_url(config.get('oauth_token_url'))
+        base = ai_workflows_context_render_url_base(base_template, template)
+        rendered = webhooks_render_request({'method': 'POST', 'url': rest_template, 'body_mode': 'none'}, template,
+                                           user_agent='IRIS-AI-Workflows', quote_url_values=True,
+                                           max_output=MAX_RENDERED_CHARS)
+        values = {name: ai_workflows_context_render(config.get(name) or '', template, name)
+                  for name in ('oauth_client_id', 'oauth_client_secret', 'oauth_scope')}
+    except AiWorkflowTemplateError as e:
+        raise AiWorkflowNodeError(ctx.mask(f'OAuth token request could not be rendered — '
+                                           f'{e.field or "oauth_token_url"}: {e.message}'))
+    if rendered['errors']:
+        details = '; '.join(f'oauth_token_url: {e["message"]}' for e in rendered['errors'])
+        raise AiWorkflowNodeError(ctx.mask(f'OAuth token request could not be rendered — {details}'))
+    url = f'{base}{rendered["url"]}'
+    log_url = f'{base}{rendered["log_url"]}'
+    if urlsplit(url).scheme.lower() != 'https':
+        # The client secret travels in the request
+        raise AiWorkflowNodeError(ctx.mask(f'The OAuth token URL must be https: {log_url}'))
+    try:
+        ai_workflows_context_check_url_origin(base, url)
+    except AiWorkflowTemplateError as e:
+        raise AiWorkflowNodeError(ctx.mask(f'Invalid OAuth token URL: {e.message}'))
+    _refuse_own_endpoints(url)
+    try:
+        ctx.resolver.check_url(url)
+    except KeystoreError as e:
+        raise AiWorkflowNodeError(ctx.mask(str(e)))
+    client_id = values['oauth_client_id'].strip()
+    client_secret = values['oauth_client_secret']
+    scope = values['oauth_scope'].strip()
+    if not client_id or not client_secret:
+        raise AiWorkflowNodeError('The OAuth client ID and client secret must not render empty')
+
+    client_auth = config.get('oauth_client_auth') or 'body'
+    form = {'grant_type': 'client_credentials'}
+    if scope:
+        form['scope'] = scope
+    headers = {
+        'User-Agent': 'IRIS-AI-Workflows',
+        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
+    }
+    if client_auth == 'basic':
+        # RFC 6749 §2.3.1: form-encoded before the Basic encoding
+        raw = f'{quote(client_id, safe="")}:{quote(client_secret, safe="")}'
+        headers['Authorization'] = f'Basic {base64.b64encode(raw.encode("utf-8")).decode("ascii")}'
+    else:
+        form['client_id'] = client_id
+        form['client_secret'] = client_secret
+    key = hashlib.sha256(json.dumps([url, client_id, client_secret, scope, client_auth]).encode('utf-8')).hexdigest()
+    return {
+        'request': {
+            'method': 'POST',
+            'url': url,
+            'headers': headers,
+            'body': urlencode(form),
+            'log_url': log_url,
+            'log_headers': {name: MASK if name == 'Authorization' else value for name, value in headers.items()},
+        },
+        'log': {'token_url': log_url, 'client_id': client_id, 'scope': scope, 'client_auth': client_auth},
+        'key': key,
+    }
+
+
+def _oauth_error(ctx, oauth, detail):
+    detail = str(detail)
+    if len(detail) > _OAUTH_MAX_ERROR:
+        detail = f'{detail[:_OAUTH_MAX_ERROR]}…'
+    return AiWorkflowNodeError(ctx.mask(f'OAuth token request to {oauth["log"]["token_url"]} failed: {detail}'))
+
+
+def _oauth_token(ctx, config, oauth) -> str:
+    """A bearer token from the cache or the token endpoint. Never
+    persisted: masked from every output of the run."""
+    token = _oauth_cache_get(oauth['key'])
+    if token is None:
+        use_proxy = bool(config.get('use_proxy', True))
+        sent = webhooks_send(
+            oauth['request'],
+            verify_tls=bool(config.get('verify_tls', True)),
+            timeout=_int(config.get('timeout_seconds'), 15, 1, _MAX_HTTP_TIMEOUT),
+            follow_redirects=False,
+            proxies=webhooks_db_proxies() if use_proxy else None,
+            use_proxy=use_proxy,
+            allow_private=bool(current_app.config.get('AI_WORKFLOWS_ALLOW_PRIVATE_EGRESS', False)),
+            max_response_chars=_MAX_TEXT_BODY,
+        )
+        try:
+            data = json.loads(sent.get('response_body') or '')
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            data = {}
+        if not sent.get('success'):
+            detail = sent.get('error') or 'no response'
+            if data.get('error'):
+                detail = f'{detail} — {data.get("error")}: {data.get("error_description") or ""}'.rstrip(': ')
+            raise _oauth_error(ctx, oauth, detail)
+        token = data.get('access_token')
+        if not isinstance(token, str) or not token or any(c in token for c in '\r\n'):
+            raise _oauth_error(ctx, oauth, 'the response holds no usable access_token')
+        token_type = data.get('token_type')
+        if token_type and str(token_type).lower() != 'bearer':
+            raise _oauth_error(ctx, oauth, f'unsupported token type {str(token_type)[:32]}')
+        try:
+            expires_in = int(data.get('expires_in', _OAUTH_DEFAULT_EXPIRES_IN))
+        except (TypeError, ValueError):
+            expires_in = _OAUTH_DEFAULT_EXPIRES_IN
+        _oauth_cache_put(oauth['key'], token, min(expires_in, 24 * 3600))
+    ctx.resolver.add_ephemeral(token)
+    return token
+
+
 def _http_request(ctx, config):
     from app.iris_engine.ai_workflows.engine import ai_workflows_engine_callback_url
     from app.iris_engine.ai_workflows.engine import ai_workflows_engine_hash_token
@@ -481,6 +660,13 @@ def _http_request(ctx, config):
         'vars': template.get('vars'),
         'callback': extra.get('callback'),
     }
+    oauth = None
+    if config.get('auth_type') == AUTH_OAUTH2_CLIENT_CREDENTIALS:
+        # The client credentials only go to the token endpoint: their
+        # host restrictions bind it, not the request nor the next steps
+        with ctx.resolver.confined():
+            oauth = _oauth_request(ctx, config, template)
+        config = {**config, 'auth_type': 'none'}
     try:
         # The scheme and host render unquoted (literal or `key()` only),
         # the path and query with their interpolated values percent-encoded
@@ -496,8 +682,16 @@ def _http_request(ctx, config):
         raise AiWorkflowNodeError(ctx.mask(f'Request could not be rendered — {e.field}: {e.message}'))
     request['url'] = f'{base}{request["url"]}'
     request['log_url'] = f'{base}{request["log_url"]}'
+    if oauth is not None:
+        # The token replaces any Authorization header; set once it is known
+        for headers in (request['headers'], request['log_headers']):
+            for name in [name for name in headers if name.lower() == 'authorization']:
+                del headers[name]
+        request['log_headers']['Authorization'] = MASK
     logged = ctx.mask(_scrub_token({'method': request['method'], 'url': request['log_url'],
                                     'headers': request['log_headers']}, token))
+    if oauth is not None:
+        logged['oauth'] = ctx.mask(oauth['log'])
     if request['errors']:
         details = '; '.join(f'{e["field"]}: {e["message"]}' for e in request['errors'])
         raise AiWorkflowNodeError(ctx.mask(_scrub_token(f'Request could not be rendered — {details}', token)))
@@ -518,6 +712,9 @@ def _http_request(ctx, config):
         # A dry run never reaches the remote system
         preview = ctx.mask(_scrub_token({**logged, 'body': _dry_run_body(request.get('body'))}, token))
         return NodeResult(output={'dry_run': True, 'request': preview}, input=logged)
+
+    if oauth is not None:
+        request['headers']['Authorization'] = f'Bearer {_oauth_token(ctx, config, oauth)}'
 
     minutes = _int(config.get('wait_timeout_minutes'), 60, 1, _MAX_WAIT_MINUTES)
     token_hash = ai_workflows_engine_hash_token(token) if is_async else None
@@ -547,6 +744,9 @@ def _http_request(ctx, config):
     except Exception:
         _cancel_prepared_wait(ctx, wait_id)
         raise
+    if oauth is not None and sent.get('status_code') == 401:
+        # Revoked or no longer valid: the next request fetches a new one
+        _oauth_cache_drop(oauth['key'])
     if not sent.get('success'):
         _cancel_prepared_wait(ctx, wait_id)
         error = str(sent.get('error') or '')
@@ -790,45 +990,72 @@ def _event_actor_id(run):
     return actor_id if isinstance(actor_id, int) and not isinstance(actor_id, bool) else None
 
 
-def _notify_audience(ctx, config) -> tuple:
+# Entities a notification can be about, and the argument the run scope
+# checks their identifier as
+_NOTIFY_ABOUT = {ENTITY_CASE: 'case_identifier', ENTITY_ALERT: 'alert_identifier', ENTITY_WAR_ROOM: 'war_room_id'}
+
+
+def _notify_target(ctx, config) -> tuple:
+    """(entity_type, entity_id) the notification is about: `about`, an
+    entity in the scope of the run (a case or war room the workflow
+    created, …), or else the run's entity."""
+    about = config.get('about')
+    if not isinstance(about, dict) or not about.get('entity_type'):
+        return ctx.run.entity_type, ctx.run.entity_id
+    entity_type = about.get('entity_type')
+    if entity_type not in _NOTIFY_ABOUT:
+        raise AiWorkflowNodeError(f'A notification cannot be about a {entity_type}')
+    value = ai_workflows_context_render_arguments(about.get('entity_id'), ctx.template_context(), 'about.entity_id')
+    if isinstance(value, str) and value.strip().isdigit():
+        value = int(value.strip())
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise AiWorkflowNodeError(f'about.entity_id is not the identifier of a {entity_type}: {value!r}')
+    ai_workflows_agent_check_identifier(ctx.run, _NOTIFY_ABOUT[entity_type], value)
+    return entity_type, value
+
+
+def _notify_audience(ctx, config, target) -> tuple:
     """(users, note): the active users of the audience who can read the
-    run's entity, and why the list is not the configured one, if so.
-    `entity` is the entity's owner (a war room: its members) and the
-    user who triggered the run, or whose action fired the event; when
-    none of them can be reached, the workflow owner is told instead.
-    `triggerer` is only that user."""
+    entity the notification is about (`target`), and why the list is not
+    the configured one, if so. `entity` is the entity's owner (a war
+    room: its members) and the user who triggered the run, or whose
+    action fired the event; when none of them can be reached, the
+    workflow owner is told instead. `triggerer` is only that user."""
     run = ctx.run
     owner_id = ctx.snapshot.get('owner_id')
     audience = config.get('audience') or AUDIENCE_ENTITY
+    entity_type, entity_id = target
     if audience == AUDIENCE_OWNER:
         candidates = [owner_id]
     elif audience == 'triggerer':
         candidates = [run.triggered_by_user_id, _event_actor_id(run)]
     elif audience == 'users':
         candidates = [u for u in config.get('user_ids') or [] if isinstance(u, int) and not isinstance(u, bool)]
-    elif run.entity_type:
-        candidates = list(ai_workflows_db_entity_owner_ids(run.entity_type, run.entity_id)) \
+    elif entity_type:
+        candidates = list(ai_workflows_db_entity_owner_ids(entity_type, entity_id)) \
             + [run.triggered_by_user_id, _event_actor_id(run)]
     else:
         candidates = [owner_id]
     users = []
     for user_id in candidates:
-        if user_id and user_id not in users and _notify_reachable(run, user_id):
+        if user_id and user_id not in users and _notify_reachable(run, user_id, target):
             users.append(user_id)
     if users or not candidates:
         return users, None if users else 'No user to notify'
-    if audience == AUDIENCE_ENTITY and owner_id and _notify_reachable(run, owner_id):
+    if audience == AUDIENCE_ENTITY and owner_id and _notify_reachable(run, owner_id, target):
         return [owner_id], 'Nobody on the entity could be reached: the workflow owner was notified instead'
     return [], 'None of the users of the audience is active and can access the entity'
 
 
-def _notify_reachable(run, user_id) -> bool:
-    """An active user who can read the run's entity. Without an entity
-    there is nothing to check access against: only active accounts."""
-    if not run.entity_type or run.entity_id is None:
+def _notify_reachable(run, user_id, target=None) -> bool:
+    """An active user who can read `target` (the run's entity by
+    default). Without an entity there is nothing to check access
+    against: only active accounts."""
+    entity_type, entity_id = target if target is not None else (run.entity_type, run.entity_id)
+    if not entity_type or entity_id is None:
         user = ai_workflows_db_get_user(user_id)
         return bool(user is not None and user.active)
-    return ai_workflows_entities_user_can_access(user_id, run.entity_type, run.entity_id)
+    return ai_workflows_entities_user_can_access(user_id, entity_type, entity_id)
 
 
 def _notify(ctx, config):
@@ -840,15 +1067,17 @@ def _notify(ctx, config):
         ctx.mask(ctx.render(config.get('title') or '', 'title')).strip() or run.workflow_name)
     body = ai_workflows_suggestions_neutralise_links(ctx.mask(ctx.render(config.get('body') or '', 'body')).strip()
                                                      or None)
-    users, note = _notify_audience(ctx, config)
+    target = _notify_target(ctx, config)
+    users, note = _notify_audience(ctx, config, target)
+    about = {'about': {'entity_type': target[0], 'entity_id': target[1]}} \
+        if target != (run.entity_type, run.entity_id) else {}
     if run.is_dry_run:
-        return NodeResult(output={'notified': [], 'would_notify': users, 'title': title, 'body': body,
+        return NodeResult(output={'notified': [], 'would_notify': users, 'title': title, 'body': body, **about,
                                   **({'note': note} if note else {})})
     if users:
         notify_many(users, 'ai_suggestion', title[:250], body=body[:2000] if body else None,
-                    link=_entity_link(run.entity_type, run.entity_id), source_type='ai_workflow_run',
-                    source_id=run.id)
-    return NodeResult(output={'notified': users, **({'note': note} if note else {})})
+                    link=_entity_link(*target), source_type='ai_workflow_run', source_id=run.id)
+    return NodeResult(output={'notified': users, **about, **({'note': note} if note else {})})
 
 
 def _delay(_ctx, config):

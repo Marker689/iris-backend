@@ -43,6 +43,10 @@ class Client(db.Model):
     last_update_date = Column(DateTime, server_default=func.now(), nullable=True)
 
     custom_attributes = Column(JSON)
+    # Free `{key: value}` strings (tenant IDs, site codes...) readable by
+    # anyone with customers_read and by workflows through iris_customers_get.
+    # JSON, not JSONB: JSONB reorders the keys the user entered
+    key_values = Column(JSON)
 
     # Optional per-customer chatbot policy override. NULL = fall back to
     # the global `ServerSettings.chatbot_*` block. See models/chatbot_policy.py.

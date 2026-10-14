@@ -119,7 +119,8 @@ class TestsMCPToolAuthorization(TestCase):
         """War-room tools mirror `require_war_room_read` /
         `require_war_room_write`: the matching permission, or
         server_administrator. `standard_user` would let any authenticated
-        account in."""
+        account in. Creating a war room mirrors `POST /war-rooms`:
+        war_rooms_create."""
         war_room_tools = {
             name for name, spec in TOOL_REGISTRY.items()
             if spec.war_room_scoped or name.startswith('iris_war_room')
@@ -128,7 +129,8 @@ class TestsMCPToolAuthorization(TestCase):
 
         for name in sorted(war_room_tools):
             spec = TOOL_REGISTRY[name]
-            expected = (Permissions.war_rooms_write if mutates(name)
+            expected = (Permissions.war_rooms_create if name == 'iris_war_rooms_create'
+                        else Permissions.war_rooms_write if mutates(name)
                         else Permissions.war_rooms_read)
             self.assertIn(
                 expected, spec.permissions,

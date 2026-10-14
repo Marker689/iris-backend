@@ -27,6 +27,7 @@ from unittest.mock import patch
 
 from app.iris_engine.ai_workflows.agent import AiWorkflowScopeError
 from app.iris_engine.ai_workflows.agent import _policy
+from app.iris_engine.ai_workflows.agent import ai_workflows_agent_check_identifier
 from app.iris_engine.ai_workflows.agent import ai_workflows_agent_pin_arguments
 
 _AGENT = 'app.iris_engine.ai_workflows.agent'
@@ -35,12 +36,18 @@ _AGENT = 'app.iris_engine.ai_workflows.agent'
 _CASES = {42: 1, 43: 1, 50: 2}
 _ALERTS = {7: 1, 8: 2}
 _CLUSTERS = {3: 1, 4: 2}
-_WAR_ROOM_CASES = {9: {42, 50}}
+_WAR_ROOM_CASES = {9: {42, 50}, 11: {42}, 12: {42, 50}}
+# workflow -> war rooms its runs created
+_CREATED_WAR_ROOMS = {5: {11, 12}}
 
 
-def _run(entity_type=None, entity_id=None, customer_id=None, scope=None):
+def _run(entity_type=None, entity_id=None, customer_id=None, scope=None, workflow_id=None):
     return SimpleNamespace(uuid='r', entity_type=entity_type, entity_id=entity_id, customer_id=customer_id,
-                           definition_snapshot={'customer_scope': scope or []})
+                           workflow_id=workflow_id, definition_snapshot={'customer_scope': scope or []})
+
+
+def _created_war_rooms(workflow_id, war_room_ids):
+    return {int(i) for i in war_room_ids} & _CREATED_WAR_ROOMS.get(workflow_id, set())
 
 
 def _lookup(table):
@@ -58,6 +65,7 @@ class _ScopeTestCase(TestCase):
             f'{_AGENT}.ai_workflows_runtime_db_war_room_case_ids': lambda wr: set(_WAR_ROOM_CASES.get(int(wr), ())),
             f'{_AGENT}.ai_workflows_runtime_db_customer_case_ids': self._customer_cases,
             f'{_AGENT}.ai_workflows_db_entity_customer': lambda _t, _i: None,
+            f'{_AGENT}.ai_workflows_runtime_db_workflow_war_room_ids': _created_war_rooms,
         }
         for target, replacement in patches.items():
             patcher = patch(target, replacement)
@@ -166,6 +174,63 @@ class TestsPinnedReads(_ScopeTestCase):
     def test_unfilterable_lists_should_be_refused_on_a_scoped_run(self):
         self.refused(_run(scope=[1]), 'iris_cases_list', {})
         self.assertEqual({}, self.pin(_run(), 'iris_cases_list', {}))
+
+
+class TestsWorkflowWarRooms(_ScopeTestCase):
+
+    def test_entityless_run_should_reach_a_war_room_its_workflow_created(self):
+        run = _run(workflow_id=5)
+        self.assertEqual(11, self.pin(run, 'iris_war_rooms_get', {'war_room_id': 11})['war_room_id'])
+        self.assertEqual(11, self.pin(run, 'iris_war_room_cases_attach',
+                                      {'war_room_id': 11, 'case_id': 50})['war_room_id'])
+
+    def test_war_room_of_another_workflow_should_be_refused(self):
+        self.refused(_run(workflow_id=6), 'iris_war_rooms_get', {'war_room_id': 11})
+        self.refused(_run(workflow_id=5), 'iris_war_rooms_get', {'war_room_id': 9})
+        self.refused(_run(), 'iris_war_rooms_get', {'war_room_id': 11})
+
+    def test_created_war_room_should_stay_within_the_customer_scope(self):
+        run = _run(scope=[1], workflow_id=5)
+        self.assertEqual(11, self.pin(run, 'iris_war_rooms_get', {'war_room_id': 11})['war_room_id'])
+        # A case of customer 2 was attached since
+        self.refused(run, 'iris_war_rooms_get', {'war_room_id': 12})
+
+    def test_case_run_should_reach_a_war_room_its_workflow_created(self):
+        run = _run('case', 42, customer_id=1, workflow_id=5)
+        self.assertEqual(11, self.pin(run, 'iris_war_room_cases_attach',
+                                      {'war_room_id': 11, 'case_id': 42})['war_room_id'])
+        self.refused(run, 'iris_war_rooms_get', {'war_room_id': 12})
+
+    def test_war_room_lookup_failure_should_fail_closed(self):
+        with patch(f'{_AGENT}.ai_workflows_runtime_db_workflow_war_room_ids', side_effect=RuntimeError('db down')):
+            self.refused(_run(workflow_id=5), 'iris_war_rooms_get', {'war_room_id': 11})
+
+    def test_identifier_check_should_use_the_run_scope(self):
+        ai_workflows_agent_check_identifier(_run(workflow_id=5), 'war_room_id', 11)
+        ai_workflows_agent_check_identifier(_run('case', 42, customer_id=1), 'case_identifier', 42)
+        for run, key, value in ((_run(workflow_id=5), 'war_room_id', 9),
+                                (_run('case', 42, customer_id=1), 'case_identifier', 50)):
+            with self.assertRaises(AiWorkflowScopeError):
+                ai_workflows_agent_check_identifier(run, key, value)
+        with patch(f'{_AGENT}.ai_workflows_runtime_db_workflow_war_room_ids', side_effect=RuntimeError('db down')):
+            with self.assertRaises(AiWorkflowScopeError):
+                ai_workflows_agent_check_identifier(_run(workflow_id=5), 'war_room_id', 11)
+
+
+class TestsCustomerList(_ScopeTestCase):
+
+    def test_scoped_run_should_list_its_customers_only(self):
+        self.assertEqual([1, 2], self.pin(_run(scope=[2, 1]), 'iris_customers_list', {})['customer_ids'])
+        self.assertEqual([1], self.pin(_run('alert', 7, customer_id=1), 'iris_customers_list',
+                                       {'search': 'acme'})['customer_ids'])
+
+    def test_customers_outside_the_scope_should_be_refused(self):
+        self.refused(_run(scope=[1]), 'iris_customers_list', {'customer_ids': [1, 2]})
+        self.assertEqual([1], self.pin(_run(scope=[1, 2]), 'iris_customers_list',
+                                       {'customer_ids': [1]})['customer_ids'])
+
+    def test_unscoped_run_should_list_freely(self):
+        self.assertEqual({'search': 'acme'}, self.pin(_run(), 'iris_customers_list', {'search': 'acme'}))
 
 
 class TestsEntitylessPolicy(TestCase):

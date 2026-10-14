@@ -49,6 +49,7 @@ from app.datamgmt.ai_workflows.ai_workflows_runtime_db import ai_workflows_runti
 from app.datamgmt.ai_workflows.ai_workflows_runtime_db import ai_workflows_runtime_db_customer_case_ids
 from app.datamgmt.ai_workflows.ai_workflows_runtime_db import ai_workflows_runtime_db_strictest_policy
 from app.datamgmt.ai_workflows.ai_workflows_runtime_db import ai_workflows_runtime_db_war_room_case_ids
+from app.datamgmt.ai_workflows.ai_workflows_runtime_db import ai_workflows_runtime_db_workflow_war_room_ids
 from app.iris_engine.ai_workflows.context import ai_workflows_context_render
 from app.iris_engine.ai_workflows.context import ai_workflows_context_untrusted
 from app.iris_engine.ai_workflows.suggestions import AiWorkflowSuggestionLimitError
@@ -116,9 +117,12 @@ _ALERT_KEYS = frozenset({'alert_identifier', 'alert_id', 'alert_identifiers', 'a
 _CLUSTER_KEYS = frozenset({'cluster_id', 'cluster_identifier', 'alert_cluster_id'})
 _WAR_ROOM_KEYS = frozenset({'war_room_id', 'war_room_identifier'})
 _CUSTOMER_KEYS = frozenset({'customer_id', 'client_id', 'customer_identifier', 'case_customer_id',
-                            'alert_customer_id'})
+                            'alert_customer_id', 'customer_ids'})
 # Listing tools and the argument restricting them to a customer
-_CUSTOMER_FILTERS = {'iris_alerts_list': 'customer_identifier', 'iris_cases_filter': 'case_customer_id'}
+_CUSTOMER_FILTERS = {'iris_alerts_list': 'customer_identifier', 'iris_cases_filter': 'case_customer_id',
+                     'iris_customers_get': 'customer_id'}
+# Listing tools restricted to the customers of the run, all of them
+_CUSTOMERS_FILTERS = {'iris_customers_list': 'customer_ids'}
 # Listing tools that cannot be restricted to a customer
 _UNSCOPABLE_LISTS = frozenset({'iris_cases_list', 'iris_war_rooms_list'})
 _SEARCH_TOOL = 'iris_search'
@@ -253,9 +257,11 @@ def _typed(properties, key, value):
 
 
 class _RunScope:
-    """What the tool calls of a run may point at: its entity, and objects
-    of the customers of the run (the entity's customer, the customers of
-    a war room's cases, or the workflow's customer scope)."""
+    """What the tool calls of a run may point at: its entity, objects of
+    the customers of the run (the entity's customer, the customers of a
+    war room's cases, or the workflow's customer scope) and the war rooms
+    the runs of its workflow created, while their cases stay within these
+    customers."""
 
     _UNSET = object()
 
@@ -302,6 +308,20 @@ class _RunScope:
             if found[value] not in customers:
                 raise AiWorkflowScopeError(f'{key}={value}: this {kind} is outside the customers of the run')
 
+    def _check_own_war_rooms(self, key, ids):
+        created = ai_workflows_runtime_db_workflow_war_room_ids(getattr(self.run, 'workflow_id', None), ids)
+        for war_room_id in ids:
+            if war_room_id not in created:
+                raise AiWorkflowScopeError(f'{key}={war_room_id}: this run is not about that war room')
+            customers = self.customers()
+            if customers is None:
+                continue
+            # A room the workflow created may since hold cases of others
+            cases = ai_workflows_runtime_db_war_room_case_ids(war_room_id)
+            if not set(ai_workflows_runtime_db_case_customers(cases).values()) <= customers:
+                raise AiWorkflowScopeError(f'{key}={war_room_id}: this war room holds cases outside the customers '
+                                           f'of the run')
+
     def check(self, key, value):
         """Raise AiWorkflowScopeError when the identifier argument `key`
         points outside the run."""
@@ -325,8 +345,9 @@ class _RunScope:
                 return
             self._check_customers(key, 'alert cluster', ids, ai_workflows_runtime_db_cluster_customers)
         elif key in _WAR_ROOM_KEYS:
-            if not (self._is(ENTITY_WAR_ROOM) and set(ids) == {int(run.entity_id)}):
-                raise AiWorkflowScopeError(f'{key}={ids[0] if ids else value}: this run is not about that war room')
+            if self._is(ENTITY_WAR_ROOM) and set(ids) == {int(run.entity_id)}:
+                return
+            self._check_own_war_rooms(key, ids or [value])
         elif key in _CUSTOMER_KEYS:
             customers = self.customers()
             outside = [i for i in ids if customers is not None and i not in customers]
@@ -359,9 +380,26 @@ class _RunScope:
             if len(customers) != 1:
                 raise AiWorkflowScopeError(f'{tool_name} must be filtered with {key}, one of {sorted(customers)}')
             arguments[key] = _typed(properties, key, next(iter(customers)))
+        elif tool_name in _CUSTOMERS_FILTERS:
+            key = _CUSTOMERS_FILTERS[tool_name]
+            customers = self.customers()
+            if customers is not None and _empty(arguments.get(key)):
+                arguments[key] = sorted(customers)
         elif tool_name in _UNSCOPABLE_LISTS and self.customers() is not None:
             raise AiWorkflowScopeError(f'{tool_name} cannot be restricted to the customers of this run; '
                                        f'use a filtered tool instead')
+
+
+def ai_workflows_agent_check_identifier(run, key, value):
+    """Raise AiWorkflowScopeError when the identifier argument `key`
+    (`case_identifier`, `war_room_id`, …) points outside the run."""
+    try:
+        _RunScope(run).check(key, value)
+    except AiWorkflowScopeError:
+        raise
+    except Exception as e:
+        logger.error(f'AI workflow run {run.uuid}: could not check the scope of {key}: {e.__class__.__name__}')
+        raise AiWorkflowScopeError(f'{key} could not be checked against the scope of the run')
 
 
 def ai_workflows_agent_pin_arguments(run, tool_name, arguments, strict=False, scope=None) -> dict:

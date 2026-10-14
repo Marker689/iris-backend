@@ -31,8 +31,10 @@ from app.models.errors import ObjectNotFoundError
 from app.models.pagination_parameters import PaginationParameters
 
 
-def customers_filter(user, pagination_parameters: PaginationParameters, is_server_administrator, search: str = None) -> Pagination:
-    return get_paginated_customers(pagination_parameters, user.id, is_server_administrator, search=search)
+def customers_filter(user, pagination_parameters: PaginationParameters, is_server_administrator, search: str = None,
+                     identifiers: list = None) -> Pagination:
+    return get_paginated_customers(pagination_parameters, user.id, is_server_administrator, search=search,
+                                   identifiers=identifiers)
 
 
 # TODO maybe this method should be removed and always create a customer with at least a user

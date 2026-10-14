@@ -52,23 +52,40 @@ class FakeResolver:
 
     def __init__(self):
         self.used = set()
+        self.ephemeral = set()
+        self.revealed = False
 
     def get(self, name):
         if name != SECRET_NAME:
             raise KeyError(name)
         self.used.add(name)
+        self.revealed = True
         return SECRET_VALUE
 
     def reveal_for_llm(self, name):
         # The real resolver arms masking for placeholder-only secrets too
         self.used.add(name)
+        self.revealed = True
         return f'[secret:{name}]'
 
+    def add_ephemeral(self, value):
+        self.ephemeral.add(value)
+
+    @contextlib.contextmanager
+    def confined(self):
+        before = set(self.used)
+        try:
+            yield
+        finally:
+            self.used = before
+
     def mask(self, obj):
-        if not self.used:
+        if not self.revealed and not self.ephemeral:
             return obj
         if isinstance(obj, str):
-            return obj.replace(SECRET_VALUE, MASK)
+            for value in [SECRET_VALUE, *self.ephemeral]:
+                obj = obj.replace(value, MASK)
+            return obj
         if isinstance(obj, dict):
             return {self.mask(k): self.mask(v) for k, v in obj.items()}
         if isinstance(obj, (list, tuple)):

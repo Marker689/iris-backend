@@ -20621,6 +20621,96 @@ paths:
                 $ref: '#/components/schemas/McpToolResult'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_customers_get:
+    post:
+      operationId: mcp_tool_iris_customers_get
+      summary: 'Fetch a customer: name, description, SLA, custom attributes, contacts and its key/values
+        (free per-customer settings such as a tenant ID, under `customer_key_values`). Give either customer_id,
+        or case_identifier to read the customer the case belongs to.'
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_customers_get
+      x-mcp-mvp: false
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_customers_get\"`. The\
+        \ request body schema below is the tool's `input_schema` (identical to what `tools/list` returns\
+        \ for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                customer_id:
+                  type: integer
+                  description: Customer to read.
+                case_identifier:
+                  type: integer
+                  description: Read the customer of this case instead.
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_customers_list:
+    post:
+      operationId: mcp_tool_iris_customers_list
+      summary: 'List the customers you can access: id, name, description and key/values (free per-customer
+        settings such as a tenant ID, under `customer_key_values`). Use it to find the customer of an
+        external tenant by name or by key/value. `search` is a case-insensitive substring of the name
+        or description; `customer_ids` restricts the list to these customers. 100 a page, `has_more` tells
+        whether `page` + 1 has more.'
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_customers_list
+      x-mcp-mvp: false
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_customers_list\"`.\
+        \ The request body schema below is the tool's `input_schema` (identical to what `tools/list` returns\
+        \ for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                search:
+                  type: string
+                  description: Substring of the name or description, case-insensitive.
+                customer_ids:
+                  type: array
+                  items:
+                    type: integer
+                  description: Only these customers.
+                page:
+                  type: integer
+                  minimum: 1
+                  description: Page, from 1 (default 1).
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/v2/mcp/tools/iris_me_context_get:
     post:
       operationId: mcp_tool_iris_me_context_get
@@ -21056,6 +21146,51 @@ paths:
                 $ref: '#/components/schemas/McpToolResult'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_war_room_cases_attach:
+    post:
+      operationId: mcp_tool_iris_war_room_cases_attach
+      summary: Attach a case to a war room. Needs full access on the case. Attaching a case already attached
+        only updates its note.
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_war_room_cases_attach
+      x-mcp-mvp: true
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_war_room_cases_attach\"\
+        `. The request body schema below is the tool's `input_schema` (identical to what `tools/list`\
+        \ returns for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                case_id:
+                  type: integer
+                note:
+                  type: string
+                  description: Why the case is in the room.
+                war_room_id:
+                  type: integer
+                  description: Numeric ID of the war room this call targets.
+              required:
+              - case_id
+              - war_room_id
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/v2/mcp/tools/iris_war_room_chat_list:
     post:
       operationId: mcp_tool_iris_war_room_chat_list
@@ -21252,6 +21387,56 @@ paths:
                   type: integer
                   description: Numeric ID of the war room this call targets.
               required:
+              - war_room_id
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_war_room_members_add:
+    post:
+      operationId: mcp_tool_iris_war_room_members_add
+      summary: Add a user to a war room, or change the role and access of a member. role is lead, responder
+        (default) or observer; access is full_access (default) or read_only.
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_war_room_members_add
+      x-mcp-mvp: false
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_war_room_members_add\"\
+        `. The request body schema below is the tool's `input_schema` (identical to what `tools/list`\
+        \ returns for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_id:
+                  type: integer
+                role:
+                  type: string
+                  enum:
+                  - lead
+                  - responder
+                  - observer
+                access:
+                  type: string
+                war_room_id:
+                  type: integer
+                  description: Numeric ID of the war room this call targets.
+              required:
+              - user_id
               - war_room_id
       responses:
         '200':
@@ -21659,6 +21844,58 @@ paths:
                   description: Numeric ID of the war room this call targets.
               required:
               - war_room_id
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_war_rooms_create:
+    post:
+      operationId: mcp_tool_iris_war_rooms_create
+      summary: Create a war room. You become its lead, with full access; add the other people with iris_war_room_members_add
+        and the cases with iris_war_room_cases_attach. state is one of open (default), active, standby,
+        closed; severity_id comes from iris_taxonomies_list.
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_war_rooms_create
+      x-mcp-mvp: true
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_war_rooms_create\"\
+        `. The request body schema below is the tool's `input_schema` (identical to what `tools/list`\
+        \ returns for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 256
+                description:
+                  type: string
+                state:
+                  type: string
+                  enum:
+                  - open
+                  - active
+                  - standby
+                  - closed
+                severity_id:
+                  type: integer
+              required:
+              - name
       responses:
         '200':
           description: "Tool result \u2014 JSON-RPC content wrapper."
@@ -24205,6 +24442,10 @@ components:
         customer_id:
           type: integer
           format: int64
+        customer_key_values:
+          type:
+          - object
+          - 'null'
         client_uuid:
           type: string
           format: uuid
@@ -24243,6 +24484,10 @@ components:
         customer_id:
           type: integer
           format: int64
+        customer_key_values:
+          type:
+          - object
+          - 'null'
         client_uuid:
           type: string
           format: uuid

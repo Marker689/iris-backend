@@ -1,0 +1,835 @@
+{
+  "format": "iris-ai-workflow",
+  "format_version": 1,
+  "category": "Investigation",
+  "workflow": {
+    "name": "Defender device timeline",
+    "description": "From the menu of an asset of a case, \"Pull Defender timeline\" asks the analyst for the days to pull (and optionally the event types), then pulls the events of that device from Microsoft Defender Advanced Hunting (Microsoft Graph runHuntingQuery) and writes them to the case datastore as CSV, folder \"Defender timelines\", one file per 200 events. The tenant is the ENTRA_TENANT_ID key/value of the customer of the case, read with iris_customers_get, so one app registration serves every customer. Needs a multi-tenant Entra app with the ThreatHunting.Read.All application permission, consented in each customer tenant, and the keystore entries MDE_CLIENT_ID and MDE_CLIENT_SECRET (restrict them to login.microsoftonline.com). The asset name must be the device name in Defender. Defender keeps 30 days; a run stops after 150 pages (30,000 events) and says where. Cells starting with = + - @ are prefixed with ' so spreadsheets do not run them.",
+    "graph": {
+      "nodes": [
+        {
+          "id": "trigger",
+          "type": "trigger",
+          "label": "Asset menu",
+          "config": {
+            "trigger_type": "manual",
+            "entity_types": [
+              "case"
+            ],
+            "menus": [
+              "asset"
+            ],
+            "menu_label": "Pull Defender timeline"
+          },
+          "position": {
+            "x": 0,
+            "y": 0
+          }
+        },
+        {
+          "id": "customer",
+          "type": "action",
+          "label": "Customer of the case",
+          "config": {
+            "tool": "iris_customers_get",
+            "arguments": {}
+          },
+          "position": {
+            "x": 0,
+            "y": 120
+          }
+        },
+        {
+          "id": "prepare",
+          "type": "python",
+          "label": "Tenant and device",
+          "config": {
+            "code": "# The Entra tenant of the customer of the case and the Defender device name of the asset, or why the\n# timeline cannot be pulled\nTENANT_KEY = 'ENTRA_TENANT_ID'\nGUID = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'\nDOMAIN = '[A-Za-z0-9-]{1,63}(\\\\.[A-Za-z0-9-]{1,63})+'\n\ncustomer = inputs['customer'] if is_dict(inputs['customer']) else {}\nasset = inputs['asset'] if is_dict(inputs['asset']) else {}\nvalues = customer.get('customer_key_values') if is_dict(customer.get('customer_key_values')) else {}\ncustomer_name = str(customer.get('customer_name') or 'The customer of the case')\ntenant = str(values.get(TENANT_KEY) or '').strip()\nhost = str(asset.get('asset_name') or '').strip().lower()\n\nreason = ''\nif not tenant:\n    reason = (f'{customer_name} has no {TENANT_KEY} key/value: add its Microsoft Entra tenant ID in '\n              f'Settings > Customers, then pull the timeline again.')\nelif re_fullmatch(GUID, tenant) is None and re_fullmatch(DOMAIN, tenant) is None:\n    reason = f'The {TENANT_KEY} of {customer_name} is neither a tenant ID (a GUID) nor a domain.'\nelif not host:\n    reason = 'The asset has no name.'\nelif re_fullmatch('[a-z0-9][a-z0-9_.-]{0,252}', host) is None:\n    reason = (f'The asset name {host[:80]} is not a device name (letters, digits, dots, hyphens and '\n              f'underscores): rename the asset after the device as Defender knows it.')\n\nresult = {'ok': reason == '', 'reason': reason, 'tenant': tenant, 'host': host, 'customer': customer_name}\n",
+            "inputs": [
+              {
+                "name": "customer",
+                "value": {
+                  "$path": "nodes.customer.output.result"
+                }
+              },
+              {
+                "name": "asset",
+                "value": {
+                  "$path": "trigger.payload.data"
+                }
+              }
+            ],
+            "timeout_seconds": 10,
+            "max_steps": 200000
+          },
+          "position": {
+            "x": 0,
+            "y": 240
+          }
+        },
+        {
+          "id": "ready",
+          "type": "condition",
+          "label": "Tenant and device known?",
+          "config": {
+            "mode": "rules",
+            "logic": "and",
+            "expression": "",
+            "rules": [
+              {
+                "path": "nodes.prepare.output.result.ok",
+                "operator": "truthy",
+                "value": ""
+              }
+            ]
+          },
+          "position": {
+            "x": 0,
+            "y": 360
+          }
+        },
+        {
+          "id": "ask",
+          "type": "ask_analyst",
+          "label": "Ask for the window",
+          "config": {
+            "title": "Defender timeline of {{ nodes.prepare.output.result.host }}: which days?",
+            "question": "The events of device `{{ nodes.prepare.output.result.host }}` ({{ nodes.prepare.output.result.customer }}) will be pulled from Microsoft Defender and written as CSV to the case datastore, folder \"Defender timelines\". Days are UTC, both included; Defender keeps the last 30 days.",
+            "fields": [
+              {
+                "name": "start",
+                "label": "From",
+                "type": "date",
+                "required": true,
+                "help": "First day (UTC). YYYY-MM-DD HH:MM is accepted too."
+              },
+              {
+                "name": "end",
+                "label": "To",
+                "type": "date",
+                "required": true,
+                "help": "Last day (UTC), included. YYYY-MM-DD HH:MM is accepted too, then excluded."
+              },
+              {
+                "name": "scope",
+                "label": "Events",
+                "type": "select",
+                "required": false,
+                "help": "All by default. A busy device gives fewer events per day with a narrower choice.",
+                "options": [
+                  {
+                    "value": "all",
+                    "label": "All device events"
+                  },
+                  {
+                    "value": "process",
+                    "label": "Processes and image loads"
+                  },
+                  {
+                    "value": "network",
+                    "label": "Network connections"
+                  },
+                  {
+                    "value": "file",
+                    "label": "File events"
+                  },
+                  {
+                    "value": "registry",
+                    "label": "Registry events"
+                  },
+                  {
+                    "value": "logon",
+                    "label": "Logons"
+                  },
+                  {
+                    "value": "other",
+                    "label": "Other events (DeviceEvents)"
+                  }
+                ]
+              }
+            ],
+            "fields_from": "",
+            "audience": "triggerer",
+            "user_ids": [],
+            "popup": true,
+            "timeout_minutes": 60
+          },
+          "position": {
+            "x": 0,
+            "y": 480
+          }
+        },
+        {
+          "id": "window",
+          "type": "python",
+          "label": "Window",
+          "config": {
+            "code": "# The time window to pull, in UTC, [start, end), cut to what Defender keeps\nRETENTION_DAYS = 30\nSCOPES = {\n    'all': ['DeviceProcessEvents', 'DeviceNetworkEvents', 'DeviceFileEvents', 'DeviceRegistryEvents',\n            'DeviceLogonEvents', 'DeviceImageLoadEvents', 'DeviceEvents'],\n    'process': ['DeviceProcessEvents', 'DeviceImageLoadEvents'],\n    'network': ['DeviceNetworkEvents'],\n    'file': ['DeviceFileEvents'],\n    'registry': ['DeviceRegistryEvents'],\n    'logon': ['DeviceLogonEvents'],\n    'other': ['DeviceEvents'],\n}\n\n\ndef epoch(y, mo, d, h=0, mi=0, s=0):\n    # Seconds since 1970 of a UTC date and time\n    if mo <= 2:\n        y -= 1\n    era = y // 400\n    yoe = y - era * 400\n    doy = (153 * (mo - 3 if mo > 2 else mo + 9) + 2) // 5 + d - 1\n    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy\n    return (era * 146097 + doe - 719468) * 86400 + h * 3600 + mi * 60 + s\n\n\ndef parse(text, end_of_day):\n    # Seconds of YYYY-MM-DD (its start, or its end when `end_of_day`) or of YYYY-MM-DD HH:MM[:SS], or None\n    m = re_fullmatch('(\\\\d{4})-(\\\\d{2})-(\\\\d{2})(?:[T ](\\\\d{2}):(\\\\d{2})(?::(\\\\d{2}))?Z?)?', str(text or '').strip())\n    if m is None:\n        return None\n    g = m['groups']\n    y, mo, d = int(g[0]), int(g[1]), int(g[2])\n    if mo < 1 or mo > 12 or d < 1 or d > 31:\n        return None\n    day = epoch(y, mo, d)\n    # 2026-02-30 is not a day\n    if iso_datetime(day)[:10] != m['match'][:10]:\n        return None\n    if g[3] is None:\n        return day + 86400 if end_of_day else day\n    h, mi, s = int(g[3]), int(g[4]), int(g[5] or 0)\n    if h > 23 or mi > 59 or s > 59:\n        return None\n    return day + h * 3600 + mi * 60 + s\n\n\ndef stamp(seconds):\n    # 20261001T000000Z, for file names\n    return iso_datetime(seconds).replace('-', '').replace(':', '')\n\n\nanswer = inputs['answer'] if is_dict(inputs['answer']) else {}\nclock = re_match('(\\\\d{4})-(\\\\d{2})-(\\\\d{2})T(\\\\d{2}):(\\\\d{2}):(\\\\d{2})', str(inputs['now'] or ''))\nif clock is None:\n    fail('No current time')\nc = [int(v) for v in clock['groups']]\nnow = epoch(c[0], c[1], c[2], c[3], c[4], c[5])\noldest = now - RETENTION_DAYS * 86400\n\nstart = parse(answer.get('start'), False)\nend = parse(answer.get('end'), True)\nscope = str(answer.get('scope') or 'all').strip().lower()\nreason = ''\nnote = ''\nif start is None or end is None:\n    reason = 'The dates must be YYYY-MM-DD, or YYYY-MM-DD HH:MM (UTC).'\nelif scope not in SCOPES:\n    reason = f'Unknown event types {scope[:40]}: choose one of {\", \".join(SCOPES)}.'\nelif end <= start:\n    reason = 'The end of the window must be after its start.'\nelif start >= now:\n    reason = 'The window is in the future.'\nelif end <= oldest:\n    reason = f'The window is older than the {RETENTION_DAYS} days of events Defender keeps.'\nelse:\n    if start < oldest:\n        note = (f'Defender keeps {RETENTION_DAYS} days of events: the timeline starts at {iso_datetime(oldest)} '\n                f'instead of {iso_datetime(start)}.')\n        start = oldest\n    end = min(end, now)\n\nresult = {'ok': reason == '', 'reason': reason, 'note': note, 'scope': scope,\n          'tables': SCOPES.get(scope, []),\n          'start': iso_datetime(start) if reason == '' else None,\n          'end': iso_datetime(end) if reason == '' else None,\n          'label': f'{stamp(start)}-{stamp(end)}' if reason == '' else None}\n",
+            "inputs": [
+              {
+                "name": "answer",
+                "value": {
+                  "$path": "nodes.ask.output.answer"
+                }
+              },
+              {
+                "name": "now",
+                "value": "{{ now }}"
+              }
+            ],
+            "timeout_seconds": 10,
+            "max_steps": 200000
+          },
+          "position": {
+            "x": 0,
+            "y": 600
+          }
+        },
+        {
+          "id": "valid",
+          "type": "condition",
+          "label": "Window valid?",
+          "config": {
+            "mode": "rules",
+            "logic": "and",
+            "expression": "",
+            "rules": [
+              {
+                "path": "nodes.window.output.result.ok",
+                "operator": "truthy",
+                "value": ""
+              }
+            ]
+          },
+          "position": {
+            "x": 0,
+            "y": 720
+          }
+        },
+        {
+          "id": "query",
+          "type": "python",
+          "label": "Next page query",
+          "config": {
+            "code": "# The KQL of the next page: the events of the device in the window, oldest first, after the cursor\n# (the last tick read, plus the events already read at that tick)\nINITIATING = ['InitiatingProcessAccountName', 'InitiatingProcessFileName', 'InitiatingProcessId',\n              'InitiatingProcessCommandLine']\nCOLUMNS = {\n    'DeviceProcessEvents': ['ActionType', 'FileName', 'FolderPath', 'SHA256', 'ProcessId', 'ProcessCommandLine',\n                            'AccountDomain', 'AccountName'] + INITIATING,\n    'DeviceNetworkEvents': ['ActionType', 'RemoteIP', 'RemotePort', 'RemoteUrl', 'LocalIP', 'LocalPort',\n                            'Protocol'] + INITIATING,\n    'DeviceFileEvents': ['ActionType', 'FileName', 'FolderPath', 'SHA256'] + INITIATING,\n    'DeviceRegistryEvents': ['ActionType', 'RegistryKey', 'RegistryValueName', 'RegistryValueData'] + INITIATING,\n    'DeviceLogonEvents': ['ActionType', 'AccountDomain', 'AccountName', 'LogonType', 'RemoteIP', 'RemotePort',\n                          'Protocol'] + INITIATING,\n    'DeviceImageLoadEvents': ['ActionType', 'FileName', 'FolderPath', 'SHA256'] + INITIATING,\n    'DeviceEvents': ['ActionType', 'FileName', 'FolderPath', 'SHA256', 'ProcessId', 'ProcessCommandLine',\n                     'AccountDomain', 'AccountName', 'RemoteIP', 'RemotePort', 'RemoteUrl', 'LocalIP', 'LocalPort',\n                     'RegistryKey', 'RegistryValueName', 'RegistryValueData', 'AdditionalFields'] + INITIATING,\n}\n# Every column is text, cut so that a page stays under the 1 MiB of the answer that is read\nWIDTHS = {'ProcessCommandLine': 512, 'InitiatingProcessCommandLine': 512, 'AdditionalFields': 512,\n          'FolderPath': 300, 'RegistryKey': 300, 'RemoteUrl': 300, 'RegistryValueData': 256}\n\ntarget = inputs['target']\nwindow = inputs['window']\nlast = inputs['last'] if is_dict(inputs['last']) else {}\ncursor = str(last.get('cursor') or '0')\nseen = last.get('seen') if is_list(last.get('seen')) else []\nsize = int(last.get('page_size') or inputs['page_size'] or 200)\nif re_fullmatch('[0-9]{1,20}', cursor) is None:\n    fail(f'Bad cursor {cursor[:40]}')\nfor key in seen:\n    if not is_str(key) or re_fullmatch('[A-Za-z]{1,64}:-?[0-9]{1,20}', key) is None:\n        fail(f'Bad event key {str(key)[:80]}')\n\nparts = []\nfor table in window['tables']:\n    columns = ', '.join([f'{c} = substring(tostring({c}), 0, {WIDTHS.get(c, 128)})' for c in COLUMNS[table]])\n    parts.append(f'({table} | where Timestamp >= window_start and Timestamp < window_end and '\n                 f'(DeviceName =~ host or DeviceName startswith host_dot) '\n                 f'| project Timestamp, ReportId, DeviceName, Table = \"{table}\", {columns})')\nif seen:\n    after = f'| where Ticks > {cursor} or (Ticks == {cursor} and Key !in (dynamic([{\", \".join([json_dumps(k) for k in seen])}])))'\nelse:\n    after = f'| where Ticks >= {cursor}'\nkql = '\\n'.join([\n    f'let host = \"{target[\"host\"]}\";',\n    'let host_dot = strcat(host, \".\");',\n    f'let window_start = datetime({window[\"start\"]});',\n    f'let window_end = datetime({window[\"end\"]});',\n    'union ' + ',\\n    '.join(parts),\n    '| extend Ticks = tolong(Timestamp), Key = strcat(Table, \":\", tostring(ReportId))',\n    after,\n    '| order by Ticks asc, Key asc',\n    f'| take {size}',\n    '| extend Ticks = tostring(Ticks)',\n])\nresult = {'kql': kql, 'cursor': cursor, 'seen': seen, 'page_size': size,\n          'pass': int(last.get('pass') or 0) + 1, 'files': int(last.get('files') or 0),\n          'total': int(last.get('total') or 0)}\n",
+            "inputs": [
+              {
+                "name": "target",
+                "value": {
+                  "$path": "nodes.prepare.output.result"
+                }
+              },
+              {
+                "name": "window",
+                "value": {
+                  "$path": "nodes.window.output.result"
+                }
+              },
+              {
+                "name": "last",
+                "value": {
+                  "$path": "nodes.page.output.result"
+                }
+              },
+              {
+                "name": "page_size",
+                "value": 200
+              }
+            ],
+            "timeout_seconds": 10,
+            "max_steps": 500000
+          },
+          "position": {
+            "x": 0,
+            "y": 840
+          }
+        },
+        {
+          "id": "hunt",
+          "type": "http_request",
+          "label": "Defender Advanced Hunting",
+          "config": {
+            "method": "POST",
+            "url": "https://graph.microsoft.com/v1.0/security/runHuntingQuery",
+            "query_params": [],
+            "auth_type": "oauth2_client_credentials",
+            "auth_username": "",
+            "auth_secret": "",
+            "oauth_token_url": "https://login.microsoftonline.com/{{ nodes.prepare.output.result.tenant }}/oauth2/v2.0/token",
+            "oauth_client_id": "{{ key(\"MDE_CLIENT_ID\") }}",
+            "oauth_client_secret": "{{ key(\"MDE_CLIENT_SECRET\") }}",
+            "oauth_scope": "https://graph.microsoft.com/.default",
+            "oauth_client_auth": "body",
+            "headers": [
+              {
+                "name": "accept",
+                "value": "application/json",
+                "secret": false
+              }
+            ],
+            "body_mode": "template",
+            "body_template": "{\"Query\": {{ nodes.query.output.result.kql | tojson }}}",
+            "content_type": "application/json",
+            "mode": "sync",
+            "timeout_seconds": 120,
+            "wait_timeout_minutes": 60,
+            "verify_tls": true,
+            "use_proxy": true,
+            "response_format": "json"
+          },
+          "position": {
+            "x": 0,
+            "y": 960
+          }
+        },
+        {
+          "id": "page",
+          "type": "python",
+          "label": "Page as CSV",
+          "config": {
+            "code": "# One page of the Advanced Hunting answer as CSV, and where the next page starts\nMAX_SEEN = 2000  # events sharing one tick before giving up\nCOLUMNS = ['Timestamp', 'Table', 'DeviceName', 'ActionType', 'AccountDomain', 'AccountName', 'LogonType',\n           'FileName', 'FolderPath', 'SHA256', 'ProcessId', 'ProcessCommandLine', 'InitiatingProcessAccountName',\n           'InitiatingProcessFileName', 'InitiatingProcessId', 'InitiatingProcessCommandLine', 'RemoteIP',\n           'RemotePort', 'RemoteUrl', 'LocalIP', 'LocalPort', 'Protocol', 'RegistryKey', 'RegistryValueName',\n           'RegistryValueData', 'AdditionalFields', 'ReportId']\n\n\ndef cell(value):\n    text = '' if value is None else str(value)\n    # A spreadsheet runs a cell starting with one of these as a formula\n    if text[:1] in ('=', '+', '-', '@', '\\t', '\\r'):\n        text = \"'\" + text\n    if re_search('[\",\\\\r\\\\n]', text) is not None:\n        text = '\"' + text.replace('\"', '\"\"') + '\"'\n    return text\n\n\nresponse = inputs['response'] if is_dict(inputs['response']) else {}\nquery = inputs['query']\ntarget = inputs['target']\nwindow = inputs['window']\nmax_passes = int(inputs['max_passes'] or 150)\nsize = query['page_size']\nbody = response.get('body')\nresults = []\nshrink = False\nif response.get('dry_run'):\n    # Nothing was asked\n    results = []\nelif not is_dict(body) or not is_list(body.get('results')):\n    # More than the 1 MiB read (cut, so not JSON): ask the same page again, smaller\n    if size <= 10:\n        fail(f'Defender did not answer JSON, even for {size} events: {str(body)[:300]}')\n    shrink = True\nelse:\n    results = body['results']\n\nrows = len(results)\ncursor = query['cursor']\nseen = query['seen']\nif rows:\n    last_tick = str(results[-1].get('Ticks') or '')\n    if re_fullmatch('[0-9]{1,20}', last_tick) is None:\n        fail('The answer has no Ticks column: was the query changed?')\n    at_last = [str(r.get('Key')) for r in results if str(r.get('Ticks')) == last_tick]\n    seen = seen + at_last if last_tick == cursor else at_last\n    cursor = last_tick\n\nfiles = query['files'] + (1 if rows else 0)\ndone = not shrink and rows < size\ntruncated = not done and (query['pass'] >= max_passes or len(seen) > MAX_SEEN)\nlines = [','.join(COLUMNS)] + [','.join([cell(r.get(c)) for c in COLUMNS]) for r in results]\nresult = {\n    'rows': rows,\n    'csv': '\\r\\n'.join(lines) + '\\r\\n',\n    'filename': f'{target[\"host\"]}_{window[\"label\"]}_part-{str(files).zfill(3)}.csv',\n    'first': results[0].get('Timestamp') if rows else None,\n    'last': results[-1].get('Timestamp') if rows else None,\n    'cursor': cursor,\n    'seen': seen,\n    'page_size': max(10, size // 2) if shrink else size,\n    'pass': query['pass'],\n    'files': files,\n    'total': query['total'] + rows,\n    'done': done,\n    'truncated': truncated,\n    'more': not done and not truncated,\n}\n",
+            "inputs": [
+              {
+                "name": "response",
+                "value": {
+                  "$path": "nodes.hunt.output"
+                }
+              },
+              {
+                "name": "query",
+                "value": {
+                  "$path": "nodes.query.output.result"
+                }
+              },
+              {
+                "name": "target",
+                "value": {
+                  "$path": "nodes.prepare.output.result"
+                }
+              },
+              {
+                "name": "window",
+                "value": {
+                  "$path": "nodes.window.output.result"
+                }
+              },
+              {
+                "name": "max_passes",
+                "value": 150
+              }
+            ],
+            "timeout_seconds": 10,
+            "max_steps": 2000000
+          },
+          "position": {
+            "x": 0,
+            "y": 1080
+          }
+        },
+        {
+          "id": "has_rows",
+          "type": "condition",
+          "label": "Events in the page?",
+          "config": {
+            "mode": "expression",
+            "logic": "and",
+            "rules": [],
+            "expression": "nodes.page.output.result.rows > 0"
+          },
+          "position": {
+            "x": 0,
+            "y": 1200
+          }
+        },
+        {
+          "id": "write",
+          "type": "action",
+          "label": "Write to the datastore",
+          "config": {
+            "tool": "iris_case_datastore_files_create",
+            "arguments": {
+              "filename": {
+                "$path": "nodes.page.output.result.filename"
+              },
+              "content": {
+                "$path": "nodes.page.output.result.csv"
+              },
+              "folder": "Defender timelines",
+              "tags": "defender,timeline",
+              "description": "Microsoft Defender events of {{ nodes.prepare.output.result.host }} ({{ nodes.window.output.result.scope }}), part {{ nodes.page.output.result.files }}: {{ nodes.page.output.result.rows }} event(s) from {{ nodes.page.output.result.first }} to {{ nodes.page.output.result.last }}. Window {{ nodes.window.output.result.start }} to {{ nodes.window.output.result.end }} (UTC)."
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1320
+          }
+        },
+        {
+          "id": "more",
+          "type": "condition",
+          "label": "More pages?",
+          "config": {
+            "mode": "rules",
+            "logic": "and",
+            "expression": "",
+            "rules": [
+              {
+                "path": "nodes.page.output.result.more",
+                "operator": "truthy",
+                "value": ""
+              }
+            ]
+          },
+          "position": {
+            "x": 0,
+            "y": 1440
+          }
+        },
+        {
+          "id": "report",
+          "type": "notify",
+          "label": "Tell the analyst",
+          "config": {
+            "audience": "triggerer",
+            "user_ids": [],
+            "title": "Defender timeline of {{ nodes.prepare.output.result.host }}: {{ nodes.page.output.result.total }} event(s)",
+            "body": "{% if nodes.page.output.result.files %}{{ nodes.page.output.result.total }} event(s) from {{ nodes.window.output.result.start }} to {{ nodes.window.output.result.end }} (UTC) are in the case datastore, folder \"Defender timelines\": {{ nodes.page.output.result.files }} CSV file(s) {{ nodes.prepare.output.result.host }}_{{ nodes.window.output.result.label }}_part-NNN.csv.{% else %}Defender has no event of {{ nodes.prepare.output.result.host }} from {{ nodes.window.output.result.start }} to {{ nodes.window.output.result.end }} (UTC). Check that the asset name is the device name in Defender.{% endif %} {{ nodes.window.output.result.note }}{% if nodes.page.output.result.truncated %} Stopped at {{ nodes.page.output.result.last }}, the limit of one run: pull the rest with a window starting there, or fewer event types.{% endif %}"
+          },
+          "position": {
+            "x": 0,
+            "y": 1560
+          }
+        },
+        {
+          "id": "done",
+          "type": "stop",
+          "label": "Done",
+          "config": {
+            "status": "succeeded",
+            "reason": "{{ nodes.page.output.result.total }} event(s) in {{ nodes.page.output.result.files }} file(s)"
+          },
+          "position": {
+            "x": 0,
+            "y": 1680
+          }
+        },
+        {
+          "id": "throttled",
+          "type": "condition",
+          "label": "Throttled?",
+          "config": {
+            "mode": "expression",
+            "logic": "and",
+            "rules": [],
+            "expression": "nodes.hunt.output.status_code == 429 and (vars.throttles | default(0) | int) < 5"
+          },
+          "position": {
+            "x": 400,
+            "y": 1080
+          }
+        },
+        {
+          "id": "backoff",
+          "type": "set_variables",
+          "label": "Count the retries",
+          "config": {
+            "variables": [
+              {
+                "name": "throttles",
+                "value": "{{ (vars.throttles | default(0) | int) + 1 }}"
+              }
+            ]
+          },
+          "position": {
+            "x": 400,
+            "y": 1200
+          }
+        },
+        {
+          "id": "pause",
+          "type": "delay",
+          "label": "Wait a minute",
+          "config": {
+            "minutes": 1
+          },
+          "position": {
+            "x": 400,
+            "y": 1320
+          }
+        },
+        {
+          "id": "unanswered",
+          "type": "stop",
+          "label": "Not answered",
+          "config": {
+            "status": "succeeded",
+            "reason": "No window given: nothing pulled"
+          },
+          "position": {
+            "x": -400,
+            "y": 600
+          }
+        },
+        {
+          "id": "no_customer",
+          "type": "set_variables",
+          "label": "Customer unreadable",
+          "config": {
+            "variables": [
+              {
+                "name": "failure",
+                "value": "The customer of the case could not be read: {{ nodes.customer.output.error }}"
+              }
+            ]
+          },
+          "position": {
+            "x": -400,
+            "y": 240
+          }
+        },
+        {
+          "id": "not_ready",
+          "type": "set_variables",
+          "label": "Cannot pull",
+          "config": {
+            "variables": [
+              {
+                "name": "failure",
+                "value": "{{ nodes.prepare.output.result.reason }}"
+              }
+            ]
+          },
+          "position": {
+            "x": -400,
+            "y": 480
+          }
+        },
+        {
+          "id": "bad_window",
+          "type": "set_variables",
+          "label": "Bad window",
+          "config": {
+            "variables": [
+              {
+                "name": "failure",
+                "value": "{{ nodes.window.output.result.reason }}"
+              }
+            ]
+          },
+          "position": {
+            "x": -400,
+            "y": 840
+          }
+        },
+        {
+          "id": "hunt_failed",
+          "type": "set_variables",
+          "label": "Defender failed",
+          "config": {
+            "variables": [
+              {
+                "name": "failure",
+                "value": "Defender answered {{ nodes.hunt.output.status_code | default(\"nothing\") }}: {% if nodes.hunt.output.body is mapping and nodes.hunt.output.body.error is mapping %}{{ nodes.hunt.output.body.error.message | default(\"\") | truncate(500) }}{% else %}{{ nodes.hunt.output.error | default(\"\") | truncate(500) }}{% endif %}{% if nodes.hunt.output.status_code in (401, 403) or not nodes.hunt.output.status_code %} Check the keystore entries MDE_CLIENT_ID and MDE_CLIENT_SECRET, the ENTRA_TENANT_ID of the customer, and that an administrator of that tenant consented to the ThreatHunting.Read.All application permission.{% endif %}{% if nodes.page.output.result is defined %} {{ nodes.page.output.result.files }} file(s) were written before.{% endif %}"
+              }
+            ]
+          },
+          "position": {
+            "x": 800,
+            "y": 1200
+          }
+        },
+        {
+          "id": "page_failed",
+          "type": "set_variables",
+          "label": "Bad answer",
+          "config": {
+            "variables": [
+              {
+                "name": "failure",
+                "value": "The Defender answer could not be read: {{ nodes.page.output.error }}"
+              }
+            ]
+          },
+          "position": {
+            "x": -400,
+            "y": 1200
+          }
+        },
+        {
+          "id": "write_failed",
+          "type": "set_variables",
+          "label": "Write failed",
+          "config": {
+            "variables": [
+              {
+                "name": "failure",
+                "value": "Could not write {{ nodes.page.output.result.filename }} to the datastore: {{ nodes.write.output.error }}"
+              }
+            ]
+          },
+          "position": {
+            "x": -400,
+            "y": 1440
+          }
+        },
+        {
+          "id": "tell_failure",
+          "type": "notify",
+          "label": "Tell the analyst why",
+          "config": {
+            "audience": "triggerer",
+            "user_ids": [],
+            "title": "Defender timeline of {{ nodes.prepare.output.result.host | default(\"the asset\") }} not pulled",
+            "body": "{{ vars.failure }}"
+          },
+          "position": {
+            "x": -800,
+            "y": 1560
+          }
+        },
+        {
+          "id": "failed",
+          "type": "stop",
+          "label": "Failed",
+          "config": {
+            "status": "failed",
+            "reason": "{{ vars.failure | truncate(500) }}"
+          },
+          "position": {
+            "x": -800,
+            "y": 1680
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "trigger-out-customer",
+          "source": "trigger",
+          "target": "customer",
+          "source_port": "out"
+        },
+        {
+          "id": "customer-out-prepare",
+          "source": "customer",
+          "target": "prepare",
+          "source_port": "out"
+        },
+        {
+          "id": "customer-error-no_customer",
+          "source": "customer",
+          "target": "no_customer",
+          "source_port": "error"
+        },
+        {
+          "id": "prepare-out-ready",
+          "source": "prepare",
+          "target": "ready",
+          "source_port": "out"
+        },
+        {
+          "id": "ready-true-ask",
+          "source": "ready",
+          "target": "ask",
+          "source_port": "true"
+        },
+        {
+          "id": "ready-false-not_ready",
+          "source": "ready",
+          "target": "not_ready",
+          "source_port": "false"
+        },
+        {
+          "id": "ask-answered-window",
+          "source": "ask",
+          "target": "window",
+          "source_port": "answered"
+        },
+        {
+          "id": "ask-timeout-unanswered",
+          "source": "ask",
+          "target": "unanswered",
+          "source_port": "timeout"
+        },
+        {
+          "id": "window-out-valid",
+          "source": "window",
+          "target": "valid",
+          "source_port": "out"
+        },
+        {
+          "id": "valid-true-query",
+          "source": "valid",
+          "target": "query",
+          "source_port": "true"
+        },
+        {
+          "id": "valid-false-bad_window",
+          "source": "valid",
+          "target": "bad_window",
+          "source_port": "false"
+        },
+        {
+          "id": "query-out-hunt",
+          "source": "query",
+          "target": "hunt",
+          "source_port": "out"
+        },
+        {
+          "id": "hunt-out-page",
+          "source": "hunt",
+          "target": "page",
+          "source_port": "out"
+        },
+        {
+          "id": "hunt-error-throttled",
+          "source": "hunt",
+          "target": "throttled",
+          "source_port": "error"
+        },
+        {
+          "id": "hunt-timeout-hunt_failed",
+          "source": "hunt",
+          "target": "hunt_failed",
+          "source_port": "timeout"
+        },
+        {
+          "id": "throttled-true-backoff",
+          "source": "throttled",
+          "target": "backoff",
+          "source_port": "true"
+        },
+        {
+          "id": "throttled-false-hunt_failed",
+          "source": "throttled",
+          "target": "hunt_failed",
+          "source_port": "false"
+        },
+        {
+          "id": "backoff-out-pause",
+          "source": "backoff",
+          "target": "pause",
+          "source_port": "out"
+        },
+        {
+          "id": "pause-out-hunt",
+          "source": "pause",
+          "target": "hunt",
+          "source_port": "out"
+        },
+        {
+          "id": "page-out-has_rows",
+          "source": "page",
+          "target": "has_rows",
+          "source_port": "out"
+        },
+        {
+          "id": "page-error-page_failed",
+          "source": "page",
+          "target": "page_failed",
+          "source_port": "error"
+        },
+        {
+          "id": "has_rows-true-write",
+          "source": "has_rows",
+          "target": "write",
+          "source_port": "true"
+        },
+        {
+          "id": "has_rows-false-more",
+          "source": "has_rows",
+          "target": "more",
+          "source_port": "false"
+        },
+        {
+          "id": "write-out-more",
+          "source": "write",
+          "target": "more",
+          "source_port": "out"
+        },
+        {
+          "id": "write-error-write_failed",
+          "source": "write",
+          "target": "write_failed",
+          "source_port": "error"
+        },
+        {
+          "id": "more-true-query",
+          "source": "more",
+          "target": "query",
+          "source_port": "true"
+        },
+        {
+          "id": "more-false-report",
+          "source": "more",
+          "target": "report",
+          "source_port": "false"
+        },
+        {
+          "id": "report-out-done",
+          "source": "report",
+          "target": "done",
+          "source_port": "out"
+        },
+        {
+          "id": "no_customer-out-tell_failure",
+          "source": "no_customer",
+          "target": "tell_failure",
+          "source_port": "out"
+        },
+        {
+          "id": "not_ready-out-tell_failure",
+          "source": "not_ready",
+          "target": "tell_failure",
+          "source_port": "out"
+        },
+        {
+          "id": "bad_window-out-tell_failure",
+          "source": "bad_window",
+          "target": "tell_failure",
+          "source_port": "out"
+        },
+        {
+          "id": "hunt_failed-out-tell_failure",
+          "source": "hunt_failed",
+          "target": "tell_failure",
+          "source_port": "out"
+        },
+        {
+          "id": "page_failed-out-tell_failure",
+          "source": "page_failed",
+          "target": "tell_failure",
+          "source_port": "out"
+        },
+        {
+          "id": "write_failed-out-tell_failure",
+          "source": "write_failed",
+          "target": "tell_failure",
+          "source_port": "out"
+        },
+        {
+          "id": "tell_failure-out-failed",
+          "source": "tell_failure",
+          "target": "failed",
+          "source_port": "out"
+        }
+      ]
+    },
+    "write_tool_allowlist": [
+      "iris_case_datastore_files_create"
+    ],
+    "max_runs_per_hour": 30,
+    "token_budget_per_run": 10000,
+    "suggestion_audience": "entity"
+  },
+  "requirements": {
+    "keystore": [
+      "MDE_CLIENT_ID",
+      "MDE_CLIENT_SECRET"
+    ],
+    "tools": [
+      "iris_case_datastore_files_create",
+      "iris_customers_get"
+    ]
+  },
+  "warnings": []
+}

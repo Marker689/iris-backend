@@ -46,11 +46,13 @@ CLASSIFICATION_WRITE = 'write'
 SCOPE_ARGUMENTS = ('case_identifier', 'war_room_id')
 
 # Write tools a model never picks: an ai_agent node can neither be given
-# them nor propose them. Who can see a case is decided by the workflow
-# author, in an action or suggest node, not by text a model read.
+# them nor propose them. Who can see a case or a war room is decided by
+# the workflow author, in an action or suggest node, not by text a model
+# read.
 AGENT_EXCLUDED_TOOLS = frozenset({
     'iris_case_access_set_user',
     'iris_case_access_set_group',
+    'iris_war_room_members_add',
 })
 
 _MAX_STORED_RESULT = 200_000

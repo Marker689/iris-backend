@@ -317,3 +317,57 @@ class TestKeystoreCheckUrl(_KeystoreTestCase):
         self.assertTrue(ai_workflows_keystore_host_matches('example.com', 'Example.COM'))
         self.assertFalse(ai_workflows_keystore_host_matches('', 'example.com'))
         self.assertFalse(ai_workflows_keystore_host_matches('example.com', ''))
+
+
+class TestKeystoreConfined(_KeystoreTestCase):
+
+    def _resolver(self):
+        self._entries = [_entry(1, 'CLIENT_SECRET', 'client-secret-123456', allowed_hosts=['login.example.com'])]
+        return ai_workflows_keystore_resolver(_USER_ID)
+
+    def test_restrictions_should_apply_inside_the_block_only(self):
+        resolver = self._resolver()
+        with resolver.confined():
+            resolver.get('CLIENT_SECRET')
+            resolver.check_url('https://login.example.com/token')
+            with self.assertRaises(KeystoreError):
+                resolver.check_url('https://api.example.org/')
+        self.assertEqual(set(), resolver.used)
+        resolver.check_url('https://api.example.org/')
+
+    def test_value_should_stay_masked_after_the_block(self):
+        resolver = self._resolver()
+        with resolver.confined():
+            resolver.get('CLIENT_SECRET')
+        self.assertEqual(f'x {MASK}', resolver.mask('x client-secret-123456'))
+
+    def test_entry_used_again_outside_should_be_used(self):
+        resolver = self._resolver()
+        with resolver.confined():
+            resolver.get('CLIENT_SECRET')
+        self.assertEqual('client-secret-123456', resolver.get('CLIENT_SECRET'))
+        self.assertEqual(({'CLIENT_SECRET'}, [1]), (resolver.used, self._touched))
+
+    def test_entry_used_before_the_block_should_stay_used(self):
+        resolver = self._resolver()
+        resolver.get('CLIENT_SECRET')
+        with resolver.confined():
+            resolver.get('CLIENT_SECRET')
+        self.assertEqual({'CLIENT_SECRET'}, resolver.used)
+
+
+class TestKeystoreEphemeral(_KeystoreTestCase):
+
+    def test_ephemeral_value_should_be_masked_but_not_used(self):
+        resolver = ai_workflows_keystore_resolver(_USER_ID)
+        resolver.add_ephemeral('access-token-0123456789')
+        self.assertEqual({'Authorization': f'Bearer {MASK}'},
+                         resolver.mask({'Authorization': 'Bearer access-token-0123456789'}))
+        self.assertEqual(set(), resolver.used)
+
+    def test_empty_or_short_ephemeral_values_should_be_ignored(self):
+        resolver = ai_workflows_keystore_resolver(_USER_ID)
+        resolver.add_ephemeral('')
+        resolver.add_ephemeral(None)
+        resolver.add_ephemeral('ab')
+        self.assertEqual('ab cd', resolver.mask('ab cd'))

@@ -2151,6 +2151,21 @@ class GlobalTasksSchema(ma.SQLAlchemyAutoSchema):
         return data
 
 
+_CUSTOMER_KEY_VALUES_MAX_ENTRIES = 100
+_CUSTOMER_KEY_VALUES_MAX_VALUE = 4096
+_CUSTOMER_KEY_VALUES_KEY = re.compile(r'^[A-Za-z0-9_.-]{1,64}$')
+
+
+def _customer_key_values_validate(value: Dict[str, str]) -> None:
+    if len(value) > _CUSTOMER_KEY_VALUES_MAX_ENTRIES:
+        raise ValidationError(f'At most {_CUSTOMER_KEY_VALUES_MAX_ENTRIES} key/values')
+    for key, item in value.items():
+        if not _CUSTOMER_KEY_VALUES_KEY.fullmatch(key):
+            raise ValidationError(f'Invalid key {key[:64]!r}: 1 to 64 letters, digits, "_", "." or "-"')
+        if len(item) > _CUSTOMER_KEY_VALUES_MAX_VALUE:
+            raise ValidationError(f'The value of {key} is longer than {_CUSTOMER_KEY_VALUES_MAX_VALUE} characters')
+
+
 class CustomerSchema(ma.SQLAlchemyAutoSchema):
     """Schema for serializing and deserializing Customer objects.
 
@@ -2162,11 +2177,14 @@ class CustomerSchema(ma.SQLAlchemyAutoSchema):
     customer_description: Optional[str] = auto_field('description', allow_none=True)
     customer_sla: Optional[str] = auto_field('sla', allow_none=True)
     customer_id: int = auto_field('client_id')
+    # Not secrets: readable by every user with customers_read
+    customer_key_values = fields.Dict(keys=fields.String(), values=fields.String(), attribute='key_values',
+                                      allow_none=True, validate=_customer_key_values_validate)
 
     class Meta:
         model = Client
         load_instance = True
-        exclude = ['name', 'client_id', 'description', 'sla']
+        exclude = ['name', 'client_id', 'description', 'sla', 'key_values']
         unknown = EXCLUDE
 
     @pre_load
