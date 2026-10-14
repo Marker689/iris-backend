@@ -106,8 +106,15 @@ def _run(operation, not_found='Vulnerability not found.'):
         'type': 'object',
         'properties': {
             **PAGINATION_SCHEMA_FRAGMENT,
-            'search': {'type': 'string', 'description': 'Substring of the identifier, an alias, the title or tags.'},
+            'search': {'type': 'string',
+                       'description': 'Substring of the identifier, an alias, the title, tags or an affected '
+                                      'vendor / product.'},
             'severity': _SEVERITY_LIST,
+            'vendor': {'type': 'array', 'items': {'type': 'string'},
+                       'description': 'Only entries affecting one of these vendors (case-insensitive).'},
+            'product': {'type': 'array', 'items': {'type': 'string'},
+                        'description': 'Only entries affecting one of these products (case-insensitive); with '
+                                       'vendor, both must match the same affected product.'},
             'kev': {'type': 'boolean', 'description': 'Only (or no) CISA KEV entries.'},
             'affected': {'type': 'boolean',
                          'description': 'Only entries with an open finding in a readable case.'},

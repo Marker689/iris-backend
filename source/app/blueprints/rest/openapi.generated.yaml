@@ -945,6 +945,21 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/v2/ai-workflows/python/check:
+    post:
+      operationId: check_ai_workflow_python_route_post
+      summary: Check a python node script against the sandbox rules without running it
+      tags:
+      - AiWorkflows
+      security:
+      - ApiKey: []
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/v2/ai-workflows/runs:
     get:
       operationId: list_ai_workflow_runs_route_get
@@ -12453,7 +12468,8 @@ paths:
         required: false
         schema:
           type: string
-        description: Substring of the identifier, an alias, the title or the tags
+        description: Substring of the identifier, an alias, the title, the tags or an affected vendor
+          / product
       - name: severity
         in: query
         required: false
@@ -12466,6 +12482,19 @@ paths:
         schema:
           type: string
         description: Comma-separated kinds
+      - name: vendor
+        in: query
+        required: false
+        schema:
+          type: string
+        description: Affected vendor, case-insensitive; repeat the parameter for several
+      - name: product
+        in: query
+        required: false
+        schema:
+          type: string
+        description: Affected product, case-insensitive; repeat the parameter for several. With vendor,
+          both must match the same affected product
       - name: kev
         in: query
         required: false
@@ -12678,6 +12707,21 @@ paths:
         schema:
           type: string
         description: CVE, GHSA, advisory or IRIS-VULN identifier
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v2/manage/vulnerabilities/technologies:
+    get:
+      operationId: list_vulnerability_technologies_route_get
+      summary: Vendor / product pairs named by catalogue entries, with how many entries name each
+      tags:
+      - Vulnerabilities
+      security:
+      - ApiKey: []
       responses:
         '200':
           description: Success
@@ -15967,6 +16011,108 @@ paths:
       - ApiKey: []
       parameters:
       - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/war-rooms/{war_room_id}/scope/registry-assets:
+    get:
+      operationId: list_scope_registry_assets_get
+      summary: List the Assets Manager assets attached to the war room, with their optional case and vulnerability
+        links. Empty, with allowed=false, without asset_manager_read
+      tags:
+      - WarRoomScope
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: attach_scope_registry_assets_post
+      summary: Attach Assets Manager assets to the war room (managed_asset_ids), optionally linked to
+        an attached case (case_id) and/or a catalogue vulnerability (vulnerability_id)
+      tags:
+      - WarRoomScope
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/war-rooms/{war_room_id}/scope/registry-assets/{attachment_id}:
+    delete:
+      operationId: detach_scope_registry_asset_delete
+      summary: Detach a registry asset from the war room (the asset itself is kept)
+      tags:
+      - WarRoomScope
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: attachment_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '204':
+          $ref: '#/components/responses/Deleted'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: update_scope_registry_asset_patch
+      summary: Change the case link, the vulnerability link or the note of an attached registry asset
+      tags:
+      - WarRoomScope
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: attachment_id
         in: path
         required: true
         schema:
@@ -20829,7 +20975,8 @@ paths:
                   description: '''asc'' or ''desc''.'
                 search:
                   type: string
-                  description: Substring of the identifier, an alias, the title or tags.
+                  description: Substring of the identifier, an alias, the title, tags or an affected vendor
+                    / product.
                 severity:
                   type: array
                   items:
@@ -20842,6 +20989,17 @@ paths:
                     - none
                     - unknown
                   description: Only these severities.
+                vendor:
+                  type: array
+                  items:
+                    type: string
+                  description: Only entries affecting one of these vendors (case-insensitive).
+                product:
+                  type: array
+                  items:
+                    type: string
+                  description: Only entries affecting one of these products (case-insensitive); with vendor,
+                    both must match the same affected product.
                 kev:
                   type: boolean
                   description: Only (or no) CISA KEV entries.
@@ -24991,6 +25149,12 @@ components:
           - string
           - 'null'
           format: date-time
+        vulnerabilities:
+          type:
+          - array
+          - 'null'
+          items:
+            type: object
       description: A registry row plus the derived facts the caller is allowed to see.
     ManagedAssetDetailRequest:
       type: object

@@ -52,6 +52,7 @@ from app.datamgmt.vulnerabilities.vulnerabilities_db import vulnerabilities_db_r
 from app.datamgmt.vulnerabilities.vulnerabilities_db import vulnerabilities_db_rollback
 from app.datamgmt.vulnerabilities.vulnerabilities_db import vulnerabilities_db_search
 from app.datamgmt.vulnerabilities.vulnerabilities_db import vulnerabilities_db_sortable_fields
+from app.datamgmt.vulnerabilities.vulnerabilities_db import vulnerabilities_db_technologies
 from app.datamgmt.vulnerabilities.vulnerabilities_db import vulnerabilities_db_tlp_exists
 from app.datamgmt.vulnerabilities.vulnerabilities_db import vulnerabilities_db_user_names
 from app.iris_engine.module_handler.module_handler import call_modules_hook
@@ -84,6 +85,8 @@ _MAX_URLS = 100
 _PRODUCT_FIELD_MAX_LENGTH = 256
 _ENRICHMENT_MAX_SIZE = 100000
 _PER_PAGE_MAX = 200
+_MAX_TECHNOLOGY_FILTERS = 50
+_TECHNOLOGIES_MAX = 5000
 _PRIVATE_ALLOCATION_ATTEMPTS = 5
 
 _TRUE_VALUES = ('1', 'true', 'yes')
@@ -214,6 +217,26 @@ def vulnerabilities_parse_query_list(value, field, choices):
         if item not in choices:
             raise BusinessProcessingError(f'{field} values must be among: {", ".join(choices)}')
     return items
+
+
+def vulnerabilities_parse_query_names(args, key):
+    """Free-form names of a query-string parameter, repeated (`?vendor=a&vendor=b`)
+    since a name can hold a comma, or a list (from MCP tool arguments)."""
+    values = args.getlist(key) if hasattr(args, 'getlist') else args.get(key)
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
+        raise BusinessProcessingError(f'{key} must be a list of names')
+    names = []
+    for item in values:
+        name = vulnerabilities_parse_text(item, key, _PRODUCT_FIELD_MAX_LENGTH)
+        if name is not None and name not in names:
+            names.append(name)
+    if len(names) > _MAX_TECHNOLOGY_FILTERS:
+        raise BusinessProcessingError(f'{key} accepts at most {_MAX_TECHNOLOGY_FILTERS} values')
+    return names
 
 
 def vulnerabilities_isoformat(value):
@@ -564,6 +587,8 @@ def vulnerabilities_search(args, pagination, case_ids, registry_scope, hide_priv
         'search': vulnerabilities_parse_text(args.get('search'), 'search', 256),
         'severities': vulnerabilities_parse_query_list(args.get('severity'), 'severity', VULNERABILITY_SEVERITIES),
         'kinds': vulnerabilities_parse_query_list(args.get('kind'), 'kind', VULNERABILITY_KINDS),
+        'vendors': vulnerabilities_parse_query_names(args, 'vendor'),
+        'products': vulnerabilities_parse_query_names(args, 'product'),
         'kev': vulnerabilities_parse_query_bool(args.get('kev'), 'kev'),
         'is_private': vulnerabilities_parse_query_bool(args.get('private'), 'private'),
         'affected': vulnerabilities_parse_query_bool(args.get('affected'), 'affected'),
@@ -593,6 +618,16 @@ def vulnerabilities_search(args, pagination, case_ids, registry_scope, hide_priv
         'current_page': page,
         'next_page': page + 1 if page < last_page else None,
     }
+
+
+def vulnerabilities_technologies() -> list:
+    """The vendor / product pairs of the catalogue's affected products, with
+    how many entries name each, the most common first."""
+    return [{
+        'vendor': row.vendor or None,
+        'product': row.product,
+        'vulnerabilities': row.entries,
+    } for row in vulnerabilities_db_technologies(_TECHNOLOGIES_MAX)]
 
 
 def vulnerabilities_exposure(vulnerability: Vulnerability, case_ids, registry_scope) -> dict:

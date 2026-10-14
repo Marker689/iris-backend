@@ -28,9 +28,13 @@ import datetime
 
 from sqlalchemy import and_
 from sqlalchemy import case as sa_case
+from sqlalchemy import cast
+from sqlalchemy import column as sa_column
 from sqlalchemy import func
 from sqlalchemy import or_
 from sqlalchemy import select
+from sqlalchemy import true
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
 
@@ -59,6 +63,7 @@ from app.models.vulnerabilities import VulnerabilityAlias
 from app.models.vulnerabilities import VulnerabilityFindingHistory
 from app.models.vulnerabilities import WarRoomVulnerability
 from app.models.war_rooms import WarRoomDecision
+from app.models.war_rooms import WarRoomManagedAsset
 
 _SEVERITY_RANKS = {'critical': 5, 'high': 4, 'medium': 3, 'low': 2, 'none': 1, 'unknown': 0}
 
@@ -186,6 +191,40 @@ def vulnerabilities_db_user_exists(user_id):
     return db.session.query(User.id).filter(User.id == user_id).first() is not None
 
 
+def _affected_products():
+    """The `affected_products` entries of a catalogue row as a `value`
+    (JSONB) table, empty when the column is NULL or not an array."""
+    products = sa_case(
+        (func.jsonb_typeof(Vulnerability.affected_products) == 'array', Vulnerability.affected_products),
+        else_=cast('[]', JSONB),
+    )
+    return func.jsonb_array_elements(products).table_valued(sa_column('value', JSONB)).render_derived(name='product')
+
+
+def _product_vendor(element):
+    return func.coalesce(element.c.value['vendor'].astext, '')
+
+
+def _technology_match(vendors, products):
+    """Entries with one affected product of one of `vendors` (when given)
+    and named one of `products` (when given), case-insensitively."""
+    element = _affected_products()
+    match = select(element.c.value)
+    if vendors:
+        match = match.where(func.lower(_product_vendor(element)).in_([vendor.lower() for vendor in vendors]))
+    if products:
+        match = match.where(func.lower(element.c.value['product'].astext).in_([name.lower() for name in products]))
+    return match.exists()
+
+
+def _technology_search(pattern):
+    element = _affected_products()
+    return select(element.c.value).where(or_(
+        element.c.value['vendor'].astext.ilike(pattern, escape='\\'),
+        element.c.value['product'].astext.ilike(pattern, escape='\\'),
+    )).exists()
+
+
 def _catalogue_filters(query, filters, case_ids):
     search = filters.get('search')
     if search:
@@ -200,6 +239,7 @@ def _catalogue_filters(query, filters, case_ids):
             Vulnerability.title.ilike(pattern, escape='\\'),
             Vulnerability.tags.ilike(pattern, escape='\\'),
             alias_match,
+            _technology_search(pattern),
         )
         if filters.get('private_content_hidden'):
             # Matching on content the caller is not shown would leak it.
@@ -212,6 +252,11 @@ def _catalogue_filters(query, filters, case_ids):
         query = query.filter(Vulnerability.severity.in_(filters['severities']))
     if filters.get('kinds'):
         query = query.filter(Vulnerability.kind.in_(filters['kinds']))
+    if filters.get('vendors') or filters.get('products'):
+        technology = _technology_match(filters.get('vendors'), filters.get('products'))
+        if filters.get('private_content_hidden'):
+            technology = and_(Vulnerability.is_private.is_(False), technology)
+        query = query.filter(technology)
     if filters.get('kev') is not None:
         query = query.filter(Vulnerability.kev.is_(filters['kev']))
     if filters.get('is_private') is not None:
@@ -261,6 +306,26 @@ def vulnerabilities_db_search(filters, page, per_page, order_by, direction, case
 
 def vulnerabilities_db_sortable_fields():
     return tuple(_CATALOGUE_SORTS) + ('severity',)
+
+
+def vulnerabilities_db_technologies(limit):
+    """Distinct `(vendor, product, entries)` of the catalogue's affected
+    products, grouped case-insensitively, the most common first."""
+    element = _affected_products()
+    vendor = _product_vendor(element)
+    product = element.c.value['product'].astext
+    return db.session.execute(
+        select(func.min(vendor).label('vendor'),
+               func.min(product).label('product'),
+               func.count(func.distinct(Vulnerability.vulnerability_id)).label('entries'))
+        .select_from(Vulnerability)
+        .join(element, true())
+        .where(product.is_not(None), product != '')
+        .group_by(func.lower(vendor), func.lower(product))
+        .order_by(func.count(func.distinct(Vulnerability.vulnerability_id)).desc(),
+                  func.lower(vendor), func.lower(product))
+        .limit(limit)
+    ).all()
 
 
 def vulnerabilities_db_count_findings(vulnerability_id):
@@ -382,6 +447,18 @@ def vulnerabilities_db_merge(source_id, target_id):
                                       ).delete(synchronize_session=False)
     WarRoomVulnerability.query.filter(WarRoomVulnerability.vulnerability_id == source_id).update(
         {WarRoomVulnerability.vulnerability_id: target_id}, synchronize_session=False)
+    # So do the registry assets attached to a war room for this entry.
+    target_attachment = aliased(WarRoomManagedAsset)
+    already_attached = select(target_attachment.id).where(
+        target_attachment.vulnerability_id == target_id,
+        target_attachment.war_room_id == WarRoomManagedAsset.war_room_id,
+        target_attachment.managed_asset_id == WarRoomManagedAsset.managed_asset_id,
+        target_attachment.case_id.is_not_distinct_from(WarRoomManagedAsset.case_id),
+    ).exists()
+    WarRoomManagedAsset.query.filter(WarRoomManagedAsset.vulnerability_id == source_id,
+                                     already_attached).delete(synchronize_session=False)
+    WarRoomManagedAsset.query.filter(WarRoomManagedAsset.vulnerability_id == source_id).update(
+        {WarRoomManagedAsset.vulnerability_id: target_id}, synchronize_session=False)
     Vulnerability.query.filter(Vulnerability.vulnerability_id == source_id).delete(synchronize_session=False)
     return moved, dropped
 
@@ -886,6 +963,31 @@ def findings_db_asset_tags(asset_ids):
         )
         .join(Vulnerability, Vulnerability.vulnerability_id == CaseAssetVulnerability.vulnerability_id)
         .filter(CaseAssetVulnerability.asset_id.in_(asset_ids))
+        .order_by(vulnerabilities_db_severity_rank().desc(), Vulnerability.identifier.asc())
+        .all()
+    )
+
+
+def findings_db_managed_asset_tags(managed_asset_ids):
+    """Rows `(managed_asset_id, finding_id, vulnerability_id, identifier,
+    severity, kev, remediation_status, exploitation_status)` of the findings
+    recorded on the given registry assets, highest severity first."""
+    managed_asset_ids = list(managed_asset_ids or ())
+    if not managed_asset_ids:
+        return []
+    return (
+        db.session.query(
+            ManagedAssetVulnerability.managed_asset_id,
+            ManagedAssetVulnerability.finding_id,
+            Vulnerability.vulnerability_id,
+            Vulnerability.identifier,
+            Vulnerability.severity,
+            Vulnerability.kev,
+            ManagedAssetVulnerability.remediation_status,
+            ManagedAssetVulnerability.exploitation_status,
+        )
+        .join(Vulnerability, Vulnerability.vulnerability_id == ManagedAssetVulnerability.vulnerability_id)
+        .filter(ManagedAssetVulnerability.managed_asset_id.in_(managed_asset_ids))
         .order_by(vulnerabilities_db_severity_rank().desc(), Vulnerability.identifier.asc())
         .all()
     )

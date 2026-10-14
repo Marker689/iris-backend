@@ -56,6 +56,7 @@ from app.business.vulnerabilities import vulnerabilities_get_public
 from app.business.vulnerabilities import vulnerabilities_lookup
 from app.business.vulnerabilities import vulnerabilities_merge
 from app.business.vulnerabilities import vulnerabilities_search
+from app.business.vulnerabilities import vulnerabilities_technologies
 from app.business.vulnerabilities import vulnerabilities_update
 from app.business.vulnerabilities_cve_sync import vulnerabilities_cve_lookup
 from app.business.vulnerabilities_cve_sync import vulnerabilities_cve_sync
@@ -117,15 +118,30 @@ vulnerabilities_blueprint = Blueprint(
                         'One of: identifier, title, cvss_score, epss_score, published_at, created_at, '
                         'updated_at, severity'),
                        ('sort_dir', 'string', 'asc or desc'),
-                       ('search', 'string', 'Substring of the identifier, an alias, the title or the tags'),
+                       ('search', 'string',
+                        'Substring of the identifier, an alias, the title, the tags or an affected vendor / product'),
                        ('severity', 'string', 'Comma-separated severities'),
                        ('kind', 'string', 'Comma-separated kinds'),
+                       ('vendor', 'string',
+                        'Affected vendor, case-insensitive; repeat the parameter for several'),
+                       ('product', 'string',
+                        'Affected product, case-insensitive; repeat the parameter for several. With vendor, '
+                        'both must match the same affected product'),
                        ('kev', 'boolean', 'Only (or no) CISA KEV entries'),
                        ('private', 'boolean', 'Only private (or public) entries'),
                        ('affected', 'boolean', 'Only entries with an open finding in a readable case')])
 def list_vulnerabilities_route():
     pagination = parse_pagination_parameters(request, default_order_by='updated_at', default_direction='desc')
     return _handle(lambda: vulnerabilities_search(request.args, pagination, *vulnerabilities_visibility()))
+
+
+@vulnerabilities_blueprint.get('/technologies')
+@ac_api_requires()
+@ac_api_requires_vulnerabilities()
+@api_doc(tags=['Vulnerabilities'],
+         summary='Vendor / product pairs named by catalogue entries, with how many entries name each')
+def list_vulnerability_technologies_route():
+    return _handle(vulnerabilities_technologies)
 
 
 @vulnerabilities_blueprint.get('/lookup')

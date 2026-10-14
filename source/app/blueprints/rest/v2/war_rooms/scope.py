@@ -17,7 +17,8 @@
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 """War-room scope: assets / IOCs of the attached cases, push to cases,
-bulk flags, staging area and IOC export.
+bulk flags, Assets Manager assets attached to the room, staging area and
+IOC export.
 
 Authorization lives here: every route checks war-room access first, then
 computes the attached cases the caller can read (`read_only|full_access`)
@@ -36,6 +37,8 @@ from flask import send_file
 from app.blueprints.access_controls import ac_api_requires
 from app.blueprints.access_controls import ac_api_requires_vulnerabilities
 from app.blueprints.access_controls import ac_current_user_can_read_vulnerabilities
+from app.blueprints.access_controls import ac_current_user_has_permission
+from app.blueprints.access_controls import ac_current_user_permissions_mask
 from app.blueprints.access_controls import ac_fast_check_current_user_has_cases_access
 from app.blueprints.iris_user import iris_current_user
 from app.blueprints.rest.api_doc import api_doc
@@ -46,6 +49,11 @@ from app.blueprints.rest.endpoints import response_api_not_found
 from app.blueprints.rest.endpoints import response_api_success
 from app.blueprints.rest.v2.war_rooms.access import require_war_room_read
 from app.blueprints.rest.v2.war_rooms.access import require_war_room_write
+from app.business.managed_assets import managed_assets_viewer_scope
+from app.business.war_room_managed_assets import war_room_managed_assets_attach
+from app.business.war_room_managed_assets import war_room_managed_assets_detach
+from app.business.war_room_managed_assets import war_room_managed_assets_list
+from app.business.war_room_managed_assets import war_room_managed_assets_update
 from app.business.war_room_scope import war_room_scope_attached_case_ids
 from app.business.war_room_vulnerabilities import war_room_vulnerabilities_matrix
 from app.business.war_room_scope import war_room_scope_bulk_flag
@@ -63,6 +71,7 @@ from app.business.war_room_scope import war_room_scope_staged_list
 from app.business.war_room_scope import war_room_scope_staged_push
 from app.business.war_room_scope import war_room_scope_staged_update
 from app.models.authorization import CaseAccessLevel
+from app.models.authorization import Permissions
 from app.models.errors import BusinessProcessingError
 from app.models.errors import ObjectNotFoundError
 
@@ -320,6 +329,89 @@ def bulk_flag_scope_assets(war_room_id):
     except BusinessProcessingError as e:
         return response_api_error(e.get_message())
     return response_api_success(result)
+
+
+# ---------------------------------------------------------------------------
+# Registry assets attached to the scope
+# ---------------------------------------------------------------------------
+
+def _registry_scope():
+    return managed_assets_viewer_scope(iris_current_user, ac_current_user_permissions_mask())
+
+
+@war_rooms_scope_blueprint.get('/registry-assets')
+@ac_api_requires()
+@api_doc(tags=['WarRoomScope'],
+         summary='List the Assets Manager assets attached to the war room, with their optional case and '
+                 'vulnerability links. Empty, with allowed=false, without asset_manager_read')
+def list_scope_registry_assets(war_room_id):
+    err = require_war_room_read(war_room_id)
+    if err is not None:
+        return err
+    if not ac_current_user_has_permission(Permissions.asset_manager_read):
+        return response_api_success({'data': [], 'truncated': False, 'limit': 0, 'allowed': False})
+    result = war_room_managed_assets_list(war_room_id, _registry_scope(), _readable_case_ids(war_room_id),
+                                          ac_current_user_can_read_vulnerabilities())
+    result['allowed'] = True
+    return response_api_success(result)
+
+
+@war_rooms_scope_blueprint.post('/registry-assets')
+@ac_api_requires(Permissions.asset_manager_read)
+@api_doc(tags=['WarRoomScope'],
+         summary='Attach Assets Manager assets to the war room (managed_asset_ids), optionally linked to an '
+                 'attached case (case_id) and/or a catalogue vulnerability (vulnerability_id)')
+def attach_scope_registry_assets(war_room_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    raw = _json_body()
+    if raw is None:
+        return response_api_error('Invalid request')
+    try:
+        result = war_room_managed_assets_attach(war_room_id, raw, iris_current_user.id, _registry_scope(),
+                                                _readable_case_ids(war_room_id),
+                                                ac_current_user_can_read_vulnerabilities())
+    except BusinessProcessingError as e:
+        return response_api_error(e.get_message())
+    return response_api_success(result)
+
+
+@war_rooms_scope_blueprint.patch('/registry-assets/<int:attachment_id>')
+@ac_api_requires(Permissions.asset_manager_read)
+@api_doc(tags=['WarRoomScope'],
+         summary='Change the case link, the vulnerability link or the note of an attached registry asset')
+def update_scope_registry_asset(war_room_id, attachment_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    raw = _json_body()
+    if raw is None:
+        return response_api_error('Invalid request')
+    try:
+        war_room_managed_assets_update(war_room_id, attachment_id, raw, _registry_scope(),
+                                       _readable_case_ids(war_room_id), ac_current_user_can_read_vulnerabilities())
+    except ObjectNotFoundError:
+        return response_api_not_found()
+    except BusinessProcessingError as e:
+        return response_api_error(e.get_message())
+    return response_api_success({'id': attachment_id})
+
+
+@war_rooms_scope_blueprint.delete('/registry-assets/<int:attachment_id>')
+@ac_api_requires(Permissions.asset_manager_read)
+@api_doc(response_shape='deleted', tags=['WarRoomScope'],
+         summary='Detach a registry asset from the war room (the asset itself is kept)')
+def detach_scope_registry_asset(war_room_id, attachment_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    try:
+        war_room_managed_assets_detach(war_room_id, attachment_id, _registry_scope(),
+                                       _readable_case_ids(war_room_id))
+    except ObjectNotFoundError:
+        return response_api_not_found()
+    return response_api_deleted()
 
 
 # ---------------------------------------------------------------------------

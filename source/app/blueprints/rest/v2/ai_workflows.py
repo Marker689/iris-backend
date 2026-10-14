@@ -57,6 +57,7 @@ from app.business.ai_workflows import AiWorkflowsForbiddenError
 from app.business.ai_workflows import ai_workflows_authoring_guide
 from app.business.ai_workflows import ai_workflows_cancel
 from app.business.ai_workflows import ai_workflows_catalogue
+from app.business.ai_workflows import ai_workflows_check_python
 from app.business.ai_workflows import ai_workflows_create
 from app.business.ai_workflows import ai_workflows_delete
 from app.business.ai_workflows import ai_workflows_export
@@ -181,6 +182,16 @@ def validate_ai_workflow_route():
     if refused is not None:
         return refused
     return _handle(lambda: ai_workflows_validate_definition(body))
+
+
+@ai_workflows_blueprint.post('/python/check')
+@ac_api_requires(*_READ)
+@api_doc(tags=['AiWorkflows'], summary='Check a python node script against the sandbox rules without running it')
+def check_ai_workflow_python_route():
+    body, refused = _definition_body()
+    if refused is not None:
+        return refused
+    return _handle(lambda: ai_workflows_check_python(body))
 
 
 @ai_workflows_blueprint.get('/runs')

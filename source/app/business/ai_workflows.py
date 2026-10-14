@@ -117,6 +117,7 @@ from app.iris_engine.ai_workflows.portable import ai_workflows_portable_key_refe
 from app.iris_engine.ai_workflows.portable import ai_workflows_portable_literal_secrets
 from app.iris_engine.ai_workflows.portable import ai_workflows_portable_read_workflow
 from app.iris_engine.ai_workflows.portable import ai_workflows_portable_tools
+from app.iris_engine.ai_workflows.sandbox import ai_workflows_sandbox_check
 from app.iris_engine.ai_workflows.suggestions import ai_workflows_suggestions_serialize
 from app.iris_engine.ai_workflows.suggestions import ai_workflows_suggestions_user_can_see
 from app.iris_engine.ai_workflows.tools import ai_workflows_tools_catalogue
@@ -798,6 +799,15 @@ def _ai_workflows_validate(body, user_id, is_admin, existing=None) -> dict:
         'token_budget_per_run': budget,
         'suggestion_audience': audience,
     }
+
+
+def ai_workflows_check_python(body) -> dict:
+    """Editor check of a `python` node script: `{errors: [{line, message}]}`,
+    the static errors the sandbox would refuse it with (empty: it may run)."""
+    code = body.get('code') if isinstance(body, dict) else None
+    if not isinstance(code, str):
+        raise BusinessProcessingError('Invalid body', data={'code': ['Must be a string']})
+    return {'errors': ai_workflows_sandbox_check(code)}
 
 
 def ai_workflows_validate_definition(body) -> dict:

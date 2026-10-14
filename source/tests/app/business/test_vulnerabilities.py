@@ -23,6 +23,8 @@ from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 
+from werkzeug.datastructures import MultiDict
+
 from app.business import vulnerabilities as biz
 from app.models.errors import BusinessProcessingError
 
@@ -106,6 +108,23 @@ class TestQueryParsers(TestCase):
         for value in ('critical,bogus', 'CRITICAL', [1], {'a': 'b'}, 3):
             with self.assertRaises(BusinessProcessingError, msg=value):
                 biz.vulnerabilities_parse_query_list(value, 'severity', ('critical',))
+
+    def test_query_names_should_read_repeated_parameters_and_keep_commas(self):
+        args = MultiDict([('vendor', 'Acme, Inc.'), ('vendor', ' Citrix '), ('vendor', ''), ('vendor', 'Citrix')])
+        self.assertEqual(biz.vulnerabilities_parse_query_names(args, 'vendor'), ['Acme, Inc.', 'Citrix'])
+        self.assertEqual(biz.vulnerabilities_parse_query_names(MultiDict(), 'vendor'), [])
+
+    def test_query_names_should_accept_a_string_or_a_list_from_mcp(self):
+        self.assertEqual(biz.vulnerabilities_parse_query_names({'product': 'Exchange'}, 'product'), ['Exchange'])
+        self.assertEqual(biz.vulnerabilities_parse_query_names({'product': ['A', 'B']}, 'product'), ['A', 'B'])
+        self.assertEqual(biz.vulnerabilities_parse_query_names({}, 'product'), [])
+
+    def test_query_names_should_reject_bad_types_and_too_many_values(self):
+        for value in ([1], {'a': 'b'}, 3, 'x' * 300):
+            with self.assertRaises(BusinessProcessingError, msg=value):
+                biz.vulnerabilities_parse_query_names({'vendor': value}, 'vendor')
+        with self.assertRaises(BusinessProcessingError):
+            biz.vulnerabilities_parse_query_names({'vendor': [f'v{i}' for i in range(51)]}, 'vendor')
 
     def test_choice(self):
         self.assertEqual(biz.vulnerabilities_parse_choice('cve', 'kind', ('cve', 'other')), 'cve')
@@ -291,3 +310,20 @@ class TestHidePrivateContent(TestCase):
             with self.assertRaises(BusinessProcessingError):
                 biz.vulnerabilities_search({}, self._pagination('title'), None, None, hide_private_content=True)
             biz.vulnerabilities_search({}, self._pagination('title'), None, None)
+
+    def test_search_should_forward_the_technology_filters(self):
+        args = MultiDict([('vendor', 'Citrix'), ('product', 'NetScaler ADC'), ('product', 'NetScaler Gateway')])
+        with patch(f'{_BIZ}.vulnerabilities_db_search', return_value=([], 0)) as search:
+            biz.vulnerabilities_search(args, self._pagination(), None, None)
+        filters = search.call_args.args[0]
+        self.assertEqual(filters['vendors'], ['Citrix'])
+        self.assertEqual(filters['products'], ['NetScaler ADC', 'NetScaler Gateway'])
+
+    def test_technologies_should_list_the_pairs_with_a_null_vendor_when_blank(self):
+        rows = [SimpleNamespace(vendor='Citrix', product='NetScaler ADC', entries=3),
+                SimpleNamespace(vendor='', product='libfoo', entries=1)]
+        with patch(f'{_BIZ}.vulnerabilities_db_technologies', return_value=rows):
+            self.assertEqual(biz.vulnerabilities_technologies(), [
+                {'vendor': 'Citrix', 'product': 'NetScaler ADC', 'vulnerabilities': 3},
+                {'vendor': None, 'product': 'libfoo', 'vulnerabilities': 1},
+            ])

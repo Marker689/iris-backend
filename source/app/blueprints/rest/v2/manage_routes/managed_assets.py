@@ -66,6 +66,7 @@ from werkzeug.utils import secure_filename
 from app import app
 from app.blueprints.access_controls import ac_api_requires
 from app.blueprints.access_controls import ac_api_return_access_denied
+from app.blueprints.access_controls import ac_current_user_can_read_vulnerabilities
 from app.blueprints.access_controls import ac_current_user_has_customer_access
 from app.blueprints.access_controls import ac_current_user_permissions_mask
 from app.blueprints.iris_user import iris_current_user
@@ -94,6 +95,7 @@ from app.business.managed_assets import managed_assets_timeline
 from app.business.managed_assets import managed_assets_timeline_count
 from app.business.managed_assets import managed_assets_update
 from app.business.managed_assets import managed_assets_viewer_scope
+from app.business.vulnerability_findings import vulnerability_findings_managed_tags
 from app.business.managed_assets_transfer.exporter import EXPORT_FORMATS
 from app.business.managed_assets_transfer.exporter import export_assets
 from app.business.managed_assets_transfer.importer import CONFLICT_POLICIES
@@ -283,10 +285,16 @@ def _decorate(assets, scope, timeline_counts=None):
     stored columns and the computed ones.
     """
     summary = managed_assets_summary(assets, scope)
+    # The registry findings, as compact tags, only for the callers holding
+    # the vulnerability read permission; null otherwise.
+    tags = None
+    if ac_current_user_can_read_vulnerabilities():
+        tags = vulnerability_findings_managed_tags([asset.managed_asset_id for asset in assets])
     for asset in assets:
         for field, value in summary[asset.managed_asset_id].items():
             setattr(asset, field, value)
         asset.timeline_event_count = (timeline_counts or {}).get(asset.managed_asset_id)
+        asset.vulnerabilities = tags.get(asset.managed_asset_id, []) if tags is not None else None
     return assets
 
 

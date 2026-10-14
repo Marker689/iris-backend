@@ -29,6 +29,7 @@ from unittest.mock import patch
 from app import app
 from app.business.ai_workflows import AiWorkflowsForbiddenError
 from app.business.ai_workflows import ai_workflows_catalogue
+from app.business.ai_workflows import ai_workflows_check_python
 from app.business.ai_workflows import ai_workflows_create
 from app.business.ai_workflows import ai_workflows_export_run
 from app.business.ai_workflows import ai_workflows_get_run
@@ -519,3 +520,22 @@ class TestsCatalogue(TestCase):
         self.assertEqual({'enabled': True, 'provider': 'openai', 'model': 'gpt'}, catalogue['llm'])
         self.assertNotIn('sk-secret', repr(catalogue))
         self.assertEqual([{'name': 'on_postload_x', 'description': 'X'}], catalogue['hooks'])
+
+
+class TestsCheckPython(TestCase):
+
+    def test_valid_script_should_have_no_error(self):
+        self.assertEqual({'errors': []}, ai_workflows_check_python({'code': 'result = len(inputs)\n'}))
+
+    def test_syntax_error_should_carry_its_line(self):
+        errors = ai_workflows_check_python({'code': 'x = 1\nif x\n'})['errors']
+        self.assertEqual(2, errors[0]['line'])
+        self.assertIn('Syntax error', errors[0]['message'])
+
+    def test_sandbox_rule_should_be_reported(self):
+        errors = ai_workflows_check_python({'code': 'import os\n'})['errors']
+        self.assertIn({'line': 1, 'message': 'Import is not allowed'}, errors)
+
+    def test_missing_code_should_raise(self):
+        with self.assertRaises(BusinessProcessingError):
+            ai_workflows_check_python({})

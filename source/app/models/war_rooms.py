@@ -960,6 +960,38 @@ class WarRoomStagedObject(db.Model):
     created_by = relationship('User')
 
 
+class WarRoomManagedAsset(db.Model):
+    """Registry asset (Assets Manager) attached to a war room's scope.
+
+    The attachment does not need a case: `case_id` and `vulnerability_id`
+    are optional links, so an asset can be in scope on its own, for an
+    attached case, for a catalogue vulnerability, or both. The same asset
+    can be attached several times with different links; NULLS NOT
+    DISTINCT keeps a single unlinked row per asset. Both links cascade: a
+    SET NULL could collide with that uniqueness and make the delete fail.
+    """
+    __tablename__ = 'war_room_managed_asset'
+    __table_args__ = (
+        UniqueConstraint('war_room_id', 'managed_asset_id', 'case_id', 'vulnerability_id',
+                         name='uq_war_room_managed_asset', postgresql_nulls_not_distinct=True),
+    )
+
+    id = Column(BigInteger, primary_key=True)
+    war_room_id = Column(BigInteger,
+                         ForeignKey('war_room.war_room_id', ondelete='CASCADE'),
+                         nullable=False, index=True)
+    managed_asset_id = Column(BigInteger,
+                              ForeignKey('managed_asset.managed_asset_id', ondelete='CASCADE'),
+                              nullable=False, index=True)
+    case_id = Column(BigInteger, ForeignKey('cases.case_id', ondelete='CASCADE'), nullable=True)
+    vulnerability_id = Column(BigInteger,
+                              ForeignKey('vulnerability.vulnerability_id', ondelete='CASCADE'),
+                              nullable=True, index=True)
+    note = Column(Text, nullable=True)
+    added_at = Column(DateTime, nullable=False, server_default=text('now()'))
+    added_by_id = Column(BigInteger, ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
+
+
 class WarRoomNoteShare(db.Model):
     """Share of a war-room note (or folder subtree) with attached cases.
 

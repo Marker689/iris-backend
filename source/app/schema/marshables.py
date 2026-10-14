@@ -3506,6 +3506,9 @@ class ManagedAssetDetailSchema(ManagedAssetSchema):
     last_seen_at = fields.DateTime(dump_only=True, allow_none=True)
     compromise_status_id = fields.Integer(dump_only=True, allow_none=True)
     compromised_at = fields.DateTime(dump_only=True, allow_none=True)
+    # Compact tags of the registry vulnerability findings, highest severity
+    # first; null without the vulnerability read permission.
+    vulnerabilities = fields.List(fields.Dict(), dump_only=True, allow_none=True)
 
 
 class ManagedAssetSightingSchema(Schema):
