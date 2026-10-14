@@ -19,6 +19,7 @@ from app.blueprints.rest.v2.mcp.tools._common import (
     dump_paginated,
     schema_for_view,
 )
+from app.business.access_controls import ac_fast_check_user_has_case_access
 from app.business.cases import (
     cases_close,
     cases_create,
@@ -29,6 +30,7 @@ from app.business.cases import (
     cases_update,
 )
 from app.db import db
+from app.models.authorization import CaseAccessLevel
 from app.models.authorization import Permissions
 from app.models.errors import BusinessProcessingError, ObjectNotFoundError
 from app.schema.marshables import CaseDetailsSchema, CaseSchemaForAPIV2
@@ -97,12 +99,12 @@ _CASE_PAYLOAD_PROPERTIES: dict[str, dict] = {
         'description': 'Case description / summary. Update this to attach a closing note or post-mortem — there is no separate closing_note field.',
     },
     'case_soc_id': {
-        'type': 'integer',
-        'description': 'SOC ticket / ID.',
+        'type': 'string',
+        'description': 'SOC ticket / ID, as free text. Use "" when there is none.',
     },
     'case_customer_id': {
         'type': 'integer',
-        'description': 'Customer (client) id. Required on create; on update it must match the case\'s existing customer or an admin-configured allow-list.',
+        'description': 'Customer (client) id. Required on create; omit on update to keep the current customer.',
     },
     'case_organisations': {
         'type': 'array',
@@ -123,7 +125,7 @@ _CASE_PAYLOAD_PROPERTIES: dict[str, dict] = {
     },
     'reviewer_id': {
         'type': 'integer',
-        'description': 'User id of the case reviewer.',
+        'description': 'User id of the case reviewer. The user must have full access to the case.',
     },
     'access_level': {
         'type': 'integer',
@@ -133,6 +135,24 @@ _CASE_PAYLOAD_PROPERTIES: dict[str, dict] = {
         'type': 'array',
         'items': {'type': 'object'},
         'description': 'Structured protagonist entries.',
+    },
+}
+
+# Update-only fields: on create the owner is the caller and state /
+# severity take their defaults.
+_CASE_UPDATE_PAYLOAD_PROPERTIES: dict[str, dict] = {
+    **_CASE_PAYLOAD_PROPERTIES,
+    'owner_id': {
+        'type': 'integer',
+        'description': 'User id of the case owner. The user must have full access to the case.',
+    },
+    'state_id': {
+        'type': 'integer',
+        'description': 'Case state id (see `iris_taxonomies_list`).',
+    },
+    'severity_id': {
+        'type': 'integer',
+        'description': 'Case severity id (see `iris_taxonomies_list`).',
     },
 }
 
@@ -309,22 +329,39 @@ def iris_cases_create(args: dict) -> dict:
     return _case_schema.dump(case)
 
 
+def _assert_assignees_have_case_access(case_identifier: int, payload: dict):
+    # Same gate as PUT /api/v2/cases/<id>: owner and reviewer put the case
+    # in front of the user they name without granting access to it. Runs
+    # before the load, which writes the payload onto the case row.
+    for field_name in ('owner_id', 'reviewer_id'):
+        assignee_identifier = payload.get(field_name)
+        if assignee_identifier in (None, ''):
+            continue
+        if not ac_fast_check_user_has_case_access(assignee_identifier, case_identifier,
+                                                  [CaseAccessLevel.full_access]):
+            raise MCPError(
+                protocol.INVALID_PARAMS,
+                f'Invalid {field_name}: user #{assignee_identifier} has no full access to the case.',
+            )
+
+
 @mcp_tool(
     name='iris_cases_update',
     description=(
-        'Update a case. Payload accepts partial fields — omit fields you do not want to '
-        'change. To attach a closing / post-mortem note, update `case_description` or call '
-        '`iris_case_notes_create` — there is no dedicated closing_note field. For fields '
-        'like `state_id`, `classification_id`, or `severity_id`, call '
-        '`iris_taxonomies_list` first to resolve names to numeric ids.'
+        'Update a case. No payload field is required: send ONLY the fields you want to '
+        'change, every omitted field keeps its current value (e.g. `{"case_description": '
+        '"..."}` alone is a valid call). To attach a closing / post-mortem note, update '
+        '`case_description` or call `iris_case_notes_create` — there is no dedicated '
+        'closing_note field. For fields like `state_id`, `classification_id`, or '
+        '`severity_id`, call `iris_taxonomies_list` first to resolve names to numeric ids.'
     ),
     input_schema={
         'type': 'object',
         'properties': {
             'payload': {
                 'type': 'object',
-                'description': 'Partial case fields to update.',
-                'properties': _CASE_PAYLOAD_PROPERTIES,
+                'description': 'Only the case fields to change; omitted fields are left untouched.',
+                'properties': _CASE_UPDATE_PAYLOAD_PROPERTIES,
                 'additionalProperties': False,
             },
             'protagonists': {
@@ -358,6 +395,15 @@ def iris_cases_update(args: dict) -> dict:
                 protocol.IRIS_ACCESS_DENIED,
                 f'Not entitled to customer #{customer_identifier}.',
             )
+        _assert_assignees_have_case_access(case.case_id, payload)
+        # The schema's customer check runs even on a partial load, so a
+        # payload without the customer would be refused: keep the current
+        # one, as PUT /api/v2/cases/<id> does.
+        if not customer_identifier:
+            payload['case_customer_id'] = case.client_id
+        if 'case_name' in payload:
+            short_case_name = payload['case_name'].replace(f'#{case.case_id} - ', '')
+            payload['case_name'] = f'#{case.case_id} - {short_case_name}'
         # The load mutates `case`: snapshot what cases_update compares.
         previous_case_state = case.state_id
         previous_reviewer_id = case.reviewer_id
@@ -369,8 +415,8 @@ def iris_cases_update(args: dict) -> dict:
         # them must not wipe the tags and protagonists of the case
         case = cases_update(
             case, updated,
-            args.get('protagonists'),
-            args.get('tags'),
+            args.get('protagonists', payload.get('protagonists')),
+            args.get('tags', payload.get('case_tags')),
             previous_case_state=previous_case_state,
             previous_reviewer_id=previous_reviewer_id,
             previous_owner_id=previous_owner_id,

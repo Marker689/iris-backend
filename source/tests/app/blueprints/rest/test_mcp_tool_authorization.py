@@ -47,6 +47,13 @@ class TestsMCPToolAuthorization(TestCase):
         self.assertEqual(set(), overlap,
                          f'A tool cannot be both read and write: {overlap}')
 
+    def test_every_tool_runs_the_function_of_its_name(self):
+        """`@mcp_tool` registers whatever def follows it: a helper slipped
+        in between would be dispatched in place of the tool."""
+        mismatched = {name: spec.handler.__name__ for name, spec in TOOL_REGISTRY.items()
+                      if spec.handler.__name__ != name}
+        self.assertEqual({}, mismatched)
+
     def test_every_mvp_tool_is_classified(self):
         """Every MVP-enabled MCP tool must appear in either
         READ_ONLY_TOOLS or WRITE_TOOLS. An unclassified tool is refused

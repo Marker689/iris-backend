@@ -19852,12 +19852,12 @@ paths:
                       description: "Case description / summary. Update this to attach a closing note or\
                         \ post-mortem \u2014 there is no separate closing_note field."
                     case_soc_id:
-                      type: integer
-                      description: SOC ticket / ID.
+                      type: string
+                      description: SOC ticket / ID, as free text. Use "" when there is none.
                     case_customer_id:
                       type: integer
-                      description: Customer (client) id. Required on create; on update it must match the
-                        case's existing customer or an admin-configured allow-list.
+                      description: Customer (client) id. Required on create; omit on update to keep the
+                        current customer.
                     case_organisations:
                       type: array
                       items:
@@ -19874,7 +19874,8 @@ paths:
                       description: Case classification id.
                     reviewer_id:
                       type: integer
-                      description: User id of the case reviewer.
+                      description: User id of the case reviewer. The user must have full access to the
+                        case.
                     access_level:
                       type: integer
                       description: Numeric access-level enum.
@@ -20139,8 +20140,9 @@ paths:
   /api/v2/mcp/tools/iris_cases_update:
     post:
       operationId: mcp_tool_iris_cases_update
-      summary: "Update a case. Payload accepts partial fields \u2014 omit fields you do not want to change.\
-        \ To attach a closing / post-mortem note, update `case_description` or call `iris_case_notes_create`\
+      summary: "Update a case. No payload field is required: send ONLY the fields you want to change,\
+        \ every omitted field keeps its current value (e.g. `{\"case_description\": \"...\"}` alone is\
+        \ a valid call). To attach a closing / post-mortem note, update `case_description` or call `iris_case_notes_create`\
         \ \u2014 there is no dedicated closing_note field. For fields like `state_id`, `classification_id`,\
         \ or `severity_id`, call `iris_taxonomies_list` first to resolve names to numeric ids."
       tags:
@@ -20165,7 +20167,7 @@ paths:
               properties:
                 payload:
                   type: object
-                  description: Partial case fields to update.
+                  description: Only the case fields to change; omitted fields are left untouched.
                   properties:
                     case_name:
                       type: string
@@ -20177,12 +20179,12 @@ paths:
                       description: "Case description / summary. Update this to attach a closing note or\
                         \ post-mortem \u2014 there is no separate closing_note field."
                     case_soc_id:
-                      type: integer
-                      description: SOC ticket / ID.
+                      type: string
+                      description: SOC ticket / ID, as free text. Use "" when there is none.
                     case_customer_id:
                       type: integer
-                      description: Customer (client) id. Required on create; on update it must match the
-                        case's existing customer or an admin-configured allow-list.
+                      description: Customer (client) id. Required on create; omit on update to keep the
+                        current customer.
                     case_organisations:
                       type: array
                       items:
@@ -20199,7 +20201,8 @@ paths:
                       description: Case classification id.
                     reviewer_id:
                       type: integer
-                      description: User id of the case reviewer.
+                      description: User id of the case reviewer. The user must have full access to the
+                        case.
                     access_level:
                       type: integer
                       description: Numeric access-level enum.
@@ -20208,11 +20211,24 @@ paths:
                       items:
                         type: object
                       description: Structured protagonist entries.
+                    owner_id:
+                      type: integer
+                      description: User id of the case owner. The user must have full access to the case.
+                    state_id:
+                      type: integer
+                      description: Case state id (see `iris_taxonomies_list`).
+                    severity_id:
+                      type: integer
+                      description: Case severity id (see `iris_taxonomies_list`).
                   additionalProperties: false
                 protagonists:
                   type: array
+                  description: Replaces every protagonist of the case. Omit to keep them; [] removes them
+                    all.
                 tags:
                   type: string
+                  description: Comma-separated list replacing every tag of the case. Omit to keep them;
+                    "" removes them all.
                 case_identifier:
                   type: integer
                   description: Numeric ID of the IRIS case this call targets.
