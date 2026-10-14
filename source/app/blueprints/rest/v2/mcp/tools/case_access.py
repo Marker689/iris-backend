@@ -120,13 +120,14 @@ def iris_case_access_list(args: dict) -> dict:
         'can_manage_access': cases_access_guards_can_manage(case_identifier),
     }
     if result['can_manage_access']:
-        members = cases_access_group_member_identifiers()
+        groups = cases_access_list_groups(case)
+        members = cases_access_group_member_identifiers([group['group_id'] for group in groups])
         result['groups'] = [{
             'group_id': group['group_id'],
             'group_name': group['group_name'],
             'access_level': _level_name(group['access_level']),
             'member_ids': members.get(group['group_id'], []),
-        } for group in cases_access_list_groups(case)]
+        } for group in groups]
     return result
 
 

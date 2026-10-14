@@ -30,7 +30,7 @@ from app.business.access_controls import access_controls_user_has_customer_acces
 from app.datamgmt.manage.manage_groups_db import add_case_access_to_group
 from app.datamgmt.manage.manage_groups_db import get_group_with_members
 from app.datamgmt.manage.manage_groups_db import get_groups_access_to_case
-from app.datamgmt.manage.manage_groups_db import get_users_by_group_identifiers
+from app.datamgmt.manage.manage_groups_db import get_member_identifiers_of_groups
 from app.datamgmt.manage.manage_users_db import add_case_access_to_user
 from app.datamgmt.manage.manage_users_db import get_user
 from app.iris_engine.access_control.utils import ac_get_effective_permissions_of_user
@@ -87,9 +87,8 @@ def cases_access_list_groups(case: Cases) -> list[dict]:
     return get_groups_access_to_case(case.case_id)
 
 
-def cases_access_group_member_identifiers() -> dict[int, list[int]]:
-    return {group_identifier: [member['id'] for member in members]
-            for group_identifier, members in get_users_by_group_identifiers().items()}
+def cases_access_group_member_identifiers(group_identifiers: list[int]) -> dict[int, list[int]]:
+    return get_member_identifiers_of_groups(group_identifiers)
 
 
 def cases_access_set_user(case: Cases, user: User, access_level) -> CaseAccessLevel:

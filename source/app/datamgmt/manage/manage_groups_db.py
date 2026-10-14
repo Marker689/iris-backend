@@ -15,6 +15,7 @@
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 from sqlalchemy import and_
+from sqlalchemy import func
 
 from app.datamgmt.db_operations import db_delete
 from app.db import db
@@ -88,6 +89,22 @@ def get_users_by_group_identifiers():
                 'id': member.id
             })
     return result
+
+
+def get_member_identifiers_of_groups(group_identifiers) -> dict[int, list[int]]:
+    """The user ids of the members of each of the given groups, groups without members left out."""
+    if not group_identifiers:
+        return {}
+    rows = UserGroup.query.with_entities(
+        UserGroup.group_id,
+        func.array_agg(UserGroup.user_id).label('user_identifiers')
+    ).filter(
+        UserGroup.group_id.in_(group_identifiers)
+    ).group_by(
+        UserGroup.group_id
+    ).all()
+
+    return {row.group_id: sorted(row.user_identifiers) for row in rows}
 
 
 def get_group(group_id):

@@ -133,6 +133,10 @@ class TestsCaseAccessList(_ToolsTestCase):
                         'member_ids': [_TARGET_IDENTIFIER]}],
         }, result)
 
+    def test_members_should_be_fetched_for_the_listed_groups_only(self):
+        tools.iris_case_access_list({'case_identifier': _CASE_IDENTIFIER})
+        self.members.assert_called_once_with([_GROUP_IDENTIFIER])
+
     def test_group_without_members_should_list_none(self):
         self.members.return_value = {}
         result = tools.iris_case_access_list({'case_identifier': _CASE_IDENTIFIER})
