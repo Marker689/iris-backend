@@ -21,13 +21,23 @@ runs one loop iteration by:
 
 Zero in-memory pause primitives. Tab-close is a no-op; the conversation
 resumes tomorrow with the same pending rows.
+
+A run can be steered while it goes (see "Live-run control" in
+`app.business.case_chat`): a stop request ends it at the next check —
+mid-stream included — and user turns sent meanwhile are queued, then
+handed to the model at the next turn boundary instead of waiting for
+the run to end.
 """
 from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Iterable, Iterator
+
+import gevent
+import gevent.queue
 
 from app.blueprints.access_controls import (
     ac_fast_check_current_user_has_case_access,
@@ -69,8 +79,10 @@ from app.models.authorization import CaseAccessLevel, WarRoomAccessLevel
 from app.models.case_chat import (
     ROLE_ASSISTANT,
     ROLE_TOOL,
+    ROLE_USER,
     CaseChatConversation,
 )
+from app.models.errors import BusinessProcessingError, ObjectNotFoundError
 
 
 logger = logging.getLogger('iris.chatbot.loop')
@@ -96,6 +108,7 @@ def run_one_iteration(
     *,
     conversation: CaseChatConversation,
     emit: Emitter,
+    run_token: str | None = None,
 ) -> None:
     """Run one LLM turn. May persist several messages (assistant text,
     zero-or-more auto-executed tool_results). Stops the moment a write
@@ -105,7 +118,122 @@ def run_one_iteration(
     The loop is a straight-line generator consumer under gevent —
     `for event in provider.stream_completion(...)` yields cooperatively
     between tokens, so a long stream never blocks the worker.
+
+    `run_token` is the run the caller claimed for the conversation;
+    without one, the run is claimed here. Either way it is released on
+    the way out.
     """
+    if run_token is None:
+        run_token = case_chat_biz.start_run(conversation.id)
+    try:
+        _run(conversation=conversation, emit=emit,
+             run=_RunControl(conversation.id, run_token))
+    finally:
+        try:
+            case_chat_biz.release_run(conversation.id, run_token)
+        except Exception:
+            logger.exception('chatbot: failed to release run of conversation %s',
+                             conversation.id)
+
+
+def absorb_user_texts(
+    *,
+    conversation: CaseChatConversation,
+    texts: list[str],
+    emit: Emitter,
+) -> None:
+    """Hand user turns to the model as one user message.
+
+    A user writing while writes wait for approval has moved on: those
+    writes are denied first, so every tool_use keeps its tool_result and
+    the model reads the new turn knowing nothing was changed.
+    """
+    user = iris_current_user._get_current_object()  # type: ignore[attr-defined]
+    for pending_id in case_chat_biz.list_pending_tool_call_ids(conversation.id):
+        try:
+            row, transitioned = case_chat_biz.resolve_pending_tool_call(
+                pending_id=pending_id, user=user, approve=False,
+            )
+        except (ObjectNotFoundError, BusinessProcessingError):
+            continue
+        if not transitioned:
+            continue
+        case_chat_biz.append_message(
+            conversation=conversation,
+            role=ROLE_TOOL,
+            content=[{
+                'type': 'tool_result',
+                'tool_use_id': row.tool_use_id,
+                'content': _SUPERSEDED_BY_USER,
+            }],
+            tool_use_id=row.tool_use_id,
+        )
+        emit(ChatEvent('assistant_tool_result', {
+            'tool_use_id': row.tool_use_id,
+            'tool_name': row.tool_name,
+            'result': {'denied': True, 'message': _SUPERSEDED_BY_USER},
+        }))
+    message = case_chat_biz.append_message(
+        conversation=conversation,
+        role=ROLE_USER,
+        content=[{'type': 'text', 'text': '\n\n'.join(texts)}],
+    )
+    emit(ChatEvent('user_message_persisted', {'message_id': message.id}))
+
+
+_SUPERSEDED_BY_USER = ('Not run: the user did not approve this action and '
+                       'sent a new message instead.')
+_NOT_RUN_STOPPED = 'Not run: the user stopped the assistant before this tool ran.'
+
+# How often a run looks for a stop request or queued user turns, at most.
+_POLL_INTERVAL_SECONDS = 1.0
+
+
+class _RunControl:
+    """The loop's handle on its live run (see `app.business.case_chat`).
+
+    `check` doubles as the heartbeat, rate-limited so the token stream
+    doesn't turn into a query stream. Once it reports a stop, it sticks
+    until `resume`.
+    """
+
+    def __init__(self, conversation_id: int, run_token: str):
+        self.conversation_id = conversation_id
+        self.run_token = run_token
+        self.interrupted = False
+        self._last_check: float | None = None
+
+    def check(self, force: bool = False) -> bool:
+        """True when the run should stop where it is."""
+        if self.interrupted:
+            return True
+        now = time.monotonic()
+        if (not force and self._last_check is not None
+                and now - self._last_check < _POLL_INTERVAL_SECONDS):
+            return False
+        self._last_check = now
+        self.interrupted = case_chat_biz.beat_run(
+            self.conversation_id, self.run_token)
+        return self.interrupted
+
+    def take_queued_texts(self) -> list[str]:
+        return case_chat_biz.take_queued_texts(
+            self.conversation_id, self.run_token)
+
+    def finish(self) -> list[str]:
+        """End the run; returns user turns queued meanwhile, which keep it going."""
+        texts = case_chat_biz.finish_run(self.conversation_id, self.run_token)
+        if texts:
+            self.interrupted = False
+        return texts
+
+
+def _run(
+    *,
+    conversation: CaseChatConversation,
+    emit: Emitter,
+    run: _RunControl,
+) -> None:
     # Re-resolve the policy on every send() so a war-room case attach
     # that raised the ceiling since the conversation was created is
     # caught HERE — the loop refuses to run against a weaker provider
@@ -183,51 +311,102 @@ def run_one_iteration(
         emit(ChatEvent('error', {'message': str(exc)}))
         return
 
-    # Iterate until we either hit stop_reason=='end_turn' (done) or a
-    # write tool_use pauses us (return). Auto-executed reads loop back
-    # here without a per-iteration user event.
+    # Iterate until we either hit stop_reason=='end_turn' (done), a
+    # write tool_use pauses us, or the user stops us. Auto-executed reads
+    # loop back here without a per-iteration user event. User turns
+    # queued meanwhile join at the next turn boundary — and, at the end
+    # of the run, keep it going rather than wait for another send.
     max_iterations = max(1, cfg.max_tool_calls_per_turn)
-    for _turn in range(max_iterations):
-        history = _load_history(conversation, cfg)
-        read_only_scope = _scope_is_read_only(conversation)
-        tools = _prepare_tools(conversation, read_only_scope=read_only_scope)
-        system = system_prompt(
-            case_id=conversation.case_id,
-            war_room_id=conversation.war_room_id,
-            read_only_scope=read_only_scope,
-        )
-
-        request_bytes = _estimate_request_bytes(system, history, tools)
-        # Redaction toggles are checked inside `_load_history`, so the
-        # `redacted` bit here reflects what was actually scrubbed.
-        redacted = _history_was_redacted(history, cfg)
-
-        audit_row = case_chat_biz.record_egress(
-            conversation=conversation,
-            user=user,
-            provider=provider.name,
-            model=cfg.model,
-            request_bytes=request_bytes,
-            redacted=redacted,
-            request_snapshot=_build_request_snapshot(system, history, tools),
-        )
-
-        turn_result = _consume_stream(
-            provider=provider,
-            model=cfg.model,
-            system=system,
-            history=history,
-            tools=tools,
-            conversation=conversation,
-            audit_row=audit_row,
-            emit=emit,
-        )
-
-        if turn_result.terminated:
+    turns = 0
+    while True:
+        if run.check(force=True):
+            outcome = _TurnResult(interrupted=True)
+        else:
+            queued = run.take_queued_texts()
+            if queued:
+                absorb_user_texts(conversation=conversation, texts=queued, emit=emit)
+                turns = 0
+            if turns >= max_iterations:
+                _emit_end(conversation, emit, stop_reason='max_tool_calls')
+                outcome = _TurnResult(terminated=True)
+            else:
+                turns += 1
+                outcome = _run_turn(conversation=conversation, cfg=cfg,
+                                    provider=provider, user=user, run=run, emit=emit)
+        if outcome.errored:
             return
-        if turn_result.paused_on_write:
+        if not (outcome.terminated or outcome.paused_on_write or outcome.interrupted):
+            # All-reads turn → loop back and let the model see the results.
+            continue
+        if outcome.interrupted:
+            _emit_end(conversation, emit, stop_reason='interrupted')
+        queued = run.finish()
+        if not queued:
             return
-        # All-reads turn → loop back and let the model see the results.
+        absorb_user_texts(conversation=conversation, texts=queued, emit=emit)
+        turns = 0
+
+
+def _emit_end(
+    conversation: CaseChatConversation, emit: Emitter, *,
+    stop_reason: str, message_id: int | None = None,
+) -> None:
+    # Attach live usage so the panel's footer refreshes on every turn
+    # without a REST round-trip. `get_conversation_usage` is one SUM
+    # query over egress rows scoped to this conversation — cheap.
+    emit(ChatEvent('assistant_end', {
+        'message_id': message_id,
+        'stop_reason': stop_reason,
+        'usage': case_chat_biz.get_conversation_usage(
+            conversation.id, user_id=conversation.user_id),
+    }))
+
+
+def _run_turn(
+    *,
+    conversation: CaseChatConversation,
+    cfg: ChatbotConfig,
+    provider,
+    user,
+    run: _RunControl,
+    emit: Emitter,
+) -> _TurnResult:
+    """One provider call, and the tool calls it asks for."""
+    history = _load_history(conversation, cfg)
+    read_only_scope = _scope_is_read_only(conversation)
+    tools = _prepare_tools(conversation, read_only_scope=read_only_scope)
+    system = system_prompt(
+        case_id=conversation.case_id,
+        war_room_id=conversation.war_room_id,
+        read_only_scope=read_only_scope,
+    )
+
+    request_bytes = _estimate_request_bytes(system, history, tools)
+    # Redaction toggles are checked inside `_load_history`, so the
+    # `redacted` bit here reflects what was actually scrubbed.
+    redacted = _history_was_redacted(history, cfg)
+
+    audit_row = case_chat_biz.record_egress(
+        conversation=conversation,
+        user=user,
+        provider=provider.name,
+        model=cfg.model,
+        request_bytes=request_bytes,
+        redacted=redacted,
+        request_snapshot=_build_request_snapshot(system, history, tools),
+    )
+
+    return _consume_stream(
+        provider=provider,
+        model=cfg.model,
+        system=system,
+        history=history,
+        tools=tools,
+        conversation=conversation,
+        audit_row=audit_row,
+        run=run,
+        emit=emit,
+    )
 
 
 # ---- Internals -----------------------------------------------------
@@ -251,10 +430,29 @@ def _tool_result_content(result: Any) -> Any:
         return str(result)
 
 
+def _append_not_run(
+    conversation: CaseChatConversation, tool_use: dict[str, Any],
+) -> None:
+    """Answer a tool_use the user stopped before it ran — every tool_use
+    needs its tool_result."""
+    case_chat_biz.append_message(
+        conversation=conversation,
+        role=ROLE_TOOL,
+        content=[{
+            'type': 'tool_result',
+            'tool_use_id': tool_use['id'],
+            'content': _NOT_RUN_STOPPED,
+        }],
+        tool_use_id=tool_use['id'],
+    )
+
+
 @dataclass
 class _TurnResult:
-    terminated: bool = False       # end_turn / stop / error — done for now
+    terminated: bool = False       # end_turn / stop — done for now
     paused_on_write: bool = False  # write tool_use written to DB; wait for approve/deny
+    interrupted: bool = False      # the user stopped the run
+    errored: bool = False          # error emitted; the run ends as is
 
 
 def _load_history(
@@ -480,19 +678,45 @@ def _consume_stream(
     tools: list[ToolSpec],
     conversation: CaseChatConversation,
     audit_row,
+    run: _RunControl,
     emit: Emitter,
 ) -> _TurnResult:
     """Iterate one provider stream. On write tool_use, persist pending
     row(s) and return early with paused_on_write=True. On end_turn,
-    persist the final assistant message and return terminated=True."""
+    persist the final assistant message and return terminated=True.
+    On a stop request, keep the text streamed so far and drop the
+    tool calls the model hadn't finished asking for."""
 
     text_buffer: list[str] = []
     tool_uses: list[dict[str, Any]] = []
-    response_bytes = 0
 
-    for event in provider.stream_completion(
-        model=model, system=system, messages=history, tools=tools,
-    ):
+    events = _interruptible_events(
+        provider.stream_completion(
+            model=model, system=system, messages=history, tools=tools,
+        ),
+        run,
+    )
+    try:
+        return _drain_stream(
+            events=events, text_buffer=text_buffer, tool_uses=tool_uses,
+            conversation=conversation, audit_row=audit_row, run=run, emit=emit,
+        )
+    finally:
+        events.close()
+
+
+def _drain_stream(
+    *,
+    events: Iterator[LLMEvent],
+    text_buffer: list[str],
+    tool_uses: list[dict[str, Any]],
+    conversation: CaseChatConversation,
+    audit_row,
+    run: _RunControl,
+    emit: Emitter,
+) -> _TurnResult:
+    response_bytes = 0
+    for event in events:
         response_bytes += _event_bytes(event)
         if isinstance(event, TextDelta):
             text_buffer.append(event.text)
@@ -520,6 +744,7 @@ def _consume_stream(
                 tool_uses=tool_uses,
                 stop_reason=event.stop_reason,
                 conversation=conversation,
+                run=run,
                 emit=emit,
             )
         if isinstance(event, Error):
@@ -529,26 +754,80 @@ def _consume_stream(
                 prompt_tokens=None, completion_tokens=None,
             )
             emit(ChatEvent('error', {'message': event.message}))
-            return _TurnResult(terminated=True)
+            return _TurnResult(errored=True)
         # ToolUseStart / ToolUseDelta — no-ops in the loop; the SPA
         # doesn't need them for reads because the final result renders
         # atomically once dispatched, and for writes the pending-row
         # notification carries the args anyway. Could surface later.
 
-    # Stream ended without a MessageEnd — treat as error but persist
-    # whatever text we captured so the analyst can see partial output.
     case_chat_biz.finalise_egress(
         audit_row=audit_row,
         response_bytes=response_bytes,
         prompt_tokens=None, completion_tokens=None,
     )
+    if run.interrupted:
+        # Tool calls that were streamed but never ran would each need a
+        # tool_result; the model loses nothing by not seeing them.
+        text = ''.join(text_buffer)
+        if text.strip():
+            case_chat_biz.append_message(
+                conversation=conversation,
+                role=ROLE_ASSISTANT,
+                content=[{'type': 'text', 'text': text}],
+            )
+        return _TurnResult(interrupted=True)
+
+    # Stream ended without a MessageEnd — treat as error but persist
+    # whatever text we captured so the analyst can see partial output.
     return _finalise_turn(
         text=''.join(text_buffer),
         tool_uses=tool_uses,
         stop_reason='end_turn',
         conversation=conversation,
+        run=run,
         emit=emit,
     )
+
+
+_STREAM_DONE = object()
+
+
+def _interruptible_events(
+    events: Iterable[LLMEvent], run: _RunControl,
+) -> Iterator[LLMEvent]:
+    """Relay a provider stream, ending it early on a stop request.
+
+    The stream is drained in a side greenlet so the run keeps checking
+    for a stop while the provider is silent — a model thinking for a
+    minute before its first token can be stopped like one mid-sentence.
+    Ending early kills that greenlet, which closes the provider's
+    response. Provider exceptions are re-raised here.
+    """
+    relay: gevent.queue.Queue = gevent.queue.Queue()
+
+    def _pump() -> None:
+        try:
+            for event in events:
+                relay.put((event, None))
+        except Exception as exc:
+            relay.put((_STREAM_DONE, exc))
+        else:
+            relay.put((_STREAM_DONE, None))
+
+    pump = gevent.spawn(_pump)
+    try:
+        while not run.check():
+            try:
+                event, exc = relay.get(timeout=_POLL_INTERVAL_SECONDS)
+            except gevent.queue.Empty:
+                continue
+            if event is _STREAM_DONE:
+                if exc is not None:
+                    raise exc
+                return
+            yield event
+    finally:
+        pump.kill(block=False)
 
 
 def _finalise_turn(
@@ -557,9 +836,14 @@ def _finalise_turn(
     tool_uses: list[dict[str, Any]],
     stop_reason: str,
     conversation: CaseChatConversation,
+    run: _RunControl,
     emit: Emitter,
 ) -> _TurnResult:
-    """Persist the assistant message + process any tool_use blocks."""
+    """Persist the assistant message + process any tool_use blocks.
+
+    A stop request is honoured between tool calls: the ones not run by
+    then get a tool_result saying so, and nothing new waits for approval.
+    """
     content: list[dict[str, Any]] = []
     if text:
         content.append({'type': 'text', 'text': text})
@@ -582,15 +866,8 @@ def _finalise_turn(
     )
 
     if not tool_uses:
-        # Attach live usage so the panel's footer refreshes on every turn
-        # without a REST round-trip. `get_conversation_usage` is one SUM
-        # query over egress rows scoped to this conversation — cheap.
-        emit(ChatEvent('assistant_end', {
-            'message_id': assistant_msg.id,
-            'stop_reason': stop_reason,
-            'usage': case_chat_biz.get_conversation_usage(
-                conversation.id, user_id=conversation.user_id),
-        }))
+        _emit_end(conversation, emit, stop_reason=stop_reason,
+                  message_id=assistant_msg.id)
         return _TurnResult(terminated=True)
 
     # Classify each tool_use.
@@ -611,7 +888,7 @@ def _finalise_turn(
                     'gap that must be resolved before the tool can run.'
                 ),
             }))
-            return _TurnResult(terminated=True)
+            return _TurnResult(errored=True)
 
     # Auto-execute reads if allowed. Loads config through the
     # conversation's stamped policy so per-customer overrides for
@@ -632,6 +909,9 @@ def _finalise_turn(
         if not cfg.auto_execute_read_tools:
             # Admin opted for confirm-all — treat reads as writes.
             writes_to_pend.append(tu)
+            continue
+        if run.check(force=True):
+            _append_not_run(conversation, tu)
             continue
         result = _dispatch_and_track(
             conversation=conversation,
@@ -659,8 +939,16 @@ def _finalise_turn(
     # reads use (scope override, emit start/result, audit-log). The
     # `pending` flag on the event stays False so the SPA renders the
     # write as a live tool card, not an Approve card.
+    if run.check(force=True):
+        for tu in writes_to_pend:
+            _append_not_run(conversation, tu)
+        return _TurnResult(interrupted=True)
+
     if writes_to_pend and cfg.auto_approve_write_tools:
         for tu in writes_to_pend:
+            if run.check(force=True):
+                _append_not_run(conversation, tu)
+                continue
             result = _dispatch_and_track(
                 conversation=conversation,
                 tool_use=tu,
@@ -678,7 +966,7 @@ def _finalise_turn(
             )
         # Fall through — treat this like an all-reads turn so the caller
         # re-enters the loop with the fresh tool_result messages.
-        return _TurnResult()
+        return _TurnResult(interrupted=run.interrupted)
 
     # Pending writes: persist rows, emit assistant_tool_start events.
     # Apply the scope override at persist time so a tab-close-and-
@@ -854,7 +1142,7 @@ def _event_bytes(event: LLMEvent) -> int:
 
 # Re-export so approve_tool.py can call the loop from its handler
 # without a circular import through the namespace module.
-__all__ = ['run_one_iteration', 'ChatEvent', 'Emitter']
+__all__ = ['run_one_iteration', 'absorb_user_texts', 'ChatEvent', 'Emitter']
 
 # Silence "imported but unused" — kept in case an unclassified tool
 # escapes classification at runtime and we need to re-raise.

@@ -22490,6 +22490,8 @@ components:
           format: int64
         resolved_restriction_level:
           type: integer
+        queued_user_texts:
+          type: object
       description: Serialize a `CaseChatConversation` row.
     CaseChatEgressAudit:
       type: object

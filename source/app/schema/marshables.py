@@ -1773,11 +1773,15 @@ class CaseChatConversationSchema(ma.SQLAlchemyAutoSchema):
         'resolved_policy_id', dump_only=True)
     resolved_restriction_level: int = auto_field(
         'resolved_restriction_level', dump_only=True)
+    # User turns sent while the assistant was still working, not yet
+    # handed to it — the SPA shows them as queued after a reload.
+    queued_user_texts = auto_field('queued_user_texts', dump_only=True)
 
     class Meta:
         model = CaseChatConversation
         load_instance = True
         unknown = EXCLUDE
+        exclude = ['run_token', 'run_heartbeat_at', 'interrupt_requested']
 
 
 class CaseChatMessageSchema(ma.SQLAlchemyAutoSchema):

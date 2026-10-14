@@ -11,6 +11,7 @@ pulling the API layer back into itself.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -173,6 +174,159 @@ def append_message(
     return msg
 
 
+# ---- Live-run control ------------------------------------------------
+#
+# One loop run drives a conversation at a time. The run holds a token on
+# the conversation row and beats on it; meanwhile a user turn is queued
+# rather than started, and a stop request raises a flag the run polls.
+# Everything goes through the row (locked where it matters) because the
+# run and the socket steering it may live in different workers.
+
+# A run that hasn't beaten for this long is presumed dead — its worker
+# crashed or was recycled mid-turn — and stops blocking new turns. The
+# loop beats about every second, even while the provider is silent.
+RUN_STALE_AFTER = timedelta(seconds=90)
+
+
+def _now() -> datetime:
+    # Naive UTC, like the column, so the staleness arithmetic can't
+    # trip over the session timezone.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _lock_conversation(conversation_id: int) -> CaseChatConversation:
+    conv = (
+        CaseChatConversation.query
+        .filter_by(id=conversation_id)
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
+    if conv is None:
+        raise ObjectNotFoundError()
+    return conv
+
+
+def _run_is_live(conv: CaseChatConversation) -> bool:
+    return (conv.run_token is not None
+            and conv.run_heartbeat_at is not None
+            and _now() - conv.run_heartbeat_at < RUN_STALE_AFTER)
+
+
+def _take_queue(conv: CaseChatConversation) -> list[str]:
+    texts = list(conv.queued_user_texts or [])
+    conv.queued_user_texts = []
+    return texts
+
+
+def claim_run_or_queue(
+    conversation_id: int, text: str,
+) -> tuple[Optional[str], list[str]]:
+    """Start a run for a new user turn, or queue the turn behind the live one.
+
+    Returns `(run_token, texts)`. A `None` token means a run is live and
+    `text` was queued for it to pick up. Otherwise the caller owns the
+    new run and must hand `texts` — anything still queued, then `text` —
+    to the model as the user turn.
+    """
+    conv = _lock_conversation(conversation_id)
+    if _run_is_live(conv):
+        conv.queued_user_texts = [*(conv.queued_user_texts or []), text]
+        db.session.commit()
+        return None, []
+    texts = [*_take_queue(conv), text]
+    token = _start_run(conv)
+    return token, texts
+
+
+def start_run(conversation_id: int) -> str:
+    """Claim the conversation for a run unconditionally (approve / deny
+    resume a paused run, there is nothing to queue behind)."""
+    return _start_run(_lock_conversation(conversation_id))
+
+
+def _start_run(conv: CaseChatConversation) -> str:
+    token = str(uuid.uuid4())
+    conv.run_token = token
+    conv.run_heartbeat_at = _now()
+    conv.interrupt_requested = False
+    db.session.commit()
+    return token
+
+
+def beat_run(conversation_id: int, run_token: str) -> bool:
+    """Heartbeat the run; True when it should stop — a stop was requested,
+    or another run took the conversation over."""
+    owned = (
+        CaseChatConversation.query
+        .filter_by(id=conversation_id, run_token=run_token)
+        .update({'run_heartbeat_at': _now()}, synchronize_session=False)
+    )
+    db.session.commit()
+    if not owned:
+        return True
+    return bool(
+        db.session.query(CaseChatConversation.interrupt_requested)
+        .filter_by(id=conversation_id)
+        .scalar()
+    )
+
+
+def take_queued_texts(conversation_id: int, run_token: str) -> list[str]:
+    """Hand the run the user turns queued since it last looked."""
+    conv = _lock_conversation(conversation_id)
+    texts = _take_queue(conv) if conv.run_token == run_token else []
+    db.session.commit()
+    return texts
+
+
+def finish_run(conversation_id: int, run_token: str) -> list[str]:
+    """End the run — unless user turns were queued meanwhile.
+
+    Returns those turns; the run then carries on with them, its stop
+    request (if any) spent. Atomic with `claim_run_or_queue`
+    under the row lock, so a turn can't be queued behind a run that has
+    already decided to end.
+    """
+    conv = _lock_conversation(conversation_id)
+    if conv.run_token != run_token:
+        db.session.commit()
+        return []
+    texts = _take_queue(conv)
+    conv.interrupt_requested = False
+    if texts:
+        conv.run_heartbeat_at = _now()
+    else:
+        conv.run_token = None
+    db.session.commit()
+    return texts
+
+
+def release_run(conversation_id: int, run_token: str) -> None:
+    """End the run without looking at the queue (error paths). Turns left
+    queued go out with the next user turn. No-op once the run is over."""
+    # The run may be ending on a failed transaction; everything it wrote
+    # was committed as it went, so there is nothing to lose here.
+    db.session.rollback()
+    (
+        CaseChatConversation.query
+        .filter_by(id=conversation_id, run_token=run_token)
+        .update({'run_token': None, 'interrupt_requested': False},
+                synchronize_session=False)
+    )
+    db.session.commit()
+
+
+def request_interrupt(conversation_id: int) -> bool:
+    """Ask the live run to stop. False when no run is live."""
+    conv = _lock_conversation(conversation_id)
+    live = _run_is_live(conv)
+    if live:
+        conv.interrupt_requested = True
+    db.session.commit()
+    return live
+
+
 # ---- Pending tool calls ---------------------------------------------
 
 def create_pending_tool_call(
@@ -232,6 +386,16 @@ def resolve_pending_tool_call(
     row.resolved_by_user_id = user.id
     db.session.commit()
     return row, True
+
+
+def list_pending_tool_call_ids(conversation_id: int) -> list[int]:
+    return [
+        row.id for row in
+        CaseChatPendingToolCall.query
+        .filter_by(conversation_id=conversation_id, status=STATUS_PENDING)
+        .order_by(CaseChatPendingToolCall.created_at, CaseChatPendingToolCall.id)
+        .all()
+    ]
 
 
 def count_pending_tool_calls(

@@ -21,6 +21,7 @@ from app.blueprints.iris_user import iris_current_user
 from app.blueprints.rest.v2.case_chat.loop import (
     ChatEvent,
     Emitter,
+    absorb_user_texts,
     run_one_iteration,
 )
 from app.blueprints.rest.v2.mcp import classification as tool_classification
@@ -61,7 +62,17 @@ def approve_pending_tool_call(
         return
 
     conv = case_chat_biz.get_conversation(row.conversation_id)
+    run_token = case_chat_biz.start_run(conv.id)
+    try:
+        _dispatch_approved(row=row, conv=conv, emit=emit)
+        _resume_run(conv=conv, assistant_message_id=row.assistant_message_id,
+                    run_token=run_token, emit=emit)
+    finally:
+        case_chat_biz.release_run(conv.id, run_token)
 
+
+def _dispatch_approved(*, row, conv, emit: Emitter) -> None:
+    """Run the approved write and record its tool_result."""
     # Scope override — the LLM-supplied args may have been redirected.
     args: dict[str, Any] = dict(row.arguments or {})
     if conv.case_id is not None:
@@ -141,16 +152,6 @@ def approve_pending_tool_call(
         tool_use_id=row.tool_use_id,
     )
 
-    # If any other pending rows on the same assistant message are
-    # still pending, don't advance the loop — wait for them.
-    remaining = case_chat_biz.count_pending_tool_calls(
-        conv.id, row.assistant_message_id,
-    )
-    if remaining > 0:
-        return
-
-    run_one_iteration(conversation=conv, emit=emit)
-
 
 def deny_pending_tool_call(
     *,
@@ -177,28 +178,51 @@ def deny_pending_tool_call(
         return
 
     conv = case_chat_biz.get_conversation(row.conversation_id)
-
-    emit(ChatEvent('assistant_tool_result', {
-        'tool_use_id': row.tool_use_id,
-        'tool_name': row.tool_name,
-        'result': {'denied': True, 'message': 'User denied this action.'},
-    }))
-
-    case_chat_biz.append_message(
-        conversation=conv,
-        role=ROLE_TOOL,
-        content=[{
-            'type': 'tool_result',
+    run_token = case_chat_biz.start_run(conv.id)
+    try:
+        emit(ChatEvent('assistant_tool_result', {
             'tool_use_id': row.tool_use_id,
-            'content': 'User denied this action.',
-        }],
-        tool_use_id=row.tool_use_id,
-    )
+            'tool_name': row.tool_name,
+            'result': {'denied': True, 'message': 'User denied this action.'},
+        }))
 
+        case_chat_biz.append_message(
+            conversation=conv,
+            role=ROLE_TOOL,
+            content=[{
+                'type': 'tool_result',
+                'tool_use_id': row.tool_use_id,
+                'content': 'User denied this action.',
+            }],
+            tool_use_id=row.tool_use_id,
+        )
+
+        _resume_run(conv=conv, assistant_message_id=row.assistant_message_id,
+                    run_token=run_token, emit=emit)
+    finally:
+        case_chat_biz.release_run(conv.id, run_token)
+
+
+def _resume_run(
+    *,
+    conv,
+    assistant_message_id: int,
+    run_token: str,
+    emit: Emitter,
+) -> None:
+    """Hand the turn back to the model once all its writes are resolved.
+
+    Until then the run normally ends here, waiting on the other cards —
+    unless the user sent something meanwhile: they have moved on, so
+    the remaining writes are denied and the model gets the new turn.
+    """
     remaining = case_chat_biz.count_pending_tool_calls(
-        conv.id, row.assistant_message_id,
+        conv.id, assistant_message_id,
     )
     if remaining > 0:
-        return
+        queued = case_chat_biz.finish_run(conv.id, run_token)
+        if not queued:
+            return
+        absorb_user_texts(conversation=conv, texts=queued, emit=emit)
 
-    run_one_iteration(conversation=conv, emit=emit)
+    run_one_iteration(conversation=conv, emit=emit, run_token=run_token)

@@ -112,6 +112,20 @@ class CaseChatConversation(db.Model):
     resolved_restriction_level = Column(Integer, nullable=False, default=0,
                                         server_default=text('0'))
 
+    # Live-run control, kept here rather than in memory because the run
+    # and the socket asking to steer it may sit in different workers.
+    # `run_token` names the loop currently driving the conversation and
+    # `run_heartbeat_at` lets the run of a crashed worker go stale. While
+    # a run is live, a user turn is parked in `queued_user_texts` until
+    # the loop reaches a point where it can take it, and
+    # `interrupt_requested` asks the loop to stop where it is.
+    run_token = Column(String(36), nullable=True)
+    run_heartbeat_at = Column(DateTime, nullable=True)
+    interrupt_requested = Column(Boolean, nullable=False, default=False,
+                                 server_default=text('false'))
+    queued_user_texts = Column(JSONB, nullable=False, default=list,
+                               server_default=text("'[]'::jsonb"))
+
     user = relationship('User')
     # No ORM `case` relationship — same reason `UserActivity.case`
     # was left off: `Cases` may not be mapper-ready at import time in

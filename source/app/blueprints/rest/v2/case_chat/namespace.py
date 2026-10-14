@@ -33,11 +33,12 @@ from app.blueprints.rest.v2.case_chat.approve_tool import (
     approve_pending_tool_call,
     deny_pending_tool_call,
 )
-from app.blueprints.rest.v2.case_chat.loop import ChatEvent, run_one_iteration
+from app.blueprints.rest.v2.case_chat.loop import ChatEvent
+from app.blueprints.rest.v2.case_chat.loop import absorb_user_texts
+from app.blueprints.rest.v2.case_chat.loop import run_one_iteration
 from app.business import case_chat as case_chat_biz
 from app.business.auth import validate_auth_token
 from app.models.authorization import CaseAccessLevel, WarRoomAccessLevel
-from app.models.case_chat import ROLE_USER
 from app.models.errors import ObjectNotFoundError
 
 
@@ -238,20 +239,50 @@ class ChatNamespace(Namespace):
                 return
 
         text = user_text.strip()
-        case_chat_biz.append_message(
-            conversation=conv,
-            role=ROLE_USER,
-            content=[{'type': 'text', 'text': text}],
-        )
-        # First user turn seeds the conversation title.
-        if not conv.title:
-            from app.db import db
-            conv.title = text[:80]
-            db.session.commit()
+        # While Yuki is running, the turn waits in the queue for the run
+        # to pick it up at its next step.
+        run_token, texts = case_chat_biz.claim_run_or_queue(conv.id, text)
+        if run_token is None:
+            _emit_for_conv(conv.id)(ChatEvent('user_message_queued', {
+                'queued_user_texts': list(conv.queued_user_texts or []),
+            }))
+            return
 
-        emit('user_message_persisted', {'conversation_id': conv.id})
+        try:
+            # First user turn seeds the conversation title.
+            if not conv.title:
+                from app.db import db
+                conv.title = text[:80]
+                db.session.commit()
 
-        run_one_iteration(conversation=conv, emit=_emit_for_conv(conv.id))
+            emitter = _emit_for_conv(conv.id)
+            absorb_user_texts(conversation=conv, texts=texts, emit=emitter)
+            run_one_iteration(conversation=conv, emit=emitter, run_token=run_token)
+        finally:
+            case_chat_biz.release_run(conv.id, run_token)
+
+    def on_stop(self, data: Any) -> None:
+        """Client → server: stop the running turn where it is."""
+        if _install_auth_context() is None:
+            emit('error', {'message': 'Unauthenticated.'})
+            return
+        conversation_id = _int(data, 'conversation_id')
+        if conversation_id is None:
+            emit('error', {'message': 'conversation_id is required'})
+            return
+        try:
+            conv = case_chat_biz.get_conversation(conversation_id)
+        except ObjectNotFoundError:
+            emit('error', {'message': 'Conversation not found.'})
+            return
+        if conv.user_id != _current_user_id():
+            emit('error', {'message': 'This conversation belongs to another user.'})
+            return
+        if not case_chat_biz.request_interrupt(conv.id):
+            # Nothing running (it ended meanwhile, or its worker died):
+            # release the panel all the same.
+            emit('assistant_end', {'conversation_id': conv.id,
+                                   'stop_reason': 'interrupted'})
 
     # --- resolve pending tool calls --------------------------------
 

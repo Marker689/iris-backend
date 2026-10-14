@@ -522,6 +522,7 @@ on_leave_conversation
 on_send
 on_approve_tool
 on_deny_tool
+on_stop
 ######### Case-chat: model columns / schema fields read reflectively by SQLAlchemy + marshmallow
 STATUS_EXPIRED  # unused variable (source/app/models/case_chat.py:53) — future janitor sets this on stale pending_tool_call rows
 resolved_at
