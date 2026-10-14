@@ -119,6 +119,8 @@ class TestsCaseAccessList(_ToolsTestCase):
         self.list_groups = patch(f'{_TOOLS}.cases_access_list_groups', return_value=[
             {'group_id': _GROUP_IDENTIFIER, 'group_name': 'SOC', 'group_description': 'd', 'access_level': None},
         ]).start()
+        self.members = patch(f'{_TOOLS}.cases_access_group_member_identifiers',
+                             return_value={_GROUP_IDENTIFIER: [_TARGET_IDENTIFIER]}).start()
 
     def test_manager_should_get_users_and_groups_with_level_names(self):
         result = tools.iris_case_access_list({'case_identifier': _CASE_IDENTIFIER})
@@ -127,8 +129,14 @@ class TestsCaseAccessList(_ToolsTestCase):
             'users': [{'user_id': _TARGET_IDENTIFIER, 'user_name': 'Target', 'user_login': 'target',
                        'user_active': True, 'access_level': 'read_only'}],
             'can_manage_access': True,
-            'groups': [{'group_id': _GROUP_IDENTIFIER, 'group_name': 'SOC', 'access_level': None}],
+            'groups': [{'group_id': _GROUP_IDENTIFIER, 'group_name': 'SOC', 'access_level': None,
+                        'member_ids': [_TARGET_IDENTIFIER]}],
         }, result)
+
+    def test_group_without_members_should_list_none(self):
+        self.members.return_value = {}
+        result = tools.iris_case_access_list({'case_identifier': _CASE_IDENTIFIER})
+        self.assertEqual([], result['groups'][0]['member_ids'])
 
     def test_reader_should_get_the_users_only(self):
         self.case_level = _READ
@@ -136,6 +144,7 @@ class TestsCaseAccessList(_ToolsTestCase):
         self.assertFalse(result['can_manage_access'])
         self.assertNotIn('groups', result)
         self.list_groups.assert_not_called()
+        self.members.assert_not_called()
 
     def test_unknown_case_should_be_refused(self):
         self.get_case.side_effect = ObjectNotFoundError()

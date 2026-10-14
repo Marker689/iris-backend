@@ -41,6 +41,7 @@ from app.blueprints.rest.v2.mcp.registry import mcp_tool
 from app.business.cases import cases_get_by_identifier
 from app.business.cases_access import cases_access_get_group
 from app.business.cases_access import cases_access_get_user
+from app.business.cases_access import cases_access_group_member_identifiers
 from app.business.cases_access import cases_access_list_groups
 from app.business.cases_access import cases_access_set_group
 from app.business.cases_access import cases_access_set_user
@@ -96,8 +97,8 @@ def _read_level(args: dict) -> int:
         'List who can access the case: every user with an effective access level '
         '(from their own grants, their groups and their customer). When you may '
         'manage the access of the case, also lists every group with its explicit '
-        'access level on it (null when it has none) — the ids to pass to '
-        'iris_case_access_set_group.'
+        'access level on it (null when it has none) and the ids of its members — '
+        'the ids to pass to iris_case_access_set_group.'
     ),
     input_schema={'type': 'object', 'properties': {}},
     permissions=(Permissions.standard_user,),
@@ -119,10 +120,12 @@ def iris_case_access_list(args: dict) -> dict:
         'can_manage_access': cases_access_guards_can_manage(case_identifier),
     }
     if result['can_manage_access']:
+        members = cases_access_group_member_identifiers()
         result['groups'] = [{
             'group_id': group['group_id'],
             'group_name': group['group_name'],
             'access_level': _level_name(group['access_level']),
+            'member_ids': members.get(group['group_id'], []),
         } for group in cases_access_list_groups(case)]
     return result
 

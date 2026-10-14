@@ -17992,8 +17992,8 @@ paths:
       operationId: mcp_tool_iris_case_access_list
       summary: "List who can access the case: every user with an effective access level (from their own\
         \ grants, their groups and their customer). When you may manage the access of the case, also lists\
-        \ every group with its explicit access level on it (null when it has none) \u2014 the ids to pass\
-        \ to iris_case_access_set_group."
+        \ every group with its explicit access level on it (null when it has none) and the ids of its\
+        \ members \u2014 the ids to pass to iris_case_access_set_group."
       tags:
       - MCP
       - MCP:tools
