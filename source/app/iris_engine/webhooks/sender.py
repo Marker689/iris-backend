@@ -27,7 +27,9 @@ host is resolved once, every address checked, and the connection pinned
 to the checked address (Host header, SNI and certificate verification
 still use the host name), so a DNS answer that changes between the check
 and the connection cannot reach an internal service. Through a proxy the
-proxy resolves, so the pin does not apply.
+proxy resolves, so the pin does not apply. A hop matching the "No proxy
+for" exceptions of the server settings (`proxy_exceptions`) connects
+directly.
 
 The response body is streamed and read up to `_MAX_RESPONSE_BYTES`, and
 the whole exchange is bounded by a wall-clock deadline. The result is a
@@ -47,6 +49,7 @@ import urllib3
 from requests.adapters import HTTPAdapter
 
 from app import app
+from app.iris_engine.utils.proxy_exceptions import proxy_exceptions_request_proxies
 from app.iris_engine.webhooks.render import MASK
 
 
@@ -197,8 +200,8 @@ class _PinnedAdapter(HTTPAdapter):
         return self._pinned_pool(request.url)
 
 
-def _proxy_for(session, url):
-    settings = session.merge_environment_settings(url, {}, None, None, None)
+def _proxy_for(session, url, request_proxies=None):
+    settings = session.merge_environment_settings(url, request_proxies or {}, None, None, None)
     return requests.utils.select_proxy(url, settings.get('proxies') or {})
 
 
@@ -271,9 +274,10 @@ def webhooks_send(request, verify_tls=True, timeout=10, follow_redirects=False, 
                   use_proxy=True, allow_private=None, deadline=None, max_response_chars=None) -> dict:
     """Send `request` (from `webhooks_render_request`).
 
-    `proxies` are the server settings proxies; the standard `HTTP(S)_PROXY`
-    environment variables apply otherwise. `use_proxy` off connects
-    directly, ignoring both. `allow_private` overrides the webhooks
+    `proxies` are the server settings proxies (`webhooks_db_proxies`, its
+    `no_proxy` key the hosts to reach directly); the standard
+    `HTTP(S)_PROXY` environment variables apply otherwise. `use_proxy` off
+    connects directly, ignoring both. `allow_private` overrides the webhooks
     private-egress setting (AI workflows pass their own); None keeps it.
     `deadline` bounds the whole exchange in seconds, redirects and body
     included (default: the larger of 30s and `timeout`).
@@ -296,15 +300,19 @@ def webhooks_send(request, verify_tls=True, timeout=10, follow_redirects=False, 
 
     session = requests.Session()
     verify = verify_tls
+    no_proxy = None
     if not use_proxy:
         session.trust_env = False
         if verify_tls:
             # trust_env off also drops the CA bundle variables: keep them
             verify = os.environ.get('REQUESTS_CA_BUNDLE') or os.environ.get('CURL_CA_BUNDLE') or True
     elif proxies:
+        proxies = dict(proxies)
+        no_proxy = proxies.pop('no_proxy', None)
         session.proxies.update(proxies)
 
     response = None
+    pinned = False
     try:
         for _hop in range(_MAX_REDIRECTS + 1):
             refused, address = webhooks_resolve_destination(url, allow_private=allow_private)
@@ -315,12 +323,20 @@ def webhooks_send(request, verify_tls=True, timeout=10, follow_redirects=False, 
                 raise _DeadlineExceeded()
 
             send_headers = headers
-            if address and not _proxy_for(session, url):
+            # Per hop: a redirect may leave or enter the exceptions
+            hop_proxies = proxy_exceptions_request_proxies(url, no_proxy) if no_proxy else None
+            if address and not _proxy_for(session, url, hop_proxies):
                 adapter = _PinnedAdapter(address)
                 session.mount('http://', adapter)
                 session.mount('https://', adapter)
+                pinned = True
                 send_headers = {k: v for k, v in headers.items() if k.lower() != 'host'}
                 send_headers['Host'] = _host_header(url)
+            elif pinned:
+                # The pin of a previous hop would skip this hop's proxy
+                session.mount('http://', HTTPAdapter())
+                session.mount('https://', HTTPAdapter())
+                pinned = False
 
             with warnings.catch_warnings():
                 if not verify_tls:
@@ -329,7 +345,8 @@ def webhooks_send(request, verify_tls=True, timeout=10, follow_redirects=False, 
                     warnings.simplefilter('ignore', urllib3.exceptions.InsecureRequestWarning)
                 response = session.request(method, url, headers=send_headers, data=body,
                                            timeout=min(timeout, remaining) if timeout else remaining,
-                                           verify=verify, allow_redirects=False, stream=True)
+                                           verify=verify, allow_redirects=False, stream=True,
+                                           proxies=hop_proxies)
 
             if follow_redirects and response.status_code in _REDIRECT_CODES and response.headers.get('Location'):
                 target = urljoin(url, response.headers['Location'])
@@ -376,8 +393,9 @@ def webhooks_send(request, verify_tls=True, timeout=10, follow_redirects=False, 
         return _result(retryable=True, error=f'TLS handshake error: {e}. {hint}', duration_ms=elapsed(),
                        final_url=url)
     except requests.exceptions.ProxyError as e:
-        hint = ('The proxy refused or could not reach the destination: allow this host on the proxy, or turn off '
-                '"Use the proxy" on the webhook to connect directly.')
+        hint = ('The proxy refused or could not reach the destination: allow this host on the proxy, add it to '
+                '"No proxy for" in the server settings, or turn off "Use the proxy" on the webhook to connect '
+                'directly.')
         return _result(retryable=True, error=f'Proxy error: {e}. {hint}', duration_ms=elapsed(), final_url=url)
     except requests.exceptions.Timeout:
         return _result(retryable=True, error=f'Timed out after {timeout}s', duration_ms=elapsed(), final_url=url)

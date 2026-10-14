@@ -159,13 +159,18 @@ def webhooks_db_hook_names() -> set:
 
 
 def webhooks_db_proxies() -> dict:
-    settings = ServerSettings.query.with_entities(ServerSettings.http_proxy, ServerSettings.https_proxy).first()
+    """The server settings proxies, and under `no_proxy` the hosts to
+    reach without them (see `proxy_exceptions`)."""
+    settings = ServerSettings.query.with_entities(ServerSettings.http_proxy, ServerSettings.https_proxy,
+                                                  ServerSettings.no_proxy).first()
     proxies = {}
     if settings is not None:
         if settings.http_proxy:
             proxies['http'] = settings.http_proxy
         if settings.https_proxy:
             proxies['https'] = settings.https_proxy
+        if settings.no_proxy:
+            proxies['no_proxy'] = settings.no_proxy
     return proxies
 
 

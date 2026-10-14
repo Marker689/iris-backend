@@ -498,7 +498,7 @@ def webhooks_settings() -> dict:
         'allow_private_egress': webhooks_allow_private_egress(),
         'instance_url_configured': bool(_instance_url()),
         # A boolean only: a proxy URL may carry credentials
-        'proxy_configured': bool(webhooks_db_proxies()) or webhooks_env_proxy_configured(),
+        'proxy_configured': bool(set(webhooks_db_proxies()) - {'no_proxy'}) or webhooks_env_proxy_configured(),
     }
 
 

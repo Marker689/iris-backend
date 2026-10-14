@@ -528,6 +528,8 @@ class ServerSettings(db.Model):
     id = Column(Integer, primary_key=True)
     https_proxy = Column(Text)
     http_proxy = Column(Text)
+    # Hosts reached without the proxies above, see `proxy_exceptions`
+    no_proxy = Column(Text)
     prevent_post_mod_repush = Column(Boolean)
     prevent_post_objects_repush = Column(Boolean, default=False)
     has_updates_available = Column(Boolean)

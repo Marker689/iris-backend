@@ -57,6 +57,7 @@ from app.datamgmt.manage.manage_tags_db import add_db_tag
 from app.datamgmt.case.case_iocs_db import get_ioc_links
 from app.datamgmt.case.case_tasks_db import get_task_assignees
 from app.iris_engine.access_control.utils import ac_mask_from_val_list
+from app.iris_engine.utils.proxy_exceptions import proxy_exceptions_errors
 from app.models.models import SavedFilter
 from app.models.models import DataStorePath
 from app.models.models import IrisModuleHook
@@ -1594,6 +1595,19 @@ class DSFileSchema(ma.SQLAlchemyAutoSchema):
         return file_path, file_size, file_hash
 
 
+_NO_PROXY_MAX_LENGTH = 8192
+
+
+def _validate_no_proxy(value):
+    if value is None:
+        return
+    if len(value) > _NO_PROXY_MAX_LENGTH:
+        raise ValidationError(f'At most {_NO_PROXY_MAX_LENGTH} characters')
+    invalid = proxy_exceptions_errors(value)
+    if invalid:
+        raise ValidationError(f'Not a host, domain, IP address or network: {", ".join(invalid[:5])}')
+
+
 class ServerSettingsSchema(ma.SQLAlchemyAutoSchema):
     """Schema for the singleton `ServerSettings` row.
 
@@ -1609,6 +1623,8 @@ class ServerSettingsSchema(ma.SQLAlchemyAutoSchema):
     """
     http_proxy: Optional[str] = fields.String(required=False, allow_none=True)
     https_proxy: Optional[str] = fields.String(required=False, allow_none=True)
+    # Firefox-like "No proxy for": see `proxy_exceptions`
+    no_proxy: Optional[str] = fields.String(required=False, allow_none=True, validate=_validate_no_proxy)
     prevent_post_mod_repush: Optional[bool] = fields.Boolean(required=False)
     prevent_post_objects_repush: Optional[bool] = fields.Boolean(required=False)
     has_updates_available: Optional[bool] = fields.Boolean(dump_only=True)

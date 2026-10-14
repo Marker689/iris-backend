@@ -21,7 +21,8 @@
 `GET <base>/<CVE-ID>` answers the CVE JSON 5 record of a published or
 rejected CVE, and a 404 with `{"error": "CVE_RECORD_DNE"}` otherwise.
 Only the identifier is sent. The server-settings proxies apply on top
-of the standard `HTTP(S)_PROXY` environment variables, redirects are not
+of the standard `HTTP(S)_PROXY` environment variables, except for a
+base URL listed in their "No proxy for" exceptions; redirects are not
 followed and the body is capped, so a misbehaving mirror cannot make the
 backend download anything large.
 """
@@ -30,6 +31,8 @@ import json
 import re
 
 import requests
+
+from app.iris_engine.utils.proxy_exceptions import proxy_exceptions_request_proxies
 
 _CVE_RE = re.compile(r'^CVE-\d{4}-\d{4,}$')
 _MAX_RECORD_BYTES = 4 * 1024 * 1024
@@ -58,16 +61,19 @@ def _read_capped(response):
 
 
 def cve_org_fetch(base_url, cve_id, timeout=10, proxies=None) -> dict:
-    """CVE JSON 5 record of `cve_id` (an upper-case `CVE-YYYY-NNNN`)."""
+    """CVE JSON 5 record of `cve_id` (an upper-case `CVE-YYYY-NNNN`).
+    `proxies` may carry a `no_proxy` key, the server settings exceptions."""
     if not _CVE_RE.fullmatch(cve_id or ''):
         raise CveOrgError(f'{cve_id} is not a CVE identifier')
     url = f'{base_url.rstrip("/")}/{cve_id}'
+    proxies = dict(proxies or {})
+    no_proxy = proxies.pop('no_proxy', None)
     session = requests.Session()
-    if proxies:
-        session.proxies.update(proxies)
+    session.proxies.update(proxies)
     try:
         with session.get(url, timeout=timeout, stream=True, allow_redirects=False,
-                         headers={'Accept': 'application/json'}) as response:
+                         headers={'Accept': 'application/json'},
+                         proxies=proxy_exceptions_request_proxies(url, no_proxy)) as response:
             raw = _read_capped(response)
             status = response.status_code
     except requests.Timeout:

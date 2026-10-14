@@ -283,6 +283,21 @@ class TestCveOrgClient(TestCase):
         self.assertEqual(record['cveMetadata']['cveId'], 'CVE-2024-3400')
         self.assertEqual(get.call_args.args[0], 'https://cve.example/api/cve/CVE-2024-3400')
         self.assertFalse(get.call_args.kwargs['allow_redirects'])
+        self.assertIsNone(get.call_args.kwargs['proxies'])
+
+    def test_mirror_in_the_proxy_exceptions_should_be_reached_directly(self):
+        proxies = {'https': 'http://proxy.example.org:3128', 'no_proxy': 'cve.corp'}
+        with patch('requests.Session.get', return_value=self._response(200, _record('CVE-2024-3400'))) as get:
+            cve_org_fetch('https://mirror.cve.corp/api/cve/', 'CVE-2024-3400', proxies=proxies)
+        self.assertEqual({'http': None, 'https': None, 'all': None}, get.call_args.kwargs['proxies'])
+        with patch('requests.Session.get', return_value=self._response(200, _record('CVE-2024-3400'))) as get:
+            cve_org_fetch('https://cveawg.mitre.org/api/cve/', 'CVE-2024-3400', proxies=proxies)
+        self.assertIsNone(get.call_args.kwargs['proxies'])
+
+    def test_server_settings_exceptions_should_reach_the_fetch(self):
+        settings = SimpleNamespace(http_proxy='', https_proxy='http://proxy:3128', no_proxy='cve.corp')
+        with patch(f'{_SYNC}.get_srv_settings', return_value=settings):
+            self.assertEqual({'https': 'http://proxy:3128', 'no_proxy': 'cve.corp'}, sync._proxies())
 
     def test_unknown_record_should_raise_not_found(self):
         payload = {'error': 'CVE_RECORD_DNE', 'message': 'The cve record for the cve id does not exist.'}

@@ -217,6 +217,34 @@ class TestWebhooksProxy(TestCase):
         result = webhooks_send(_request())
         self.assertIn('Proxy error', result['error'])
         self.assertIn('Use the proxy', result['error'])
+        self.assertIn('No proxy for', result['error'])
+
+    def test_exception_should_connect_directly(self):
+        webhooks_send(_request(), proxies={'https': 'http://proxy.example.org:3128', 'no_proxy': '.example.org'})
+        self.assertEqual({'http': None, 'https': None, 'all': None}, self.send.call_args.kwargs['proxies'])
+        self.assertNotIn('no_proxy', self._session().proxies)
+
+    def test_other_hosts_should_keep_the_proxy(self):
+        webhooks_send(_request(), proxies={'https': 'http://proxy.example.org:3128', 'no_proxy': 'intranet.corp'})
+        self.assertIsNone(self.send.call_args.kwargs['proxies'])
+        self.assertEqual('http://proxy.example.org:3128', self._session().proxies['https'])
+
+    def test_each_redirect_hop_should_be_matched(self):
+        self.send.side_effect = [_response(302, {'Location': 'https://www.virustotal.com/x'}), _response(200)]
+        webhooks_send(_request(), proxies={'https': 'http://proxy.example.org:3128', 'no_proxy': 'example.org'},
+                      follow_redirects=True)
+        first, second = self.send.call_args_list
+        self.assertEqual({'http': None, 'https': None, 'all': None}, first.kwargs['proxies'])
+        self.assertIsNone(second.kwargs['proxies'])
+
+    def test_pin_should_not_outlive_a_direct_hop(self):
+        # Direct first hop pinned to its address; the proxied second one
+        # must go through the proxy, not to the first address
+        self.send.side_effect = [_response(302, {'Location': 'https://www.virustotal.com/x'}), _response(200)]
+        with patch(f'{_SENDER}.webhooks_resolve_destination', side_effect=[(None, '10.0.0.5'), (None, '1.2.3.4')]):
+            webhooks_send(_request(), proxies={'https': 'http://proxy.example.org:3128', 'no_proxy': 'example.org'},
+                          follow_redirects=True)
+        self.assertNotIsInstance(self._session().get_adapter('https://www.virustotal.com/x'), _PinnedAdapter)
 
 
 class TestWebhooksPrivateEgress(TestCase):
@@ -309,6 +337,18 @@ class TestWebhooksPinnedConnection(TestCase):
         self.assertTrue(result['success'], result['error'])
         self.assertEqual('pinned', result['response_body'])
         self.assertEqual([f'rebind.invalid:{self.port}'], _Recorder.hosts)
+
+    def test_exception_should_skip_an_unreachable_proxy(self):
+        url = f'http://127.0.0.1:{self.port}/x'
+        dead_proxy = 'http://127.0.0.1:9'
+        with patch.dict('os.environ', {'HTTP_PROXY': dead_proxy, 'http_proxy': dead_proxy, 'NO_PROXY': '',
+                                       'no_proxy': ''}):
+            refused = webhooks_send(_request(method='GET', url=url, body=None), proxies={'http': dead_proxy})
+            result = webhooks_send(_request(method='GET', url=url, body=None),
+                                   proxies={'http': dead_proxy, 'no_proxy': '127.0.0.0/8'})
+        self.assertFalse(refused['success'])
+        self.assertTrue(result['success'], result['error'])
+        self.assertEqual([f'127.0.0.1:{self.port}'], _Recorder.hosts)
 
     def test_https_pool_should_verify_against_the_host_name(self):
         adapter = _PinnedAdapter('203.0.113.7')

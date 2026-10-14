@@ -341,6 +341,8 @@ def _proxies():
             proxies['http'] = settings.http_proxy
         if getattr(settings, 'https_proxy', None):
             proxies['https'] = settings.https_proxy
+        if getattr(settings, 'no_proxy', None):
+            proxies['no_proxy'] = settings.no_proxy
     return proxies or None
 
 

@@ -1202,7 +1202,7 @@ def create_safe_tlp():
 def create_safe_server_settings(is_mfa_enabled):
     if not ServerSettings.query.count():
         create_safe(db.session, ServerSettings,
-                    http_proxy="", https_proxy="", prevent_post_mod_repush=False,
+                    http_proxy="", https_proxy="", no_proxy="", prevent_post_mod_repush=False,
                     prevent_post_objects_repush=False,
                     password_policy_min_length="12", password_policy_upper_case=True,
                     password_policy_lower_case=True, password_policy_digit=True,

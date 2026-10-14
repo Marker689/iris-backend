@@ -25365,6 +25365,10 @@ components:
           type:
           - string
           - 'null'
+        no_proxy:
+          type:
+          - string
+          - 'null'
         prevent_post_mod_repush:
           type: boolean
         prevent_post_objects_repush:
@@ -25529,6 +25533,10 @@ components:
           - string
           - 'null'
         https_proxy:
+          type:
+          - string
+          - 'null'
+        no_proxy:
           type:
           - string
           - 'null'
