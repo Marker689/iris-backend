@@ -31,11 +31,13 @@ from app.datamgmt.custom_dashboard.query_engine import (
     format_widget_payload,
 )
 from app.datamgmt.custom_dashboard.schema import CustomDashboardSchema
+from app.datamgmt.custom_dashboard.schema import DASHBOARD_FILTER_OPERATORS
 
 
 __all__ = [
     'ComputedFilters',
     'CustomDashboardSchema',
+    'DASHBOARD_FILTER_OPERATORS',
     'DashboardAccessError',
     'DashboardNotFoundError',
     'DashboardSystemReadOnlyError',

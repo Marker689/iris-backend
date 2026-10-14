@@ -334,7 +334,9 @@ _OPERATORS = {
     'in': lambda column, value: column.in_(value if isinstance(value, (list, tuple, set)) else [value]),
     'nin': lambda column, value: ~column.in_(value if isinstance(value, (list, tuple, set)) else [value]),
     'between': lambda column, value: column.between(value[0], value[1]) if isinstance(value, (list, tuple)) and len(value) == 2 else None,
-    'contains': lambda column, value: column.ilike(f"%{value}%")
+    'contains': lambda column, value: column.ilike(f"%{value}%"),
+    'is_null': lambda column, _value: column.is_(None),
+    'is_not_null': lambda column, _value: column.is_not(None)
 }
 
 

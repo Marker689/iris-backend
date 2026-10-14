@@ -34,6 +34,7 @@ from app.blueprints.rest.endpoints import response_api_success
 from app.business.custom_dashboards import (
     ComputedFilters,
     CustomDashboardSchema,
+    DASHBOARD_FILTER_OPERATORS,
     DashboardAccessError,
     DashboardNotFoundError,
     DashboardSystemReadOnlyError,
@@ -214,6 +215,7 @@ def _render_widget(
     payload = format_widget_payload(result, widget, timeframe)
     payload['name'] = widget.get('name')
     payload['chart_type'] = widget.get('chart_type')
+    payload['options'] = widget.get('options') or {}
     payload['layout'] = widget.get('layout') or {}
     return payload
 
@@ -238,7 +240,7 @@ def get_editor_schema():
         },
         'named_aggregations': list_named_aggregations(),
         'aggregations': ['count', 'sum', 'avg', 'min', 'max', 'ratio'],
-        'operators': ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'in', 'nin', 'between', 'contains'],
+        'operators': list(DASHBOARD_FILTER_OPERATORS),
         'chart_types': ['line', 'bar', 'pie', 'number', 'percentage', 'table', 'timechart'],
         'time_buckets': ['minute', '5minute', '15minute', 'hour', 'day', 'week', 'month', 'year'],
     }

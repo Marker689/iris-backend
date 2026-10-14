@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 
 from sqlalchemy import Integer, Text
 from sqlalchemy import Numeric, Float
+from sqlalchemy.dialects import postgresql
 
 from app.datamgmt.custom_dashboard.query_engine import (
     _advance_datetime_by_bucket,
@@ -34,9 +35,12 @@ from app.datamgmt.custom_dashboard.query_engine import (
     _normalize_display_mode,
     _time_sort_key,
     _MAX_TIME_BUCKET_POINTS,
+    _OPERATORS,
     QueryExecutionError,
     WidgetQueryExecutor,
 )
+from app.datamgmt.custom_dashboard.schema import DASHBOARD_FILTER_OPERATORS
+from app.models.alerts import Alert
 
 
 # ---------------------------------------------------------------------------
@@ -663,3 +667,22 @@ class TestBuildAggregateExpressionNumericValidation(TestCase):
     def test_max_on_text_column_does_not_raise(self):
         result = self._executor._build_aggregate_expression('max', _make_column(Text()), None)
         self.assertIsNotNone(result)
+
+
+class TestFilterOperators(TestCase):
+
+    def _sql(self, operator, value=None):
+        expression = _OPERATORS[operator](Alert.alert_owner_id, value)
+        return str(expression.compile(dialect=postgresql.dialect()))
+
+    def test_every_schema_operator_is_implemented(self):
+        self.assertEqual(set(DASHBOARD_FILTER_OPERATORS), set(_OPERATORS))
+
+    def test_is_null_matches_empty_column(self):
+        self.assertEqual('alerts.alert_owner_id IS NULL', self._sql('is_null'))
+
+    def test_is_not_null_matches_filled_column(self):
+        self.assertEqual('alerts.alert_owner_id IS NOT NULL', self._sql('is_not_null'))
+
+    def test_null_operators_ignore_value(self):
+        self.assertEqual('alerts.alert_owner_id IS NULL', self._sql('is_null', 'ignored'))

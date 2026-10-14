@@ -1,11 +1,23 @@
 from marshmallow import EXCLUDE, Schema, fields as ma_fields, validate, validates_schema, ValidationError
 
 
+# The null operators take no value: they are how a widget matches an empty
+# column, e.g. the unassigned alerts (`alerts.alert_owner_id is_null`).
+DASHBOARD_NULL_OPERATORS = ['is_null', 'is_not_null']
+DASHBOARD_FILTER_OPERATORS = ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'in', 'nin', 'between', 'contains',
+                              *DASHBOARD_NULL_OPERATORS]
+
+
 class DashboardFilterSchema(Schema):
     table = ma_fields.String(required=True)
     column = ma_fields.String(required=True)
-    operator = ma_fields.String(required=True, validate=validate.OneOf(['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'in', 'nin', 'between', 'contains']))
-    value = ma_fields.Raw(required=True)
+    operator = ma_fields.String(required=True, validate=validate.OneOf(DASHBOARD_FILTER_OPERATORS))
+    value = ma_fields.Raw(required=False, allow_none=True)
+
+    @validates_schema
+    def validate_value_presence(self, data, **kwargs):
+        if 'value' not in data and data.get('operator') not in DASHBOARD_NULL_OPERATORS:
+            raise ValidationError('Missing data for required field.', field_name='value')
 
 
 class DashboardWidgetFieldSchema(Schema):

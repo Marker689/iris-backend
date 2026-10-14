@@ -71,6 +71,16 @@ class TestDashboardFilterSchema(TestCase):
         result = self._load({'table': 't', 'column': 'c', 'operator': 'eq', 'value': 42})
         self.assertEqual(42, result['value'])
 
+    def test_value_can_be_none(self):
+        result = self._load({'table': 't', 'column': 'c', 'operator': 'eq', 'value': None})
+        self.assertIsNone(result['value'])
+
+    def test_null_operators_accepted_without_value(self):
+        for op in ['is_null', 'is_not_null']:
+            with self.subTest(op=op):
+                result = self._load({'table': 't', 'column': 'c', 'operator': op})
+                self.assertEqual(op, result['operator'])
+
 
 class TestDashboardWidgetFieldSchema(TestCase):
 

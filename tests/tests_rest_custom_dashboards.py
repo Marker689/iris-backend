@@ -18,6 +18,8 @@
 
 from unittest import TestCase
 from iris import Iris
+from iris import ADMINISTRATOR_USER_IDENTIFIER
+from iris import IRIS_INITIAL_CUSTOMER_IDENTIFIER
 
 STATISTICS_DASHBOARD_UUID = '00000000-0000-4000-8000-000000000001'
 
@@ -168,6 +170,64 @@ class TestsRestCustomDashboards(TestCase):
         self.assertEqual(200, response.status_code)
         widgets = response.json()['widgets']
         self.assertEqual('mttd_seconds', widgets[0].get('computed'))
+
+    def _render_table_widget(self, widget_filters, options=None):
+        body = {
+            'definition': {
+                'name': 'table-test',
+                'widgets': [{
+                    'name': 'alerts',
+                    'chart_type': 'table',
+                    'fields': [
+                        {'table': 'alerts', 'column': 'alert_id', 'alias': 'alert_id'},
+                        {'table': 'alerts', 'column': 'alert_title', 'alias': 'alert_title'},
+                    ],
+                    'filters': widget_filters,
+                    'options': options or {},
+                }],
+            }
+        }
+        response = self._subject.create(
+            f'/api/v2/custom-dashboards/{STATISTICS_DASHBOARD_UUID}/render', body,
+        )
+        self.assertEqual(200, response.status_code)
+        return response.json()['widgets'][0]
+
+    def _create_alert(self, **overrides):
+        body = {
+            'alert_title': 'alert',
+            'alert_severity_id': 4,
+            'alert_status_id': 3,
+            'alert_customer_id': IRIS_INITIAL_CUSTOMER_IDENTIFIER,
+        }
+        body.update(overrides)
+        return self._subject.create('/api/v2/alerts', body).json()
+
+    def test_render_is_null_filter_returns_unowned_alerts_only(self):
+        unowned = self._create_alert()
+        owned = self._create_alert(alert_owner_id=ADMINISTRATOR_USER_IDENTIFIER)
+        widget = self._render_table_widget([{'table': 'alerts', 'column': 'alert_owner_id', 'operator': 'is_null'}])
+        alert_identifiers = [row['group_values'][0] for row in widget['rows']]
+        self.assertIn(unowned['alert_id'], alert_identifiers)
+        self.assertNotIn(owned['alert_id'], alert_identifiers)
+
+    def test_render_is_not_null_filter_returns_owned_alerts_only(self):
+        unowned = self._create_alert()
+        owned = self._create_alert(alert_owner_id=ADMINISTRATOR_USER_IDENTIFIER)
+        widget = self._render_table_widget([{'table': 'alerts', 'column': 'alert_owner_id', 'operator': 'is_not_null'}])
+        alert_identifiers = [row['group_values'][0] for row in widget['rows']]
+        self.assertIn(owned['alert_id'], alert_identifiers)
+        self.assertNotIn(unowned['alert_id'], alert_identifiers)
+
+    def test_render_returns_widget_options(self):
+        options = {'row_link': {'target': 'alert', 'key': 'alert_id'}}
+        widget = self._render_table_widget([], options)
+        self.assertEqual(options, widget['options'])
+
+    def test_schema_endpoint_lists_null_operators(self):
+        response = self._subject.get('/api/v2/custom-dashboards/schema').json()
+        self.assertIn('is_null', response['operators'])
+        self.assertIn('is_not_null', response['operators'])
 
     def test_schema_endpoint_lists_named_aggregations(self):
         response = self._subject.get('/api/v2/custom-dashboards/schema').json()
