@@ -72,6 +72,7 @@ WRITE_TOOLS: frozenset[str] = frozenset({
     # IOCs / assets / notes / tasks (case-scoped mutating ops)
     'iris_case_iocs_create', 'iris_case_iocs_update', 'iris_case_iocs_delete',
     'iris_case_assets_create', 'iris_case_assets_update', 'iris_case_assets_delete',
+    'iris_case_events_create', 'iris_case_events_update', 'iris_case_events_delete',
     'iris_case_notes_create', 'iris_case_notes_update',
     'iris_case_notes_directories_create',
     'iris_case_datastore_files_create',

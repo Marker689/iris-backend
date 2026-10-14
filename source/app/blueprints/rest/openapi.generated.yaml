@@ -18493,6 +18493,143 @@ paths:
                 $ref: '#/components/schemas/McpToolResult'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_case_events_create:
+    post:
+      operationId: mcp_tool_iris_case_events_create
+      summary: "Add an event to the timeline of a case. Required: `event_title`, `event_date` and `event_category_id`\
+        \ \u2014 resolve the category name with `iris_taxonomies_list` first. Assets and IOCs are linked\
+        \ by their ids in the case."
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_case_events_create
+      x-mcp-mvp: true
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_case_events_create\"\
+        `. The request body schema below is the tool's `input_schema` (identical to what `tools/list`\
+        \ returns for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                payload:
+                  type: object
+                  description: Event fields.
+                  properties:
+                    event_title:
+                      type: string
+                      description: Short title, 2 characters at least.
+                    event_date:
+                      type: string
+                      description: When it happened, ISO 8601 (e.g. "2026-10-14T08:30:00"). An offset
+                        in the date is used as `event_tz` when that is not given.
+                    event_tz:
+                      type: string
+                      description: UTC offset of `event_date`, e.g. "+02:00". Defaults to "+00:00".
+                    event_category_id:
+                      type: integer
+                      description: 'Event category id: resolve the name with `iris_taxonomies_list` (event_categories).'
+                    event_content:
+                      type: string
+                      description: Description of the event (markdown).
+                    event_raw:
+                      type: string
+                      description: Raw data the event comes from, e.g. a log line.
+                    event_source:
+                      type: string
+                      description: Where the event was observed.
+                    event_tags:
+                      type: string
+                      description: Comma-separated tags.
+                    event_assets:
+                      type: array
+                      items:
+                        type: integer
+                      description: Ids of the case assets involved; replaces the current links.
+                    event_iocs:
+                      type: array
+                      items:
+                        type: integer
+                      description: Ids of the case IOCs involved; replaces the current links.
+                    event_sync_iocs_assets:
+                      type: boolean
+                      description: Also link the given IOCs to the given assets.
+                    event_in_summary:
+                      type: boolean
+                      description: Show the event in the case summary.
+                    event_in_graph:
+                      type: boolean
+                      description: Show the event in the case graph.
+                    event_is_flagged:
+                      type: boolean
+                      description: Flag the event.
+                  required:
+                  - event_title
+                  - event_date
+                  - event_category_id
+                case_identifier:
+                  type: integer
+                  description: Numeric ID of the IRIS case this call targets.
+              required:
+              - payload
+              - case_identifier
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_case_events_delete:
+    post:
+      operationId: mcp_tool_iris_case_events_delete
+      summary: Delete an event from the timeline of a case.
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_case_events_delete
+      x-mcp-mvp: true
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_case_events_delete\"\
+        `. The request body schema below is the tool's `input_schema` (identical to what `tools/list`\
+        \ returns for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                event_identifier:
+                  type: integer
+                case_identifier:
+                  type: integer
+                  description: Numeric ID of the IRIS case this call targets.
+              required:
+              - event_identifier
+              - case_identifier
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/v2/mcp/tools/iris_case_events_list:
     post:
       operationId: mcp_tool_iris_case_events_list
@@ -18549,6 +18686,100 @@ paths:
                   type: integer
                   description: Numeric ID of the IRIS case this call targets.
               required:
+              - case_identifier
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_case_events_update:
+    post:
+      operationId: mcp_tool_iris_case_events_update
+      summary: 'Update an event of the timeline of a case (partial payload accepted: the fields not given
+        are kept). `event_assets` and `event_iocs`, when given, replace the current links.'
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_case_events_update
+      x-mcp-mvp: true
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_case_events_update\"\
+        `. The request body schema below is the tool's `input_schema` (identical to what `tools/list`\
+        \ returns for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                event_identifier:
+                  type: integer
+                payload:
+                  type: object
+                  description: Event fields to change; the others are kept.
+                  properties:
+                    event_title:
+                      type: string
+                      description: Short title, 2 characters at least.
+                    event_date:
+                      type: string
+                      description: When it happened, ISO 8601 (e.g. "2026-10-14T08:30:00"). An offset
+                        in the date is used as `event_tz` when that is not given.
+                    event_tz:
+                      type: string
+                      description: UTC offset of `event_date`, e.g. "+02:00". Defaults to "+00:00".
+                    event_category_id:
+                      type: integer
+                      description: 'Event category id: resolve the name with `iris_taxonomies_list` (event_categories).'
+                    event_content:
+                      type: string
+                      description: Description of the event (markdown).
+                    event_raw:
+                      type: string
+                      description: Raw data the event comes from, e.g. a log line.
+                    event_source:
+                      type: string
+                      description: Where the event was observed.
+                    event_tags:
+                      type: string
+                      description: Comma-separated tags.
+                    event_assets:
+                      type: array
+                      items:
+                        type: integer
+                      description: Ids of the case assets involved; replaces the current links.
+                    event_iocs:
+                      type: array
+                      items:
+                        type: integer
+                      description: Ids of the case IOCs involved; replaces the current links.
+                    event_sync_iocs_assets:
+                      type: boolean
+                      description: Also link the given IOCs to the given assets.
+                    event_in_summary:
+                      type: boolean
+                      description: Show the event in the case summary.
+                    event_in_graph:
+                      type: boolean
+                      description: Show the event in the case graph.
+                    event_is_flagged:
+                      type: boolean
+                      description: Flag the event.
+                case_identifier:
+                  type: integer
+                  description: Numeric ID of the IRIS case this call targets.
+              required:
+              - event_identifier
+              - payload
               - case_identifier
       responses:
         '200':
