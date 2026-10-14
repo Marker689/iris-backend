@@ -97,6 +97,43 @@ class TestParseBfDateFormat(TestCase):
         self.assertEqual(3, result.month)
         self.assertEqual(15, result.day)
 
+    # --- US style, 12-hour clock ---
+
+    def test_us_month_name_with_12_hour_clock(self):
+        result = parse_bf_date_format('Oct 13, 2026 9:49:43 AM')
+        self.assertEqual(datetime.datetime(2026, 10, 13, 9, 49, 43), result)
+
+    def test_us_pm_is_after_noon(self):
+        result = parse_bf_date_format('Oct 13, 2026 9:49:43 PM')
+        self.assertEqual(datetime.datetime(2026, 10, 13, 21, 49, 43), result)
+
+    def test_us_noon_and_midnight(self):
+        self.assertEqual(datetime.datetime(2026, 10, 13, 12, 5), parse_bf_date_format('Oct 13, 2026 12:05 PM'))
+        self.assertEqual(datetime.datetime(2026, 10, 13, 0, 5), parse_bf_date_format('Oct 13, 2026 12:05 AM'))
+
+    def test_us_full_month_name_with_fraction(self):
+        result = parse_bf_date_format('October 13, 2026 09:49:43.250 am')
+        self.assertEqual(datetime.datetime(2026, 10, 13, 9, 49, 43, 250000), result)
+
+    def test_us_month_name_without_comma(self):
+        result = parse_bf_date_format('Oct 13 2026 9:49 AM')
+        self.assertEqual(datetime.datetime(2026, 10, 13, 9, 49), result)
+
+    def test_us_numeric_with_12_hour_clock(self):
+        result = parse_bf_date_format('10/13/2026 9:49:43 AM')
+        self.assertEqual(datetime.datetime(2026, 10, 13, 9, 49, 43), result)
+
+    def test_us_month_name_with_24_hour_clock(self):
+        result = parse_bf_date_format('Oct 13, 2026 21:49:43')
+        self.assertEqual(datetime.datetime(2026, 10, 13, 21, 49, 43), result)
+
+    def test_us_month_name_date_only(self):
+        self.assertEqual(datetime.datetime(2026, 10, 13), parse_bf_date_format('Oct 13, 2026'))
+
+    def test_day_first_numeric_without_meridiem_stays_day_first(self):
+        result = parse_bf_date_format('10/03/2026 09:49')
+        self.assertEqual(datetime.datetime(2026, 3, 10, 9, 49), result)
+
     # --- Leading/trailing whitespace ---
 
     def test_whitespace_is_stripped(self):

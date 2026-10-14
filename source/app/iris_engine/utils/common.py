@@ -92,6 +92,16 @@ def parse_bf_date_format(input_str):
 
                 '%b %d %Y %H:%M', '%b %d %Y %H:%M:%S', '%b %d %Y %H:%M:%S',
 
+                # US style, 12-hour clock: "Oct 13, 2026 9:49:43 AM"
+                '%b %d, %Y %I:%M:%S %p', '%b %d, %Y %I:%M:%S.%f %p', '%b %d, %Y %I:%M %p',
+                '%b %d %Y %I:%M:%S %p', '%b %d %Y %I:%M:%S.%f %p', '%b %d %Y %I:%M %p',
+                '%B %d, %Y %I:%M:%S %p', '%B %d, %Y %I:%M:%S.%f %p', '%B %d, %Y %I:%M %p',
+                '%B %d %Y %I:%M:%S %p', '%B %d %Y %I:%M:%S.%f %p', '%B %d %Y %I:%M %p',
+                '%m/%d/%Y %I:%M:%S %p', '%m/%d/%Y %I:%M:%S.%f %p', '%m/%d/%Y %I:%M %p',
+                '%b %d, %Y %H:%M:%S', '%b %d, %Y %H:%M:%S.%f', '%b %d, %Y %H:%M',
+                '%B %d, %Y %H:%M:%S', '%B %d, %Y %H:%M:%S.%f', '%B %d, %Y %H:%M',
+                '%b %d, %Y', '%B %d, %Y',
+
                 '%a, %d %b %Y %H:%M:%S', '%a, %d %b %Y %H:%M:%S %Z', '%a, %d %b %Y %H:%M:%S.%f',
                 '%a, %d %b %y %H:%M:%S', '%a, %d %b %y %H:%M:%S %Z', '%a, %d %b %y %H:%M:%S.%f',
 
