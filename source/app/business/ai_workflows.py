@@ -44,6 +44,7 @@ for a session or an unscoped key) and bounds the run.
 
 import copy
 import datetime
+import hashlib
 import json
 import uuid
 
@@ -106,6 +107,8 @@ from app.iris_engine.ai_workflows.graph import ai_workflows_graph_upgrade_trigge
 from app.iris_engine.ai_workflows.graph import ai_workflows_graph_validate
 from app.iris_engine.ai_workflows.graph import ai_workflows_graph_validate_node
 from app.iris_engine.ai_workflows.keystore import ai_workflows_keystore_visible_entries
+from app.iris_engine.ai_workflows.live import ai_workflows_live_editor_room
+from app.iris_engine.ai_workflows.live import ai_workflows_live_emit_saved
 from app.iris_engine.ai_workflows.live import ai_workflows_live_run_room
 from app.iris_engine.ai_workflows.live import ai_workflows_live_workflow_room
 from app.iris_engine.ai_workflows.nodes import NODE_RUN_WORKFLOW
@@ -164,6 +167,15 @@ class AiWorkflowsDisabledError(AiWorkflowsForbiddenError):
 
     def __init__(self, message='AI workflows are disabled on this server'):
         super().__init__(message)
+
+
+class AiWorkflowsConflictError(BusinessProcessingError):
+    """The workflow changed since the caller loaded it (REST: 409); the
+    data carries the current revision and version."""
+
+    def __init__(self, revision, version):
+        super().__init__('The workflow was changed by someone else since it was loaded',
+                         data={'revision': revision, 'version': version})
 
 
 # Fields whose change produces a new version: everything that alters
@@ -273,8 +285,17 @@ def _definition(workflow) -> dict:
     }
 
 
+def _revision(definition) -> str:
+    """Fingerprint of a definition, the concurrency token of a save: it
+    moves with every change of it, name and switch included, and with
+    nothing else (unlike `updated_at`, which a trigger firing moves)."""
+    encoded = json.dumps(definition, sort_keys=True, default=str).encode()
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
 def ai_workflows_serialize(workflow, counts=None, users=None, with_graph=True) -> dict:
     data = _definition(workflow)
+    revision = _revision(data)
     if not with_graph:
         data.pop('graph', None)
     is_webhook = ai_workflow_trigger_config(workflow, TRIGGER_WEBHOOK) is not None
@@ -283,6 +304,7 @@ def ai_workflows_serialize(workflow, counts=None, users=None, with_graph=True) -
         'uuid': _str_uuid(workflow.uuid),
         'owner': _user_summary(workflow.owner_id, users),
         'version': workflow.version,
+        'revision': revision,
         'has_inbound_token': bool(workflow.inbound_token_hash),
         'has_signing_secret': bool(getattr(workflow, 'inbound_signing_secret', None)),
         'skipped_count': getattr(workflow, 'skipped_count', None) or 0,
@@ -867,6 +889,11 @@ def ai_workflows_create(body, user_id, is_admin) -> dict:
 def ai_workflows_update(workflow_id, body, user_id, is_admin) -> dict:
     workflow = _get_owned_workflow(workflow_id, user_id, is_admin)
     before = _definition(workflow)
+    expected = (body or {}).get('expected_revision')
+    if expected is not None and not isinstance(expected, str):
+        raise BusinessProcessingError('Invalid expected_revision', data={'expected_revision': ['Not a string']})
+    if expected is not None and expected != _revision(before):
+        raise AiWorkflowsConflictError(_revision(before), workflow.version)
     attributes = _ai_workflows_validate(body, user_id, is_admin, existing=workflow)
     for key, value in attributes.items():
         setattr(workflow, key, value)
@@ -881,7 +908,24 @@ def ai_workflows_update(workflow_id, body, user_id, is_admin) -> dict:
     ai_workflows_db_commit()
     suffix = f' (version {workflow.version}: {", ".join(changed)})' if changed else ''
     track_activity(f'AI workflow #{workflow.id} "{workflow.name}" updated{suffix}', ctx_less=True)
+    if after != before:
+        _emit_saved(workflow.id, user_id, {'version': workflow.version, 'revision': _revision(after),
+                                           'editor_client_id': _editor_client_id(body)})
     return ai_workflows_get(workflow.id, user_id, is_admin)
+
+
+def _editor_client_id(body):
+    """The editor tab a save came from, echoed to the open editors so
+    that tab recognises its own save."""
+    value = (body or {}).get('editor_client_id')
+    if isinstance(value, str) and 0 < len(value) <= 64 and value.replace('-', '').isalnum():
+        return value
+    return None
+
+
+def _emit_saved(workflow_id, user_id, payload):
+    user = _user_summary(user_id, None) or {}
+    ai_workflows_live_emit_saved(workflow_id, {'user_id': user_id, 'user_name': user.get('name'), **payload})
 
 
 def ai_workflows_set_category(workflow_id, category_id, user_id, is_admin) -> dict:
@@ -911,6 +955,7 @@ def ai_workflows_delete(workflow_id, user_id, is_admin) -> None:
         ai_workflows_engine_cancel_run(run, user_id, reason='Workflow deleted')
     ai_workflows_db_delete(workflow)
     track_activity(f'AI workflow #{workflow_id} "{name}" deleted', ctx_less=True)
+    _emit_saved(workflow_id, user_id, {'deleted': True})
 
 
 def ai_workflows_export(workflow_id, user_id, is_admin) -> dict:
@@ -1340,10 +1385,9 @@ def ai_workflows_list_inbound_events(user_id, is_admin, workflow_id=None, limit=
 _EVENT_STATUSES = (STEP_SUCCEEDED, STEP_FAILED, STEP_WAITING)
 
 
-def ai_workflows_live_room(user_id, run_uuid=None, workflow_id=None) -> str:
-    """The Socket.IO room pushing the live progress of a run (one the
-    user can see) or of every run of a workflow (one the user can edit).
-    Raises ObjectNotFoundError otherwise, as the REST views do."""
+def _socket_user(user_id):
+    """(user, is_admin) of a Socket.IO caller holding an AI-workflow
+    permission; raises as the REST views do otherwise."""
     ai_workflows_require_enabled()
     user = ai_workflows_db_get_user(user_id) if user_id else None
     if user is None or not user.active:
@@ -1353,15 +1397,39 @@ def ai_workflows_live_room(user_id, run_uuid=None, workflow_id=None) -> str:
     readable = Permissions.ai_workflows_read.value | Permissions.ai_workflows_write.value
     if not is_admin and not permissions & readable:
         raise AiWorkflowsForbiddenError()
+    return user, is_admin
+
+
+def _socket_workflow(workflow_id, user_id, is_admin) -> AiWorkflow:
+    if isinstance(workflow_id, bool):
+        raise ObjectNotFoundError()
+    try:
+        workflow_id = int(workflow_id)
+    except (TypeError, ValueError):
+        raise ObjectNotFoundError()
+    return _get_owned_workflow(workflow_id, user_id, is_admin)
+
+
+def ai_workflows_live_room(user_id, run_uuid=None, workflow_id=None) -> str:
+    """The Socket.IO room pushing the live progress of a run (one the
+    user can see) or of every run of a workflow (one the user can edit).
+    Raises ObjectNotFoundError otherwise, as the REST views do."""
+    _, is_admin = _socket_user(user_id)
     if run_uuid:
         return ai_workflows_live_run_room(_get_visible_run(str(run_uuid), user_id, is_admin).uuid)
     if workflow_id is not None:
-        try:
-            workflow_id = int(workflow_id)
-        except (TypeError, ValueError):
-            raise ObjectNotFoundError()
-        return ai_workflows_live_workflow_room(_get_owned_workflow(workflow_id, user_id, is_admin).id)
+        return ai_workflows_live_workflow_room(_socket_workflow(workflow_id, user_id, is_admin).id)
     raise BusinessProcessingError('A run or a workflow is required')
+
+
+def ai_workflows_editor_session(user_id, workflow_id) -> dict:
+    """`{room, user_id, user_name}` of a user opening the editor of a
+    workflow they can see: the room of its editors, and the identity the
+    others are shown — the server's, never the client's."""
+    user, is_admin = _socket_user(user_id)
+    workflow = _socket_workflow(workflow_id, user_id, is_admin)
+    return {'room': ai_workflows_live_editor_room(workflow.id), 'workflow_id': workflow.id,
+            'user_id': user.id, 'user_name': user.name or user.user}
 
 
 def ai_workflows_node_stats(workflow_id, user_id, is_admin) -> dict:

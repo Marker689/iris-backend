@@ -14,6 +14,8 @@ room; the latter is what this handler prevents.
 """
 
 import logging
+import time
+import uuid
 
 from flask import g, request
 from flask_socketio import emit
@@ -23,8 +25,10 @@ from flask_socketio import leave_room
 from app import socket_io
 from app.blueprints.access_controls import is_user_authenticated
 from app.blueprints.iris_user import iris_current_user
+from app.business.ai_workflows import ai_workflows_editor_session
 from app.business.ai_workflows import ai_workflows_live_room
 from app.business.auth import validate_auth_token
+from app.iris_engine.ai_workflows.live import EDITOR_EVENT
 from app.iris_engine.ai_workflows.live import ai_workflows_live_run_room
 from app.iris_engine.ai_workflows.live import ai_workflows_live_workflow_room
 
@@ -105,6 +109,8 @@ def on_disconnect():
     churn. Room membership is cleaned up by flask-socketio itself.
     """
     _sid_user_ids.pop(request.sid, None)
+    for entry in (_editor_sessions.pop(request.sid, None) or {}).values():
+        _editor_broadcast('gone', entry)
 
 
 @socket_io.on('join', namespace=NAMESPACE)
@@ -173,6 +179,119 @@ def on_ai_workflow_unwatch(data=None):
         leave_room(ai_workflows_live_run_room(run_uuid[:64]))
     if isinstance(workflow_id, int) and not isinstance(workflow_id, bool):
         leave_room(ai_workflows_live_workflow_room(workflow_id))
+
+
+# ---- AI workflow editor presence -------------------------------------------
+# Who has the editor of a workflow open, and which node each one is
+# configuring. Nothing is kept for the room as a whole: the gunicorn
+# workers don't share memory, while a socket's events always reach the
+# same worker. So each socket's entry lives with it, every change is
+# relayed to the room, and the clients build the list of editors from
+# what they receive — a `hello` makes the others announce themselves,
+# a heartbeat (`ai_workflow_editor_update`) keeps an entry alive, and
+# `gone` (a leave or a disconnect) removes it. Identity, the peer id and
+# the time a node was focused are set here, never taken from the client.
+
+_editor_sessions: dict[str, dict[int, dict]] = {}
+_MAX_EDITOR_ROOMS_PER_SOCKET = 8
+_MAX_NODE_ID_LEN = 128
+
+
+def _editor_broadcast(kind, entry):
+    payload = {'type': kind, 'workflow_id': entry['workflow_id'], 'peer_id': entry['peer_id'],
+               'user_id': entry['user_id'], 'user_name': entry['user_name'], 'node_id': entry['node_id'],
+               'focused_at': entry['focused_at']}
+    try:
+        socket_io.emit(EDITOR_EVENT, payload, room=entry['room'], skip_sid=request.sid, namespace=NAMESPACE)
+    except Exception as exc:
+        logger.warning('SocketIO emit failed for %s: %s', EDITOR_EVENT, exc)
+
+
+def _editor_args(data):
+    """(workflow_id, node_id) of an editor event, or None when malformed."""
+    if not isinstance(data, dict):
+        return None
+    workflow_id = data.get('workflow_id')
+    node_id = data.get('node_id')
+    if isinstance(workflow_id, bool) or not isinstance(workflow_id, int):
+        return None
+    if node_id is not None and (not isinstance(node_id, str) or not 0 < len(node_id) <= _MAX_NODE_ID_LEN):
+        return None
+    return workflow_id, node_id
+
+
+def _editor_ack(entry):
+    return {'ok': True, 'peer_id': entry['peer_id'], 'focused_at': entry['focused_at']}
+
+
+def _editor_focus(entry, node_id):
+    if entry['node_id'] != node_id:
+        entry['node_id'] = node_id
+        entry['focused_at'] = time.time() if node_id else None
+
+
+@socket_io.on('ai_workflow_editor_join', namespace=NAMESPACE)
+def on_ai_workflow_editor_join(data=None):
+    """Open the editor of a workflow (`{workflow_id, node_id}`): join its
+    editors' room, announce yourself (`hello`), receive the others'
+    `ai_workflow_editor` and `ai_workflow_saved` events. The ack carries
+    this tab's peer id. Joining again (a reconnection) re-announces."""
+    args = _editor_args(data)
+    user_id = _current_user_id()
+    if args is None or not user_id:
+        return {'ok': False}
+    workflow_id, node_id = args
+    sessions = _editor_sessions.setdefault(request.sid, {})
+    entry = sessions.get(workflow_id)
+    if entry is None and len(sessions) >= _MAX_EDITOR_ROOMS_PER_SOCKET:
+        return {'ok': False}
+    try:
+        session = ai_workflows_editor_session(user_id, workflow_id)
+    except Exception:
+        return {'ok': False}
+    if entry is None:
+        entry = {'peer_id': uuid.uuid4().hex, 'node_id': None, 'focused_at': None}
+        sessions[workflow_id] = entry
+    entry.update(room=session['room'], workflow_id=session['workflow_id'], user_id=session['user_id'],
+                 user_name=session['user_name'])
+    _editor_focus(entry, node_id)
+    join_room(entry['room'])
+    _editor_broadcast('hello', entry)
+    return _editor_ack(entry)
+
+
+@socket_io.on('ai_workflow_editor_update', namespace=NAMESPACE)
+def on_ai_workflow_editor_update(data=None):
+    """The node this tab configures (`{workflow_id, node_id}`, null for
+    none), relayed as `here`; sent again as the heartbeat and in answer
+    to a `hello`. Only for a workflow joined first."""
+    args = _editor_args(data)
+    if args is None:
+        return {'ok': False}
+    workflow_id, node_id = args
+    entry = _editor_sessions.get(request.sid, {}).get(workflow_id)
+    if entry is None:
+        return {'ok': False}
+    _editor_focus(entry, node_id)
+    _editor_broadcast('here', entry)
+    return _editor_ack(entry)
+
+
+@socket_io.on('ai_workflow_editor_leave', namespace=NAMESPACE)
+def on_ai_workflow_editor_leave(data=None):
+    if not isinstance(data, dict):
+        return
+    workflow_id = data.get('workflow_id')
+    if isinstance(workflow_id, bool) or not isinstance(workflow_id, int):
+        return
+    sessions = _editor_sessions.get(request.sid, {})
+    entry = sessions.pop(workflow_id, None)
+    if not sessions:
+        _editor_sessions.pop(request.sid, None)
+    if entry is None:
+        return
+    _editor_broadcast('gone', entry)
+    leave_room(entry['room'])
 
 
 def register_notification_socket_handlers():

@@ -153,6 +153,33 @@ class TestsRestAiWorkflows(TestCase):
         versions = self._subject.get(f'{_AI_WORKFLOWS}/{identifier}/versions').json()
         self.assertEqual([1, 2], sorted(v['version'] for v in versions))
 
+    def test_get_workflow_should_return_a_revision(self):
+        identifier = self._create_workflow().json()['id']
+        body = self._subject.get(f'{_AI_WORKFLOWS}/{identifier}').json()
+        self.assertEqual(16, len(body['revision']))
+
+    def test_update_on_the_current_revision_should_return_200(self):
+        created = self._create_workflow().json()
+        response = self._subject.update(f"{_AI_WORKFLOWS}/{created['id']}",
+                                        {'name': 'Renamed', 'expected_revision': created['revision']})
+        self.assertEqual(200, response.status_code)
+        self.assertNotEqual(created['revision'], response.json()['revision'])
+
+    def test_update_on_a_stale_revision_should_return_409(self):
+        created = self._create_workflow().json()
+        current = self._subject.update(f"{_AI_WORKFLOWS}/{created['id']}", {'name': 'First'}).json()
+        response = self._subject.update(f"{_AI_WORKFLOWS}/{created['id']}",
+                                        {'name': 'Second', 'expected_revision': created['revision']})
+        self.assertEqual(409, response.status_code)
+        self.assertEqual(current['revision'], response.json()['data']['revision'])
+        self.assertEqual('First', self._subject.get(f"{_AI_WORKFLOWS}/{created['id']}").json()['name'])
+
+    def test_update_without_an_expected_revision_should_return_200(self):
+        identifier = self._create_workflow().json()['id']
+        self._subject.update(f'{_AI_WORKFLOWS}/{identifier}', {'name': 'First'})
+        response = self._subject.update(f'{_AI_WORKFLOWS}/{identifier}', {'name': 'Second'})
+        self.assertEqual(200, response.status_code)
+
     def test_get_version_should_return_the_snapshot(self):
         identifier = self._create_workflow().json()['id']
         response = self._subject.get(f'{_AI_WORKFLOWS}/{identifier}/versions/1')

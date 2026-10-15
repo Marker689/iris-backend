@@ -53,6 +53,7 @@ from app.business.ai_workflow_library import ai_workflow_library_delete
 from app.business.ai_workflow_library import ai_workflow_library_list
 from app.business.ai_workflow_library import ai_workflow_library_publish
 from app.business.ai_workflow_library import ai_workflow_library_update
+from app.business.ai_workflows import AiWorkflowsConflictError
 from app.business.ai_workflows import AiWorkflowsForbiddenError
 from app.business.ai_workflows import ai_workflows_authoring_guide
 from app.business.ai_workflows import ai_workflows_cancel
@@ -162,6 +163,8 @@ def _handle(operation, created=False):
         return response_api_not_found()
     except AiWorkflowsForbiddenError as e:
         return response_api_error(e.get_message(), data=e.get_data(), status=403)
+    except AiWorkflowsConflictError as e:
+        return response_api_error(e.get_message(), data=e.get_data(), status=409)
     except BusinessProcessingError as e:
         return response_api_error(e.get_message(), data=e.get_data())
     if created:
@@ -469,7 +472,8 @@ def get_ai_workflow_route(identifier):
 
 @ai_workflows_blueprint.put('/<int:identifier>')
 @ac_api_requires(*_WRITE)
-@api_doc(tags=['AiWorkflows'], summary='Update an AI workflow (a definition change creates a new version)')
+@api_doc(tags=['AiWorkflows'], summary='Update an AI workflow (a definition change creates a new version; '
+                                         'with expected_revision, 409 when it is stale)')
 def put_ai_workflow_route(identifier):
     body, refused = _definition_body()
     if refused is not None:

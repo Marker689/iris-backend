@@ -297,7 +297,8 @@ paths:
           $ref: '#/components/responses/NotFound'
     put:
       operationId: put_ai_workflow_route_put
-      summary: Update an AI workflow (a definition change creates a new version)
+      summary: Update an AI workflow (a definition change creates a new version; with expected_revision,
+        409 when it is stale)
       tags:
       - AiWorkflows
       security:

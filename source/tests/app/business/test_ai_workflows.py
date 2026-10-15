@@ -20,6 +20,7 @@
 run visibility and manual-run entity checks. The DB helpers and the
 engine are patched; workflows are transient model instances."""
 
+import datetime
 import uuid
 from types import SimpleNamespace
 from unittest import TestCase
@@ -27,11 +28,14 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from app import app
+from app.business.ai_workflows import AiWorkflowsConflictError
 from app.business.ai_workflows import AiWorkflowsForbiddenError
 from app.business.ai_workflows import ai_workflows_catalogue
 from app.business.ai_workflows import ai_workflows_check_python
 from app.business.ai_workflows import ai_workflows_create
+from app.business.ai_workflows import ai_workflows_delete
 from app.business.ai_workflows import ai_workflows_export_run
+from app.business.ai_workflows import ai_workflows_get
 from app.business.ai_workflows import ai_workflows_get_run
 from app.business.ai_workflows import ai_workflows_list_runs
 from app.business.ai_workflows import ai_workflows_run_manual
@@ -109,6 +113,7 @@ class _WorkflowsTestCase(TestCase):
         self.graph_errors = []
         self.can_access = MagicMock(return_value=True)
         self.start_run = MagicMock()
+        self.emit_saved = MagicMock()
         self.workflows = {}
         patchers = [
             patch(f'{_BUSINESS}.ai_workflows_db_get_user', side_effect=lambda i: self.users.get(i)),
@@ -127,6 +132,7 @@ class _WorkflowsTestCase(TestCase):
             patch(f'{_BUSINESS}.ai_workflows_entities_user_can_access', self.can_access),
             patch(f'{_BUSINESS}.ai_workflows_engine_start_run', self.start_run),
             patch(f'{_BUSINESS}.track_activity'),
+            patch(f'{_BUSINESS}.ai_workflows_live_emit_saved', self.emit_saved),
         ]
         for patcher in patchers:
             patcher.start()
@@ -217,6 +223,63 @@ class TestsUpdate(_WorkflowsTestCase):
         self.workflows[3] = _stored_workflow()
         with self.assertRaises(ObjectNotFoundError):
             ai_workflows_update(3, {'name': 'x'}, _OTHER, False)
+
+    def test_get_should_carry_a_revision_that_moves_with_the_definition_only(self):
+        self.workflows[3] = _stored_workflow()
+        first = ai_workflows_get(3, _OWNER, False)['revision']
+        self.assertEqual(16, len(first))
+        self.workflows[3].last_fired_at = datetime.datetime(2026, 1, 1)
+        self.assertEqual(first, ai_workflows_get(3, _OWNER, False)['revision'])
+        renamed = ai_workflows_update(3, {'name': 'Renamed'}, _OWNER, False)['revision']
+        self.assertNotEqual(first, renamed)
+
+    def test_save_on_the_current_revision_should_pass(self):
+        self.workflows[3] = _stored_workflow()
+        revision = ai_workflows_get(3, _OWNER, False)['revision']
+        data = ai_workflows_update(3, {'name': 'Renamed', 'expected_revision': revision}, _OWNER, False)
+        self.assertEqual('Renamed', data['name'])
+
+    def test_save_on_a_stale_revision_should_conflict_and_change_nothing(self):
+        workflow = self.workflows[3] = _stored_workflow()
+        stale = ai_workflows_get(3, _OWNER, False)['revision']
+        current = ai_workflows_update(3, {'name': 'First'}, _OWNER, False)
+        with self.assertRaises(AiWorkflowsConflictError) as context:
+            ai_workflows_update(3, {'name': 'Second', 'expected_revision': stale}, _OWNER, False)
+        self.assertEqual({'revision': current['revision'], 'version': 1}, context.exception.get_data())
+        self.assertEqual('First', workflow.name)
+
+    def test_expected_revision_should_be_a_string(self):
+        self.workflows[3] = _stored_workflow()
+        with self.assertRaises(BusinessProcessingError) as context:
+            ai_workflows_update(3, {'name': 'x', 'expected_revision': 12}, _OWNER, False)
+        self.assertNotIsInstance(context.exception, AiWorkflowsConflictError)
+
+    def test_save_should_tell_the_open_editors(self):
+        self.workflows[3] = _stored_workflow()
+        data = ai_workflows_update(3, {'name': 'Renamed', 'editor_client_id': 'tab-1'}, _OWNER, False)
+        self.emit_saved.assert_called_once()
+        workflow_id, payload = self.emit_saved.call_args.args
+        self.assertEqual(3, workflow_id)
+        self.assertEqual({'user_id': _OWNER, 'user_name': None, 'version': 1, 'revision': data['revision'],
+                          'editor_client_id': 'tab-1'}, payload)
+
+    def test_save_without_a_change_should_not_tell_the_editors(self):
+        self.workflows[3] = _stored_workflow()
+        ai_workflows_update(3, {'name': 'Stored'}, _OWNER, False)
+        self.emit_saved.assert_not_called()
+
+    def test_malformed_editor_client_id_should_not_be_echoed(self):
+        self.workflows[3] = _stored_workflow()
+        ai_workflows_update(3, {'name': 'Renamed', 'editor_client_id': '<script>'}, _OWNER, False)
+        self.assertIsNone(self.emit_saved.call_args.args[1]['editor_client_id'])
+
+    def test_delete_should_tell_the_open_editors(self):
+        workflow = self.workflows[3] = _stored_workflow()
+        with patch(f'{_BUSINESS}.ai_workflows_db_lock_workflow', return_value=workflow), \
+                patch(f'{_BUSINESS}.ai_workflows_db_active_runs_for_workflow', return_value=[]), \
+                patch(f'{_BUSINESS}.ai_workflows_db_delete'):
+            ai_workflows_delete(3, _OWNER, False)
+        self.emit_saved.assert_called_once_with(3, {'user_id': _OWNER, 'user_name': None, 'deleted': True})
 
     def test_leaving_webhook_should_drop_the_inbound_token(self):
         workflow = self.workflows[3] = _stored_workflow(trigger_type='webhook', trigger_config={},

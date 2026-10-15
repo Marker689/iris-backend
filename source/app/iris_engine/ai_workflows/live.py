@@ -22,7 +22,12 @@ Each change (a node starts or settles, the run changes status) goes to
 the run's room and its workflow's room on the `/notifications`
 namespace. Joining a room checks the user may see that run or edit that
 workflow (`ai_workflows_live_room`); a push only carries ids and
-statuses, the details are read over REST."""
+statuses, the details are read over REST.
+
+The editors of a workflow share a second room: who has the editor open
+and which node each one is configuring (`EDITOR_EVENT`, relayed by the
+socket handlers), and each save or deletion (`SAVED_EVENT`), so an
+open editor never silently works on a stale definition."""
 
 import logging
 
@@ -30,6 +35,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 LIVE_EVENT = 'ai_workflow_run'
+EDITOR_EVENT = 'ai_workflow_editor'
+SAVED_EVENT = 'ai_workflow_saved'
 
 
 def ai_workflows_live_run_room(run_uuid) -> str:
@@ -38,6 +45,22 @@ def ai_workflows_live_run_room(run_uuid) -> str:
 
 def ai_workflows_live_workflow_room(workflow_id) -> str:
     return f'ai-workflow-{int(workflow_id)}'
+
+
+def ai_workflows_live_editor_room(workflow_id) -> str:
+    return f'ai-workflow-editors-{int(workflow_id)}'
+
+
+def ai_workflows_live_emit_saved(workflow_id, payload):
+    """Tell the open editors of a workflow it was saved or deleted;
+    never raises."""
+    from app.iris_engine.notifications.service import _safe_socket_emit
+
+    try:
+        _safe_socket_emit(SAVED_EVENT, {'workflow_id': int(workflow_id), **payload},
+                          room=ai_workflows_live_editor_room(workflow_id))
+    except Exception:
+        logger.exception('Could not push the save of an AI workflow')
 
 
 def ai_workflows_live_payload(run, step=None) -> dict:
