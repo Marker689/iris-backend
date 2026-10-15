@@ -79,9 +79,16 @@ from app.business.ai_workflows import ai_workflows_rerun
 from app.business.ai_workflows import ai_workflows_rotate_inbound_token
 from app.business.ai_workflows import ai_workflows_rotate_signing_secret
 from app.business.ai_workflows import ai_workflows_run_manual
+from app.business.ai_workflows import ai_workflows_set_category
 from app.business.ai_workflows import ai_workflows_update
 from app.business.ai_workflows import ai_workflows_validate_definition
+from app.business.categories import categories_create
+from app.business.categories import categories_delete
+from app.business.categories import categories_list
+from app.business.categories import categories_rename
+from app.business.categories import categories_serialize
 from app.models.authorization import Permissions
+from app.models.categories import CATEGORY_KIND_AI_WORKFLOW
 from app.models.errors import BusinessProcessingError
 from app.models.errors import ObjectNotFoundError
 
@@ -392,6 +399,48 @@ def export_ai_workflow_block_route(block_id):
     return _handle(lambda: ai_workflow_blocks_export(block_id, iris_current_user.id, _is_admin()))
 
 
+# ---- Categories ------------------------------------------------------------
+
+def _category_name():
+    body = request.get_json(silent=True)
+    return body.get('name') if isinstance(body, dict) else None
+
+
+@ai_workflows_blueprint.get('/categories')
+@ac_api_requires(*_READ)
+@api_doc(tags=['AiWorkflows'], summary='List the AI workflow categories')
+def list_ai_workflow_categories_route():
+    return _handle(lambda: [categories_serialize(c) for c in categories_list(CATEGORY_KIND_AI_WORKFLOW)])
+
+
+@ai_workflows_blueprint.post('/categories')
+@ac_api_requires(*_WRITE)
+@api_doc(response_shape='created', tags=['AiWorkflows'], summary='Create an AI workflow category')
+def create_ai_workflow_category_route():
+    return _handle(lambda: categories_serialize(
+        categories_create(CATEGORY_KIND_AI_WORKFLOW, _category_name(), iris_current_user.id)), created=True)
+
+
+@ai_workflows_blueprint.patch('/categories/<int:category_id>')
+@ac_api_requires(*_WRITE)
+@api_doc(tags=['AiWorkflows'], summary='Rename an AI workflow category')
+def rename_ai_workflow_category_route(category_id):
+    return _handle(lambda: categories_serialize(
+        categories_rename(CATEGORY_KIND_AI_WORKFLOW, category_id, _category_name())))
+
+
+@ai_workflows_blueprint.delete('/categories/<int:category_id>')
+@ac_api_requires(*_WRITE)
+@api_doc(response_shape='deleted', tags=['AiWorkflows'],
+         summary='Delete an AI workflow category (its workflows become uncategorised)')
+def delete_ai_workflow_category_route(category_id):
+    try:
+        categories_delete(CATEGORY_KIND_AI_WORKFLOW, category_id)
+    except ObjectNotFoundError:
+        return response_api_not_found()
+    return response_api_deleted()
+
+
 # ---- Workflows -------------------------------------------------------------
 
 @ai_workflows_blueprint.get('')
@@ -426,6 +475,17 @@ def put_ai_workflow_route(identifier):
     if refused is not None:
         return refused
     return _handle(lambda: ai_workflows_update(identifier, body, iris_current_user.id, _is_admin()))
+
+
+@ai_workflows_blueprint.put('/<int:identifier>/category')
+@ac_api_requires(*_WRITE)
+@api_doc(tags=['AiWorkflows'], summary='File an AI workflow under a category (category_id null: no category)')
+def put_ai_workflow_category_route(identifier):
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or 'category_id' not in body:
+        return response_api_error('category_id is required (null for no category)')
+    return _handle(lambda: ai_workflows_set_category(identifier, body['category_id'], iris_current_user.id,
+                                                     _is_admin()))
 
 
 @ai_workflows_blueprint.delete('/<int:identifier>')

@@ -25,6 +25,7 @@ def serialize_war_room(war_room):
         'state': war_room.state,
         'severity_id': war_room.severity_id,
         'color': war_room.color,
+        'category_id': getattr(war_room, 'category_id', None),
         'created_at': war_room.created_at.isoformat() if war_room.created_at else None,
         'created_by_id': war_room.created_by_id,
         'closed_at': war_room.closed_at.isoformat() if war_room.closed_at else None,

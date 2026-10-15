@@ -16,6 +16,9 @@ URL layout (mounted at `/api/v2/war-rooms`):
     GET    /<id>                fetch a single war room
     PATCH  /<id>                update name/state/etc.   [war_rooms_write]
     DELETE /<id>                delete (cascade)         [war_rooms_create]
+    PUT    /<id>/category       file under a category    [war_rooms_write]
+
+    /categories                 see categories.py
 
     GET    /<id>/members        list members
     POST   /<id>/members        add member (also grants ACL)
@@ -59,6 +62,7 @@ from app.business.war_rooms import (
     war_room_members_list,
     war_room_people,
     war_room_remove_member,
+    war_room_set_category,
     war_room_unarchive,
     war_room_update,
 )
@@ -69,6 +73,7 @@ from app.models.errors import ObjectNotFoundError
 
 
 from app.blueprints.rest.v2.war_rooms.board import war_rooms_board_blueprint
+from app.blueprints.rest.v2.war_rooms.categories import war_rooms_categories_blueprint
 from app.blueprints.rest.v2.war_rooms.chat import war_rooms_chat_blueprint
 from app.blueprints.rest.v2.war_rooms.datastore import war_rooms_datastore_blueprint
 from app.blueprints.rest.v2.war_rooms.decisions import war_rooms_decisions_blueprint
@@ -87,6 +92,7 @@ from app.blueprints.rest.v2.war_rooms.vulnerabilities import war_rooms_vulnerabi
 war_rooms_blueprint = Blueprint(
     'war_rooms_rest_v2', __name__, url_prefix='/war-rooms'
 )
+war_rooms_blueprint.register_blueprint(war_rooms_categories_blueprint)
 war_rooms_blueprint.register_blueprint(war_rooms_chat_blueprint)
 war_rooms_blueprint.register_blueprint(war_rooms_tasks_blueprint)
 war_rooms_blueprint.register_blueprint(war_rooms_notes_blueprint)
@@ -160,6 +166,7 @@ def create_war_room():
             color=raw.get('color'),
             created_by_id=iris_current_user.id,
             custom_attributes=raw.get('custom_attributes'),
+            category_id=raw.get('category_id'),
         )
     except BusinessProcessingError as e:
         return response_api_error(e.get_message())
@@ -219,6 +226,27 @@ def update_war_room(war_room_id):
             author_id=iris_current_user.id,
         )
 
+    return response_api_success(data=serialize_war_room(war_room))
+
+
+@war_rooms_blueprint.put('/<int:war_room_id>/category')
+@ac_api_requires()
+@api_doc(tags=['WarRooms'], summary='File a war room under a category (category_id null: no category)')
+def set_war_room_category(war_room_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+
+    raw = request.get_json(silent=True)
+    if not isinstance(raw, dict) or 'category_id' not in raw:
+        return response_api_error('category_id is required (null for no category)')
+
+    try:
+        war_room = war_room_set_category(war_room_id, raw['category_id'])
+    except ObjectNotFoundError:
+        return response_api_not_found()
+    except BusinessProcessingError as e:
+        return response_api_error(e.get_message())
     return response_api_success(data=serialize_war_room(war_room))
 
 

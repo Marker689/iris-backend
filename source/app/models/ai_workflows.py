@@ -63,6 +63,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 from app.db import db
+from app.models.categories import ObjectCategory
 
 
 TRIGGER_EVENT = 'event'
@@ -255,6 +256,8 @@ class AiWorkflow(db.Model):
     skipped_count = Column(BigInteger, nullable=False, default=0)
     last_skip_reason = Column(String(64), nullable=True)
     last_skipped_at = Column(DateTime, nullable=True)
+    # Filing only: not part of the definition, so no new version
+    category_id = Column(ForeignKey('object_category.id', ondelete='SET NULL'), nullable=True, index=True)
 
     created_by_id = Column(ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
@@ -262,6 +265,7 @@ class AiWorkflow(db.Model):
 
     owner = relationship('User', foreign_keys=[owner_id])
     created_by = relationship('User', foreign_keys=[created_by_id])
+    category = relationship(ObjectCategory)
 
 
 class AiWorkflowVersion(db.Model):

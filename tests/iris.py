@@ -171,6 +171,11 @@ class Iris:
         if isinstance(war_rooms, list):
             for room in war_rooms:
                 self.delete(f"/api/v2/war-rooms/{room['war_room_id']}")
+        for path in ('/api/v2/war-rooms/categories', '/api/v2/ai-workflows/categories'):
+            categories = self.get(path).json()
+            if isinstance(categories, list):
+                for category in categories:
+                    self.delete(f"{path}/{category['id']}")
         cases = self.get('/api/v2/cases', query_parameters={'per_page': 1000000000}).json()
         for case in cases['data']:
             identifier = case['case_id']

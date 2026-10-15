@@ -49,6 +49,7 @@ import uuid
 
 from app import app
 from app.business.access_controls import access_controls_user_accessible_customers
+from app.business.categories import categories_resolve_id
 from app.datamgmt.ai_workflows.ai_workflows_business_db import ai_workflows_business_db_involved_runs
 from app.datamgmt.ai_workflows.ai_workflows_business_db import ai_workflows_business_db_node_stats
 from app.datamgmt.ai_workflows.ai_workflows_business_db import ai_workflows_business_db_node_step_candidates
@@ -144,6 +145,7 @@ from app.models.ai_workflows import ai_workflow_trigger_config
 from app.models.ai_workflows import ai_workflow_trigger_of_node
 from app.models.ai_workflows import ai_workflow_triggers
 from app.models.authorization import Permissions
+from app.models.categories import CATEGORY_KIND_AI_WORKFLOW
 from app.models.authorization import ac_has_permission_server_administrator
 from app.models.errors import BusinessProcessingError
 from app.models.errors import ObjectNotFoundError
@@ -288,6 +290,7 @@ def ai_workflows_serialize(workflow, counts=None, users=None, with_graph=True) -
         'last_skipped_at': _iso(getattr(workflow, 'last_skipped_at', None)),
         'inbound_url': ai_workflows_engine_inbound_url(str(workflow.uuid)) if is_webhook and workflow.uuid else None,
         'last_fired_at': _iso(workflow.last_fired_at),
+        'category_id': getattr(workflow, 'category_id', None),
         'created_by_id': workflow.created_by_id,
         'created_at': _iso(workflow.created_at),
         'updated_at': _iso(workflow.updated_at),
@@ -878,6 +881,19 @@ def ai_workflows_update(workflow_id, body, user_id, is_admin) -> dict:
     ai_workflows_db_commit()
     suffix = f' (version {workflow.version}: {", ".join(changed)})' if changed else ''
     track_activity(f'AI workflow #{workflow.id} "{workflow.name}" updated{suffix}', ctx_less=True)
+    return ai_workflows_get(workflow.id, user_id, is_admin)
+
+
+def ai_workflows_set_category(workflow_id, category_id, user_id, is_admin) -> dict:
+    """File the workflow under an AI-workflow category, or none (`None`).
+    Not a definition change: no new version."""
+    workflow = _get_owned_workflow(workflow_id, user_id, is_admin)
+    category_id = categories_resolve_id(CATEGORY_KIND_AI_WORKFLOW, category_id)
+    if workflow.category_id != category_id:
+        workflow.category_id = category_id
+        ai_workflows_db_commit()
+        target = f'category "{workflow.category.name}"' if workflow.category else 'no category'
+        track_activity(f'AI workflow #{workflow.id} "{workflow.name}" moved to {target}', ctx_less=True)
     return ai_workflows_get(workflow.id, user_id, is_admin)
 
 

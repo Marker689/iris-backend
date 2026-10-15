@@ -317,6 +317,29 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/v2/ai-workflows/{identifier}/category:
+    put:
+      operationId: put_ai_workflow_category_route_put
+      summary: 'File an AI workflow under a category (category_id null: no category)'
+      tags:
+      - AiWorkflows
+      security:
+      - ApiKey: []
+      parameters:
+      - name: identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v2/ai-workflows/{identifier}/export:
     get:
       operationId: export_ai_workflow_route_get
@@ -804,6 +827,80 @@ paths:
           $ref: '#/components/responses/ApiError'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /api/v2/ai-workflows/categories:
+    get:
+      operationId: list_ai_workflow_categories_route_get
+      summary: List the AI workflow categories
+      tags:
+      - AiWorkflows
+      security:
+      - ApiKey: []
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: create_ai_workflow_category_route_post
+      summary: Create an AI workflow category
+      tags:
+      - AiWorkflows
+      security:
+      - ApiKey: []
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v2/ai-workflows/categories/{category_id}:
+    delete:
+      operationId: delete_ai_workflow_category_route_delete
+      summary: Delete an AI workflow category (its workflows become uncategorised)
+      tags:
+      - AiWorkflows
+      security:
+      - ApiKey: []
+      parameters:
+      - name: category_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '204':
+          $ref: '#/components/responses/Deleted'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: rename_ai_workflow_category_route_patch
+      summary: Rename an AI workflow category
+      tags:
+      - AiWorkflows
+      security:
+      - ApiKey: []
+      parameters:
+      - name: category_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v2/ai-workflows/hooks/{workflow_uuid}:
     post:
       operationId: ai_workflows_hook_route_post
@@ -14128,6 +14225,29 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/v2/war-rooms/{war_room_id}/category:
+    put:
+      operationId: set_war_room_category_put
+      summary: 'File a war room under a category (category_id null: no category)'
+      tags:
+      - WarRooms
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v2/war-rooms/{war_room_id}/chat:
     get:
       operationId: list_chat_get
@@ -17575,6 +17695,80 @@ paths:
         schema:
           type: integer
       - name: vulnerability_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/war-rooms/categories:
+    get:
+      operationId: list_war_room_categories_get
+      summary: List the war room categories
+      tags:
+      - WarRooms
+      security:
+      - ApiKey: []
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: create_war_room_category_post
+      summary: Create a war room category
+      tags:
+      - WarRooms
+      security:
+      - ApiKey: []
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v2/war-rooms/categories/{category_id}:
+    delete:
+      operationId: delete_war_room_category_delete
+      summary: Delete a war room category (its war rooms become uncategorised)
+      tags:
+      - WarRooms
+      security:
+      - ApiKey: []
+      parameters:
+      - name: category_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '204':
+          $ref: '#/components/responses/Deleted'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: rename_war_room_category_patch
+      summary: Rename a war room category
+      tags:
+      - WarRooms
+      security:
+      - ApiKey: []
+      parameters:
+      - name: category_id
         in: path
         required: true
         schema:

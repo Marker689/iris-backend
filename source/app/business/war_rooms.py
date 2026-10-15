@@ -18,6 +18,7 @@ mocking Flask.
 import datetime
 import re
 
+from app.business.categories import categories_resolve_id
 from app.datamgmt.manage.manage_common import get_severity_by_id
 from app.datamgmt.war_rooms.war_rooms_db import apply_search_filter as _apply_search_filter
 from app.datamgmt.war_rooms.war_rooms_db import state_priority_expr as _state_priority_expr_builder
@@ -30,6 +31,7 @@ from app.models.authorization import (
     WarRoomAccessLevel,
 )
 from app.models.cases import Cases
+from app.models.categories import CATEGORY_KIND_WAR_ROOM
 from app.models.errors import BusinessProcessingError
 from app.models.errors import ObjectNotFoundError
 from app.models.war_rooms import (
@@ -206,11 +208,13 @@ def war_room_unarchive(war_room_id):
 
 
 def war_room_create(name, description=None, state=None, severity_id=None,
-                    color=None, created_by_id=None, custom_attributes=None):
+                    color=None, created_by_id=None, custom_attributes=None,
+                    category_id=None):
     name = _validate_name(name)
     color = _validate_color(color)
     state = _validate_state(state) or WarRoomState.open.value
     severity_id = _validate_severity(severity_id)
+    category_id = categories_resolve_id(CATEGORY_KIND_WAR_ROOM, category_id)
 
     war_room = WarRoom()
     war_room.name = name
@@ -220,6 +224,7 @@ def war_room_create(name, description=None, state=None, severity_id=None,
     war_room.color = color
     war_room.created_by_id = created_by_id
     war_room.custom_attributes = custom_attributes
+    war_room.category_id = category_id
     db.session.add(war_room)
     db.session.commit()
 
@@ -293,6 +298,19 @@ def war_room_update(war_room_id, name=None, description=None, state=None,
         from app.business.war_room_note_shares import war_room_note_shares_reconcile_safe
         war_room_note_shares_reconcile_safe(war_room_id)
     war_room = call_modules_hook('on_postload_war_room_update', war_room)
+    return war_room
+
+
+def war_room_set_category(war_room_id, category_id):
+    """File the room under a war-room category, or none (`None`).
+    The caller has checked write access to the room."""
+    war_room = war_room_get(war_room_id)
+    category_id = categories_resolve_id(CATEGORY_KIND_WAR_ROOM, category_id)
+    if war_room.category_id != category_id:
+        war_room.category_id = category_id
+        db.session.commit()
+        target = f'category "{war_room.category.name}"' if war_room.category else 'no category'
+        track_activity(f'moved war room "{war_room.name}" to {target}', war_room_id=war_room_id)
     return war_room
 
 

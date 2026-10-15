@@ -40,6 +40,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.db import db
+from app.models.categories import ObjectCategory
 
 
 class WarRoomState(enum.Enum):
@@ -97,8 +98,12 @@ class WarRoom(db.Model):
     # and nags `sitrep_reminder_minutes` before the deadline.
     sitrep_cadence_minutes = Column(Integer, nullable=True)
     sitrep_reminder_minutes = Column(Integer, nullable=True)
+    # Filing only, no effect on access. See migration e5b2c8d1f4a7.
+    category_id = Column(BigInteger, ForeignKey('object_category.id', ondelete='SET NULL'),
+                         nullable=True, index=True)
 
     created_by = relationship('User', foreign_keys=[created_by_id])
+    category = relationship(ObjectCategory)
     closed_by = relationship('User', foreign_keys=[closed_by_id])
     archived_by = relationship('User', foreign_keys=[archived_by_id])
     severity = relationship('Severity')
