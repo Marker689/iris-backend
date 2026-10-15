@@ -327,6 +327,78 @@ class TestBulkFlag(_DbPatches):
                 scope.war_room_scope_bulk_flag(9, 7, [1], 3, 'set', None, 5, [1], [1])
 
 
+def _flag(flag_id, requires_reason=False, requires_decision=False):
+    return SimpleNamespace(id=flag_id, name=f'Flag {flag_id}', requires_reason=requires_reason,
+                           requires_decision=requires_decision)
+
+
+class TestBulkSeveralFlags(_DbPatches):
+
+    def test_sets_every_flag(self):
+        assets = [_flagged(1, 1), _flagged(2, 1, 3), _flagged(3, 1, 3, 4), _flagged(4, 2)]
+        with patch(f'{_BIZ}.war_room_scope_db_assets_by_ids', return_value=assets), \
+                patch(f'{_BIZ}.asset_flags_get', side_effect=_flag), \
+                patch(f'{_BIZ}.asset_flags_set_for_asset') as set_flag, \
+                patch(f'{_BIZ}.call_modules_hook') as hook:
+            result = scope.war_room_scope_bulk_flag(9, 7, [1, 2, 3, 4], None, 'set', None, None, [1, 2], [1],
+                                                    flag_ids=[3, 4])
+        statuses = {row['asset_id']: row['status'] for row in result['results']}
+        self.assertEqual({1: 'updated', 2: 'updated', 3: 'unchanged', 4: 'denied'}, statuses)
+        self.assertEqual([(assets[0], 3), (assets[0], 4), (assets[1], 4)],
+                         [(call.args[0], call.args[1]) for call in set_flag.call_args_list])
+        self.mocks['track'].assert_called_once_with('changed the flags of 2 asset(s) from the war room scope',
+                                                    war_room_id=9)
+        self.assertEqual([(3, [1]), (4, [1, 2])],
+                         [(call.args[1]['flag_id'], call.args[1]['asset_ids']) for call in hook.call_args_list])
+
+    def test_clears_every_flag(self):
+        assets = [_flagged(1, 1, 3, 4)]
+        with patch(f'{_BIZ}.war_room_scope_db_assets_by_ids', return_value=assets), \
+                patch(f'{_BIZ}.asset_flags_clear_for_asset') as clear_flag, \
+                patch(f'{_BIZ}.call_modules_hook'):
+            result = scope.war_room_scope_bulk_flag(9, 7, [1], None, 'clear', None, None, [1], [1], flag_ids=[3, 4])
+        self.assertEqual('updated', result['results'][0]['status'])
+        self.assertEqual([3, 4], [call.args[1] for call in clear_flag.call_args_list])
+
+    def test_requirements_are_checked_before_any_change(self):
+        with patch(f'{_BIZ}.war_room_scope_db_assets_by_ids') as load, \
+                patch(f'{_BIZ}.asset_flags_get',
+                      side_effect=lambda flag_id: _flag(flag_id, requires_reason=flag_id == 4)):
+            with self.assertRaisesRegex(BusinessProcessingError, 'Flag "Flag 4" requires a reason'):
+                scope.war_room_scope_bulk_flag(9, 7, [1], None, 'set', '  ', None, [1], [1], flag_ids=[3, 4])
+        load.assert_not_called()
+        with patch(f'{_BIZ}.asset_flags_get', side_effect=lambda flag_id: _flag(flag_id, requires_decision=True)):
+            with self.assertRaisesRegex(BusinessProcessingError, 'requires a war-room decision'):
+                scope.war_room_scope_bulk_flag(9, 7, [1], None, 'set', None, None, [1], [1], flag_ids=[3])
+
+    def test_validation(self):
+        with self.assertRaisesRegex(BusinessProcessingError, 'not both'):
+            scope.war_room_scope_bulk_flag(9, 7, [1], 3, 'set', None, None, [1], [1], flag_ids=[4])
+        with self.assertRaisesRegex(BusinessProcessingError, 'at least 1'):
+            scope.war_room_scope_bulk_flag(9, 7, [1], None, 'set', None, None, [1], [1], flag_ids=[])
+        with self.assertRaisesRegex(BusinessProcessingError, 'at most 20'):
+            scope.war_room_scope_bulk_flag(9, 7, [1], None, 'set', None, None, [1], [1],
+                                           flag_ids=list(range(1, 22)))
+        self.mocks['flag'].return_value = False
+        with self.assertRaisesRegex(BusinessProcessingError, 'Flag not found'):
+            scope.war_room_scope_bulk_flag(9, 7, [1], None, 'set', None, None, [1], [1], flag_ids=[3])
+
+    def test_error_after_a_flag_is_reported_as_partial(self):
+        assets = [_flagged(1, 1)]
+        with patch(f'{_BIZ}.war_room_scope_db_assets_by_ids', return_value=assets), \
+                patch(f'{_BIZ}.asset_flags_get', side_effect=_flag), \
+                patch(f'{_BIZ}.asset_flags_set_for_asset',
+                      side_effect=[assets[0], BusinessProcessingError('Data error')]), \
+                patch(f'{_BIZ}.call_modules_hook') as hook:
+            result = scope.war_room_scope_bulk_flag(9, 7, [1], None, 'set', None, None, [1], [1], flag_ids=[3, 4])
+        row = result['results'][0]
+        self.assertEqual('error', row['status'])
+        self.assertIn('the flags before this one were changed', row['message'])
+        self.mocks['rollback'].assert_called_once()
+        self.assertEqual([(3, [1])],
+                         [(call.args[1]['flag_id'], call.args[1]['asset_ids']) for call in hook.call_args_list])
+
+
 def _statused(asset_id, case_id, compromise_status_id=0, analysis_status_id=1):
     return SimpleNamespace(asset_id=asset_id, case_id=case_id, asset_compromise_status_id=compromise_status_id,
                            analysis_status_id=analysis_status_id, date_update=None)

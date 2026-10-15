@@ -42,8 +42,10 @@ import uuid
 from marshmallow import ValidationError
 
 from app.business.asset_flags import asset_flags_clear_for_asset
+from app.business.asset_flags import asset_flags_get
 from app.business.asset_flags import asset_flags_is_unchanged
 from app.business.asset_flags import asset_flags_set_for_asset
+from app.business.asset_flags import asset_flags_validate_reason
 from app.business.assets import assets_create
 from app.business.assets import assets_update
 from app.business.iocs import iocs_create
@@ -93,6 +95,7 @@ WAR_ROOM_SCOPE_LIST_LIMIT = 5000
 WAR_ROOM_SCOPE_MAX_SOURCES = 200
 WAR_ROOM_SCOPE_MAX_TARGETS = 50
 WAR_ROOM_SCOPE_MAX_BULK_FLAG = 500
+WAR_ROOM_SCOPE_MAX_BULK_FLAGS_PER_CALL = 20
 WAR_ROOM_SCOPE_MAX_STAGED = 500
 WAR_ROOM_SCOPE_DEFAULT_PER_PAGE = 100
 WAR_ROOM_SCOPE_MAX_PER_PAGE = 500
@@ -966,11 +969,39 @@ def war_room_scope_push_iocs(war_room_id, user, ioc_ids, case_ids, readable_case
 WAR_ROOM_SCOPE_FLAG_ACTIONS = ('set', 'clear')
 
 
+def _validate_bulk_flag_ids(flag_id, flag_ids):
+    """`flag_id` alone, or the `flag_ids` list, never both."""
+    if flag_ids is None:
+        return [_validate_flag_id(flag_id)]
+    if flag_id is not None:
+        raise BusinessProcessingError('Use flag_id or flag_ids, not both')
+    ids = _validate_id_list(flag_ids, 'flag_ids', WAR_ROOM_SCOPE_MAX_BULK_FLAGS_PER_CALL)
+    for one_id in ids:
+        _validate_flag_id(one_id, 'flag_ids')
+    return ids
+
+
+def _check_flag_requirements(flag_ids, reason, decision_id):
+    """Reject up front a flag that needs a reason / decision not given,
+    rather than failing it asset by asset after the other flags applied."""
+    for flag_id in flag_ids:
+        flag = asset_flags_get(flag_id)
+        if flag.requires_reason and not reason:
+            raise BusinessProcessingError(f'Flag "{flag.name}" requires a reason')
+        if flag.requires_decision and decision_id is None:
+            raise BusinessProcessingError(f'Flag "{flag.name}" requires a war-room decision')
+
+
 def war_room_scope_bulk_flag(war_room_id, user_id, asset_ids, flag_id, action, reason, decision_id,
-                             readable_case_ids, writable_case_ids):
-    """Set (`action='set'`) or remove (`'clear'`) one flag on many assets."""
+                             readable_case_ids, writable_case_ids, flag_ids=None):
+    """Set (`action='set'`) or remove (`'clear'`) one flag (`flag_id`) or
+    several (`flag_ids`) on many assets.
+
+    The reason and the decision apply to every flag. An asset is `updated`
+    when at least one of its flags changed, `unchanged` when none did."""
     asset_ids = _validate_id_list(asset_ids, 'asset_ids', WAR_ROOM_SCOPE_MAX_BULK_FLAG)
-    flag_id = _validate_flag_id(flag_id)
+    several = flag_ids is not None
+    flag_ids = _validate_bulk_flag_ids(flag_id, flag_ids)
     if action not in WAR_ROOM_SCOPE_FLAG_ACTIONS:
         raise BusinessProcessingError(f'action must be one of: {", ".join(WAR_ROOM_SCOPE_FLAG_ACTIONS)}')
     reason = _validate_text(reason, 'reason', _MAX_REASON)
@@ -979,6 +1010,8 @@ def war_room_scope_bulk_flag(war_room_id, user_id, asset_ids, flag_id, action, r
         decision_id = None
     if decision_id is not None and not war_room_scope_db_decision_in_room(war_room_id, decision_id):
         raise BusinessProcessingError('Decision not found in this war room')
+    if several and action == 'set':
+        _check_flag_requirements(flag_ids, asset_flags_validate_reason(reason), decision_id)
 
     readable = set(readable_case_ids)
     writable = set(writable_case_ids)
@@ -987,7 +1020,10 @@ def war_room_scope_bulk_flag(war_room_id, user_id, asset_ids, flag_id, action, r
     owners = {asset_id: asset.case_id for asset_id, asset in assets.items()}
 
     results = []
-    updated = 0
+    # Assets changed per flag, for the hook: each flag change commits on
+    # its own, so a later error on the same asset does not undo it.
+    changed_by_flag = {one_id: [] for one_id in flag_ids}
+    updated = set()
     for asset_id in asset_ids:
         asset = assets.get(asset_id)
         case_id = owners.get(asset_id)
@@ -998,34 +1034,47 @@ def war_room_scope_bulk_flag(war_room_id, user_id, asset_ids, flag_id, action, r
             results.append({'asset_id': asset_id, 'case_id': case_id, 'status': 'denied',
                             'message': _DENIED_CASE_MESSAGE})
             continue
+        changed = False
         try:
-            if asset_flags_is_unchanged(asset, flag_id, action, reason, decision_id):
-                results.append({'asset_id': asset_id, 'case_id': case_id, 'status': 'unchanged'})
-                continue
-            if action == 'set':
-                asset_flags_set_for_asset(asset, flag_id, reason, decision_id, user_id, war_room_id=war_room_id)
-            else:
-                asset_flags_clear_for_asset(asset, flag_id, reason, user_id, war_room_id=war_room_id)
-            updated += 1
-            results.append({'asset_id': asset_id, 'case_id': case_id, 'status': 'updated'})
+            for one_id in flag_ids:
+                if asset_flags_is_unchanged(asset, one_id, action, reason, decision_id):
+                    continue
+                if action == 'set':
+                    asset_flags_set_for_asset(asset, one_id, reason, decision_id, user_id, war_room_id=war_room_id)
+                else:
+                    asset_flags_clear_for_asset(asset, one_id, reason, user_id, war_room_id=war_room_id)
+                changed = True
+                updated.add(asset_id)
+                changed_by_flag[one_id].append(asset_id)
+            results.append({'asset_id': asset_id, 'case_id': case_id, 'status': 'updated' if changed else 'unchanged'})
         except BusinessProcessingError as e:
             war_room_scope_db_rollback()
             results.append({'asset_id': asset_id, 'case_id': case_id, 'status': 'error',
-                            'message': e.get_message()})
+                            'message': _partial_flag_message(e.get_message(), changed)})
         except Exception:
             _unexpected_error(f'changing the flags of asset {asset_id}')
             results.append({'asset_id': asset_id, 'case_id': case_id, 'status': 'error',
-                            'message': 'Unexpected error, the flags were not changed'})
+                            'message': 'Unexpected error, only some of the flags were changed' if changed
+                            else 'Unexpected error, the flags were not changed'})
 
     if updated:
-        track_activity(f'changed the flags of {updated} asset(s) from the war room scope', war_room_id=war_room_id)
-        call_modules_hook('on_postload_war_room_scope_flag_update', {
-            'war_room_id': war_room_id, 'flag_id': flag_id, 'action': action, 'reason': reason,
-            'decision_id': decision_id,
-            'asset_ids': [row['asset_id'] for row in results if row['status'] == 'updated'],
-        })
+        track_activity(f'changed the flags of {len(updated)} asset(s) from the war room scope',
+                       war_room_id=war_room_id)
+        for one_id, changed_ids in changed_by_flag.items():
+            if not changed_ids:
+                continue
+            call_modules_hook('on_postload_war_room_scope_flag_update', {
+                'war_room_id': war_room_id, 'flag_id': one_id, 'action': action, 'reason': reason,
+                'decision_id': decision_id, 'asset_ids': changed_ids,
+            })
 
     return {'results': results}
+
+
+def _partial_flag_message(message, changed):
+    if not changed:
+        return message
+    return f'{message} (the flags before this one were changed)'
 
 
 def war_room_scope_bulk_status(war_room_id, asset_ids, compromise_status_id, analysis_status_id,

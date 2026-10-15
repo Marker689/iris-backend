@@ -312,7 +312,9 @@ def push_scope_iocs(war_room_id):
 
 @war_rooms_scope_blueprint.post('/assets/flags')
 @ac_api_requires()
-@api_doc(tags=['WarRoomScope'], summary='Set or remove a status flag on several assets of the attached cases')
+@api_doc(tags=['WarRoomScope'],
+         summary='Set or remove one status flag (flag_id) or several (flag_ids) on several assets of the '
+                 'attached cases')
 def bulk_flag_scope_assets(war_room_id):
     err = require_war_room_write(war_room_id)
     if err is not None:
@@ -325,7 +327,7 @@ def bulk_flag_scope_assets(war_room_id):
     try:
         result = war_room_scope_bulk_flag(
             war_room_id, iris_current_user.id, raw.get('asset_ids'), raw.get('flag_id'), raw.get('action', 'set'),
-            raw.get('reason'), raw.get('decision_id'), readable, writable,
+            raw.get('reason'), raw.get('decision_id'), readable, writable, flag_ids=raw.get('flag_ids'),
         )
     except BusinessProcessingError as e:
         return response_api_error(e.get_message())

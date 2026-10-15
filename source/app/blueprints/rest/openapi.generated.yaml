@@ -15859,7 +15859,8 @@ paths:
   /api/v2/war-rooms/{war_room_id}/scope/assets/flags:
     post:
       operationId: bulk_flag_scope_assets_post
-      summary: Set or remove a status flag on several assets of the attached cases
+      summary: Set or remove one status flag (flag_id) or several (flag_ids) on several assets of the
+        attached cases
       tags:
       - WarRoomScope
       security:

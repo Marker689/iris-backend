@@ -294,6 +294,67 @@ class TestsRestWarRoomScope(TestCase):
         self.assertEqual(['cleared', 'set'], [entry['action'] for entry in history])
         self.assertEqual(room_id, history[0]['war_room_id'])
 
+    def _plain_flag_ids(self, count):
+        flags = self._subject.get('/api/v2/manage/asset-flags').json()
+        ids = [flag['id'] for flag in flags if not flag['requires_reason'] and not flag['requires_decision']]
+        if len(ids) < count:
+            self.skipTest(f'needs {count} flags without reason or decision requirement')
+        return ids[:count]
+
+    def test_bulk_flag_should_set_and_clear_several_flags(self):
+        room_id = self._room()
+        case_id = self._attach_case(room_id)
+        asset_id = self._asset(case_id, 'srv-flags')
+        flag_ids = self._plain_flag_ids(2)
+        path = f'/api/v2/war-rooms/{room_id}/scope/assets/flags'
+
+        response = self._subject.create(path, {'asset_ids': [asset_id], 'flag_ids': flag_ids})
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(['updated'], [row['status'] for row in response.json()['results']])
+        asset = self._subject.get(f'/api/v2/cases/{case_id}/assets/{asset_id}').json()
+        self.assertEqual(sorted(flag_ids), sorted(entry['flag_id'] for entry in asset['flags']))
+
+        response = self._subject.create(path, {'asset_ids': [asset_id], 'flag_ids': flag_ids, 'action': 'clear'})
+        self.assertEqual(['updated'], [row['status'] for row in response.json()['results']])
+        asset = self._subject.get(f'/api/v2/cases/{case_id}/assets/{asset_id}').json()
+        self.assertEqual([], asset['flags'])
+
+    def test_bulk_flag_with_several_flags_should_respect_case_access(self):
+        room_id = self._room()
+        writable_case_id = self._attach_case(room_id)
+        read_only_case_id = self._attach_case(room_id)
+        hidden_case_id = self._attach_case(room_id)
+        writable_asset_id = self._asset(writable_case_id, 'srv-writable')
+        read_only_asset_id = self._asset(read_only_case_id, 'srv-read-only')
+        hidden_asset_id = self._asset(hidden_case_id, 'srv-hidden')
+        flag_ids = self._plain_flag_ids(2)
+        member = self._member(room_id)
+        self._subject.grant_case_access(member, writable_case_id)
+        self._subject.grant_case_access(member, read_only_case_id, IRIS_CASE_ACCESS_LEVEL_READ_ONLY)
+
+        response = member.create(f'/api/v2/war-rooms/{room_id}/scope/assets/flags', {
+            'asset_ids': [writable_asset_id, read_only_asset_id, hidden_asset_id], 'flag_ids': flag_ids,
+        })
+        self.assertEqual(200, response.status_code)
+        statuses = {row['asset_id']: row['status'] for row in response.json()['results']}
+        self.assertEqual({writable_asset_id: 'updated', read_only_asset_id: 'denied', hidden_asset_id: 'denied'},
+                         statuses)
+        self.assertNotIn('srv-hidden', response.text)
+        for case_id, asset_id, expected in ((writable_case_id, writable_asset_id, len(flag_ids)),
+                                            (read_only_case_id, read_only_asset_id, 0),
+                                            (hidden_case_id, hidden_asset_id, 0)):
+            asset = self._subject.get(f'/api/v2/cases/{case_id}/assets/{asset_id}').json()
+            self.assertEqual(expected, len(asset['flags']))
+
+    def test_bulk_flag_should_reject_flag_id_with_flag_ids(self):
+        room_id = self._room()
+        case_id = self._attach_case(room_id)
+        asset_id = self._asset(case_id, 'srv-flag')
+        flag_id = self._flag_id()
+        response = self._subject.create(f'/api/v2/war-rooms/{room_id}/scope/assets/flags',
+                                        {'asset_ids': [asset_id], 'flag_id': flag_id, 'flag_ids': [flag_id]})
+        self.assertEqual(400, response.status_code)
+
     def test_bulk_flag_should_reject_an_unknown_action(self):
         room_id = self._room()
         case_id = self._attach_case(room_id)
