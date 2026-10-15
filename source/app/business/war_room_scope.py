@@ -45,6 +45,7 @@ from app.business.asset_flags import asset_flags_clear_for_asset
 from app.business.asset_flags import asset_flags_is_unchanged
 from app.business.asset_flags import asset_flags_set_for_asset
 from app.business.assets import assets_create
+from app.business.assets import assets_update
 from app.business.iocs import iocs_create
 from app.business.vulnerabilities import vulnerabilities_normalize_identifier
 from app.datamgmt.vulnerabilities.vulnerabilities_db import findings_db_asset_tags
@@ -243,6 +244,23 @@ def _validate_flag_ids(flag_ids):
     return ids
 
 
+def _validate_compromise_status_id(value):
+    if value is None:
+        return None
+    if not _is_int(value) or not CompromiseStatus.has_value(value):
+        raise BusinessProcessingError('Invalid asset_compromise_status_id')
+    return value
+
+
+def _validate_analysis_status_id(value):
+    if value is None:
+        return None
+    _validate_int_id(value, 'analysis_status_id')
+    if not war_room_scope_db_analysis_status_exists(value):
+        raise BusinessProcessingError('Invalid analysis status ID')
+    return value
+
+
 def _validate_asset_payload(payload):
     """Allow-listed, type-checked asset fields. Unknown keys are dropped."""
     if not isinstance(payload, dict):
@@ -267,17 +285,12 @@ def _validate_asset_payload(payload):
     if tags is not None:
         clean['asset_tags'] = tags
 
-    compromise = payload.get('asset_compromise_status_id')
+    compromise = _validate_compromise_status_id(payload.get('asset_compromise_status_id'))
     if compromise is not None:
-        if not _is_int(compromise) or compromise not in {status.value for status in CompromiseStatus}:
-            raise BusinessProcessingError('Invalid asset_compromise_status_id')
         clean['asset_compromise_status_id'] = compromise
 
-    analysis_status_id = payload.get('analysis_status_id')
+    analysis_status_id = _validate_analysis_status_id(payload.get('analysis_status_id'))
     if analysis_status_id is not None:
-        _validate_int_id(analysis_status_id, 'analysis_status_id')
-        if not war_room_scope_db_analysis_status_exists(analysis_status_id):
-            raise BusinessProcessingError('Invalid analysis status ID')
         clean['analysis_status_id'] = analysis_status_id
 
     return clean
@@ -1011,6 +1024,67 @@ def war_room_scope_bulk_flag(war_room_id, user_id, asset_ids, flag_id, action, r
             'decision_id': decision_id,
             'asset_ids': [row['asset_id'] for row in results if row['status'] == 'updated'],
         })
+
+    return {'results': results}
+
+
+def war_room_scope_bulk_status(war_room_id, asset_ids, compromise_status_id, analysis_status_id,
+                               readable_case_ids, writable_case_ids):
+    """Set the compromise and / or analysis status of many assets.
+
+    Each asset goes through the regular case asset update, so its history,
+    the case activity and the `on_postload_asset_update` hook are the same
+    as for an edit made from the case."""
+    asset_ids = _validate_id_list(asset_ids, 'asset_ids', WAR_ROOM_SCOPE_MAX_BULK_FLAG)
+    compromise_status_id = _validate_compromise_status_id(compromise_status_id)
+    analysis_status_id = _validate_analysis_status_id(analysis_status_id)
+    if compromise_status_id is None and analysis_status_id is None:
+        raise BusinessProcessingError('asset_compromise_status_id or analysis_status_id is required')
+
+    readable = set(readable_case_ids)
+    writable = set(writable_case_ids)
+    assets = {asset.asset_id: asset for asset in war_room_scope_db_assets_by_ids(asset_ids)}
+    # Snapshot ownership before any write: a rollback expires the instances.
+    owners = {asset_id: asset.case_id for asset_id, asset in assets.items()}
+
+    results = []
+    updated = 0
+    for asset_id in asset_ids:
+        asset = assets.get(asset_id)
+        case_id = owners.get(asset_id)
+        if asset is None or case_id not in readable:
+            results.append({'asset_id': asset_id, 'case_id': None, 'status': 'denied', 'message': 'Asset not found'})
+            continue
+        if case_id not in writable:
+            results.append({'asset_id': asset_id, 'case_id': case_id, 'status': 'denied',
+                            'message': _DENIED_CASE_MESSAGE})
+            continue
+        try:
+            changed = False
+            if compromise_status_id is not None and asset.asset_compromise_status_id != compromise_status_id:
+                asset.asset_compromise_status_id = compromise_status_id
+                changed = True
+            if analysis_status_id is not None and asset.analysis_status_id != analysis_status_id:
+                asset.analysis_status_id = analysis_status_id
+                changed = True
+            if not changed:
+                results.append({'asset_id': asset_id, 'case_id': case_id, 'status': 'unchanged'})
+                continue
+            asset.date_update = datetime.datetime.utcnow()
+            assets_update(asset)
+            updated += 1
+            results.append({'asset_id': asset_id, 'case_id': case_id, 'status': 'updated'})
+        except BusinessProcessingError as e:
+            war_room_scope_db_rollback()
+            results.append({'asset_id': asset_id, 'case_id': case_id, 'status': 'error',
+                            'message': e.get_message()})
+        except Exception:
+            _unexpected_error(f'changing the status of asset {asset_id}')
+            results.append({'asset_id': asset_id, 'case_id': case_id, 'status': 'error',
+                            'message': 'Unexpected error, the status was not changed'})
+
+    if updated:
+        track_activity(f'changed the status of {updated} asset(s) from the war room scope', war_room_id=war_room_id)
 
     return {'results': results}
 

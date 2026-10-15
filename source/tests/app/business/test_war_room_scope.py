@@ -327,6 +327,57 @@ class TestBulkFlag(_DbPatches):
                 scope.war_room_scope_bulk_flag(9, 7, [1], 3, 'set', None, 5, [1], [1])
 
 
+def _statused(asset_id, case_id, compromise_status_id=0, analysis_status_id=1):
+    return SimpleNamespace(asset_id=asset_id, case_id=case_id, asset_compromise_status_id=compromise_status_id,
+                           analysis_status_id=analysis_status_id, date_update=None)
+
+
+class TestBulkStatus(_DbPatches):
+
+    def test_statuses(self):
+        assets = [_statused(1, 1), _statused(2, 1, compromise_status_id=1), _statused(3, 2), _statused(4, 5)]
+        with patch(f'{_BIZ}.war_room_scope_db_assets_by_ids', return_value=assets), \
+                patch(f'{_BIZ}.assets_update') as update:
+            result = scope.war_room_scope_bulk_status(9, [1, 2, 3, 4, 99], 1, None, [1, 2], [1])
+        statuses = {row['asset_id']: row['status'] for row in result['results']}
+        self.assertEqual(statuses, {1: 'updated', 2: 'unchanged', 3: 'denied', 4: 'denied', 99: 'denied'})
+        update.assert_called_once_with(assets[0])
+        self.assertEqual(1, assets[0].asset_compromise_status_id)
+        self.assertEqual(1, assets[0].analysis_status_id)
+        self.assertIsNotNone(assets[0].date_update)
+        self.mocks['track'].assert_called_once_with('changed the status of 1 asset(s) from the war room scope',
+                                                    war_room_id=9)
+
+    def test_both_statuses(self):
+        asset = _statused(1, 1)
+        with patch(f'{_BIZ}.war_room_scope_db_assets_by_ids', return_value=[asset]), \
+                patch(f'{_BIZ}.assets_update'):
+            result = scope.war_room_scope_bulk_status(9, [1], 2, 3, [1], [1])
+        self.assertEqual('updated', result['results'][0]['status'])
+        self.assertEqual((2, 3), (asset.asset_compromise_status_id, asset.analysis_status_id))
+
+    def test_validation(self):
+        with self.assertRaisesRegex(BusinessProcessingError, 'is required'):
+            scope.war_room_scope_bulk_status(9, [1], None, None, [1], [1])
+        with self.assertRaisesRegex(BusinessProcessingError, 'Invalid asset_compromise_status_id'):
+            scope.war_room_scope_bulk_status(9, [1], 42, None, [1], [1])
+        with self.assertRaisesRegex(BusinessProcessingError, 'Invalid asset_compromise_status_id'):
+            scope.war_room_scope_bulk_status(9, [1], '1', None, [1], [1])
+        self.mocks['analysis'].return_value = False
+        with self.assertRaisesRegex(BusinessProcessingError, 'Invalid analysis status ID'):
+            scope.war_room_scope_bulk_status(9, [1], None, 3, [1], [1])
+        with self.assertRaises(BusinessProcessingError):
+            scope.war_room_scope_bulk_status(9, list(range(1, 502)), 1, None, [1], [1])
+
+    def test_business_error_is_reported(self):
+        with patch(f'{_BIZ}.war_room_scope_db_assets_by_ids', return_value=[_statused(1, 1)]), \
+                patch(f'{_BIZ}.assets_update', side_effect=BusinessProcessingError('Data error')):
+            result = scope.war_room_scope_bulk_status(9, [1], 1, None, [1], [1])
+        self.assertEqual(('error', 'Data error'), (result['results'][0]['status'], result['results'][0]['message']))
+        self.mocks['rollback'].assert_called_once()
+        self.mocks['track'].assert_not_called()
+
+
 class TestStaging(_DbPatches):
 
     def test_create_validates_and_caps(self):

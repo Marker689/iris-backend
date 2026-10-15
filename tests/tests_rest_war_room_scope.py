@@ -301,6 +301,30 @@ class TestsRestWarRoomScope(TestCase):
                                         {'asset_ids': [asset_id], 'flag_id': self._flag_id(), 'action': 'toggle'})
         self.assertEqual(400, response.status_code)
 
+    def test_bulk_status_should_update_the_assets(self):
+        room_id = self._room()
+        case_id = self._attach_case(room_id)
+        asset_id = self._asset(case_id, 'srv-status')
+        path = f'/api/v2/war-rooms/{room_id}/scope/assets/status'
+
+        response = self._subject.create(path, {'asset_ids': [asset_id], 'asset_compromise_status_id': 1,
+                                               'analysis_status_id': 2})
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(['updated'], [row['status'] for row in response.json()['results']])
+        asset = self._subject.get(f'/api/v2/cases/{case_id}/assets/{asset_id}').json()
+        self.assertEqual((1, 2), (asset['asset_compromise_status_id'], asset['analysis_status_id']))
+
+        response = self._subject.create(path, {'asset_ids': [asset_id], 'asset_compromise_status_id': 1})
+        self.assertEqual(['unchanged'], [row['status'] for row in response.json()['results']])
+
+    def test_bulk_status_should_reject_an_empty_change(self):
+        room_id = self._room()
+        case_id = self._attach_case(room_id)
+        asset_id = self._asset(case_id, 'srv-status')
+        response = self._subject.create(f'/api/v2/war-rooms/{room_id}/scope/assets/status',
+                                        {'asset_ids': [asset_id]})
+        self.assertEqual(400, response.status_code)
+
     def test_list_assets_should_carry_and_filter_the_flags(self):
         room_id = self._room()
         case_id = self._attach_case(room_id)

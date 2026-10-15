@@ -15902,6 +15902,29 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/v2/war-rooms/{war_room_id}/scope/assets/status:
+    post:
+      operationId: bulk_status_scope_assets_post
+      summary: Set the compromise and / or analysis status of several assets of the attached cases
+      tags:
+      - WarRoomScope
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v2/war-rooms/{war_room_id}/scope/iocs:
     get:
       operationId: list_scope_iocs_get

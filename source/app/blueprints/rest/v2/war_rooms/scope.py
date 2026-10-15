@@ -17,7 +17,7 @@
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 """War-room scope: assets / IOCs of the attached cases, push to cases,
-bulk flags, Assets Manager assets attached to the room, staging area and
+bulk flags and statuses, Assets Manager assets attached to the room, staging area and
 IOC export.
 
 Authorization lives here: every route checks war-room access first, then
@@ -57,6 +57,7 @@ from app.business.war_room_managed_assets import war_room_managed_assets_update
 from app.business.war_room_scope import war_room_scope_attached_case_ids
 from app.business.war_room_vulnerabilities import war_room_vulnerabilities_matrix
 from app.business.war_room_scope import war_room_scope_bulk_flag
+from app.business.war_room_scope import war_room_scope_bulk_status
 from app.business.war_room_scope import war_room_scope_create_asset
 from app.business.war_room_scope import war_room_scope_create_ioc
 from app.business.war_room_scope import war_room_scope_export_iocs
@@ -325,6 +326,29 @@ def bulk_flag_scope_assets(war_room_id):
         result = war_room_scope_bulk_flag(
             war_room_id, iris_current_user.id, raw.get('asset_ids'), raw.get('flag_id'), raw.get('action', 'set'),
             raw.get('reason'), raw.get('decision_id'), readable, writable,
+        )
+    except BusinessProcessingError as e:
+        return response_api_error(e.get_message())
+    return response_api_success(result)
+
+
+@war_rooms_scope_blueprint.post('/assets/status')
+@ac_api_requires()
+@api_doc(tags=['WarRoomScope'],
+         summary='Set the compromise and / or analysis status of several assets of the attached cases')
+def bulk_status_scope_assets(war_room_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    raw = _json_body()
+    if raw is None:
+        return response_api_error('Invalid request')
+    readable = _readable_case_ids(war_room_id)
+    writable = _writable_case_ids(readable)
+    try:
+        result = war_room_scope_bulk_status(
+            war_room_id, raw.get('asset_ids'), raw.get('asset_compromise_status_id'),
+            raw.get('analysis_status_id'), readable, writable,
         )
     except BusinessProcessingError as e:
         return response_api_error(e.get_message())
