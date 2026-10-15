@@ -28,7 +28,6 @@ import datetime
 
 from sqlalchemy import and_
 from sqlalchemy import case as sa_case
-from sqlalchemy import cast
 from sqlalchemy import column as sa_column
 from sqlalchemy import func
 from sqlalchemy import or_
@@ -196,7 +195,7 @@ def _affected_products():
     (JSONB) table, empty when the column is NULL or not an array."""
     products = sa_case(
         (func.jsonb_typeof(Vulnerability.affected_products) == 'array', Vulnerability.affected_products),
-        else_=cast('[]', JSONB),
+        else_=func.jsonb_build_array(),
     )
     return func.jsonb_array_elements(products).table_valued(sa_column('value', JSONB)).render_derived(name='product')
 
