@@ -221,7 +221,7 @@ def _editor_args(data):
 
 
 def _editor_ack(entry):
-    return {'ok': True, 'peer_id': entry['peer_id'], 'focused_at': entry['focused_at']}
+    return {'ok': True, 'peer_id': entry['peer_id'], 'node_id': entry['node_id'], 'focused_at': entry['focused_at']}
 
 
 def _editor_focus(entry, node_id):

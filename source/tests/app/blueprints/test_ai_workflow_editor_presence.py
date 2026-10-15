@@ -80,7 +80,7 @@ class TestsEditorPresence(TestCase):
         self.assertEqual('hello', payload['type'])
         self.assertEqual((ack['peer_id'], _OWNER, 'Owner', 'n1'),
                          (payload['peer_id'], payload['user_id'], payload['user_name'], payload['node_id']))
-        self.assertEqual(ack['focused_at'], payload['focused_at'])
+        self.assertEqual((ack['node_id'], ack['focused_at']), ('n1', payload['focused_at']))
 
     def test_identity_should_not_be_taken_from_the_client(self):
         handlers.on_ai_workflow_editor_join({'workflow_id': 7, 'user_id': 1, 'user_name': 'admin',
