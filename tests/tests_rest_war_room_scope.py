@@ -21,6 +21,7 @@
 from unittest import TestCase
 
 from iris import Iris
+from iris import IRIS_CASE_ACCESS_LEVEL_READ_ONLY
 
 _WAR_ROOMS_READ_WRITE = 0x8000 | 0x10000
 
@@ -324,6 +325,71 @@ class TestsRestWarRoomScope(TestCase):
         response = self._subject.create(f'/api/v2/war-rooms/{room_id}/scope/assets/status',
                                         {'asset_ids': [asset_id]})
         self.assertEqual(400, response.status_code)
+
+    def test_bulk_status_should_deny_a_member_without_case_access(self):
+        room_id = self._room()
+        case_id = self._attach_case(room_id)
+        asset_id = self._asset(case_id, 'secret-host')
+        member = self._member(room_id)
+        response = member.create(f'/api/v2/war-rooms/{room_id}/scope/assets/status',
+                                 {'asset_ids': [asset_id], 'asset_compromise_status_id': 1})
+        self.assertEqual(200, response.status_code)
+        row = response.json()['results'][0]
+        self.assertEqual(('denied', None), (row['status'], row['case_id']))
+        self.assertNotIn('secret-host', response.text)
+        asset = self._subject.get(f'/api/v2/cases/{case_id}/assets/{asset_id}').json()
+        self.assertNotEqual(1, asset['asset_compromise_status_id'])
+
+    def test_bulk_status_should_deny_a_member_with_read_only_case_access(self):
+        room_id = self._room()
+        case_id = self._attach_case(room_id)
+        asset_id = self._asset(case_id, 'srv-read-only')
+        member = self._member(room_id)
+        self._subject.grant_case_access(member, case_id, IRIS_CASE_ACCESS_LEVEL_READ_ONLY)
+        response = member.create(f'/api/v2/war-rooms/{room_id}/scope/assets/status',
+                                 {'asset_ids': [asset_id], 'asset_compromise_status_id': 1})
+        self.assertEqual(200, response.status_code)
+        row = response.json()['results'][0]
+        self.assertEqual(('denied', case_id), (row['status'], row['case_id']))
+        asset = self._subject.get(f'/api/v2/cases/{case_id}/assets/{asset_id}').json()
+        self.assertNotEqual(1, asset['asset_compromise_status_id'])
+
+    def test_bulk_status_should_only_update_the_cases_the_member_can_write(self):
+        room_id = self._room()
+        writable_case_id = self._attach_case(room_id)
+        hidden_case_id = self._attach_case(room_id)
+        writable_asset_id = self._asset(writable_case_id, 'srv-writable')
+        hidden_asset_id = self._asset(hidden_case_id, 'srv-hidden')
+        outside_case_id = self._subject.create_dummy_case()
+        outside_asset_id = self._asset(outside_case_id, 'srv-outside')
+        member = self._member(room_id)
+        self._subject.grant_case_access(member, writable_case_id)
+        # Full access on a case the room does not include is not enough either.
+        self._subject.grant_case_access(member, outside_case_id)
+        response = member.create(f'/api/v2/war-rooms/{room_id}/scope/assets/status', {
+            'asset_ids': [writable_asset_id, hidden_asset_id, outside_asset_id],
+            'asset_compromise_status_id': 1,
+        })
+        statuses = {row['asset_id']: row['status'] for row in response.json()['results']}
+        self.assertEqual({writable_asset_id: 'updated', hidden_asset_id: 'denied', outside_asset_id: 'denied'},
+                         statuses)
+        for case_id, asset_id, expected in ((writable_case_id, writable_asset_id, True),
+                                            (hidden_case_id, hidden_asset_id, False),
+                                            (outside_case_id, outside_asset_id, False)):
+            asset = self._subject.get(f'/api/v2/cases/{case_id}/assets/{asset_id}').json()
+            self.assertEqual(expected, asset['asset_compromise_status_id'] == 1)
+
+    def test_bulk_status_should_be_forbidden_without_war_room_write(self):
+        room_id = self._room()
+        case_id = self._attach_case(room_id)
+        asset_id = self._asset(case_id, 'srv-status')
+        # Room member with full case access, but only the war rooms read permission.
+        user = self._subject.create_dummy_user(permissions=0x8000)
+        self._subject.create(f'/api/v2/war-rooms/{room_id}/members', {'user_id': user.get_identifier()})
+        self._subject.grant_case_access(user, case_id)
+        response = user.create(f'/api/v2/war-rooms/{room_id}/scope/assets/status',
+                               {'asset_ids': [asset_id], 'asset_compromise_status_id': 1})
+        self.assertEqual(403, response.status_code)
 
     def test_list_assets_should_carry_and_filter_the_flags(self):
         room_id = self._room()
