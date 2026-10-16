@@ -213,7 +213,7 @@ The config fields are listed with their defaults in the catalogue. Highlights:
 - **`delay`**: waits `minutes`.
 - **`stop`**: ends the run, with `status` `succeeded` or `failed` and a `reason`.
 - **`note`**: documents part of the workflow on the canvas, like a sticky note. It has no ports, no edge may lead to it and it never runs.
-  - Config: `text` (plain text, never rendered as a template), `color` (`yellow`, `blue`, `green`, `pink`, `purple` or `gray`), `width` and `height` (80–4000 pixels).
+  - Config: `text` (Markdown, never rendered as a template; shown without images, forms or styles, and with `https:` or relative links only), `color` (`yellow`, `blue`, `green`, `pink`, `purple` or `gray`), `width` and `height` (80–4000 pixels).
   - Use a few notes to explain the intent of a group of nodes, the expected inputs or a manual step around the workflow.
 
 ## 6. Python transforms (`python` node)
