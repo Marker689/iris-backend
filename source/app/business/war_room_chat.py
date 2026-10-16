@@ -21,6 +21,7 @@ import re
 from app.datamgmt.war_rooms.war_room_chat_db import apply_topic_filter as _apply_topic_filter
 from app.datamgmt.war_rooms.war_room_chat_db import build_case_activity_query as _build_case_activity_query
 from app.datamgmt.war_rooms.war_room_chat_db import build_threads_query as _build_threads_query
+from app.datamgmt.war_rooms.war_room_chat_db import build_war_room_activity_query as _build_war_room_activity_query
 from app.datamgmt.war_rooms.war_room_chat_db import escape_like as _escape_like
 from app.datamgmt.war_rooms.war_room_chat_db import poll_option_vote_counts as _poll_option_vote_counts
 from app.datamgmt.war_rooms.war_room_chat_db import probe_column_exists as _probe_column_exists
@@ -197,6 +198,8 @@ _VALID_KINDS = {
     'task_assigned', 'task_completed',
     'case_attached', 'case_detached',
     'case_activity',
+    # Virtual like `case_activity`: the activity of the war room itself
+    'war_room_activity',
     'sitrep_published', 'note', 'pin',
     # `decision` rows are first-class so the SitRep author can lift them
     # straight out via a future timeline-of-decisions query; they
@@ -276,6 +279,86 @@ def classify_activity_text(text):
     return 'case.other'
 
 
+# The war room's own activity (`track_activity(..., war_room_id=)`) as
+# `<family>.<verb>`. Families: `room`, `member`, `team`, `note`, `folder`,
+# `share`, `task`, `timeline`, `event`, `datastore`, `sitrep`, `decision`,
+# `scope`, `vulnerability`. Whole slugs first, then the family from the
+# object named and the verb from the first word.
+_WAR_ROOM_ACTIVITY_SLUGS = [
+    (_re.compile(r'^added .* to war-room team "', _re.IGNORECASE), 'team.member_added'),
+    (_re.compile(r'^removed .* from war-room team "', _re.IGNORECASE), 'team.member_removed'),
+    (_re.compile(r'^added .* to the war room as ', _re.IGNORECASE), 'member.added'),
+    (_re.compile(r'^removed .* from the war room$', _re.IGNORECASE), 'member.removed'),
+    (_re.compile(r'^changed the war room role of ', _re.IGNORECASE), 'member.updated'),
+    (_re.compile(r'^changed war room .* state from ', _re.IGNORECASE), 'room.state'),
+    (_re.compile(r'^updated war room summary', _re.IGNORECASE), 'room.summary'),
+    (_re.compile(r'^set war room .* severity to ', _re.IGNORECASE), 'room.severity'),
+    (_re.compile(r'^unassigned war room task "', _re.IGNORECASE), 'task.unassigned'),
+    (_re.compile(r'^(un)?flagged timeline event "', _re.IGNORECASE), 'event.flagged'),
+    (_re.compile(r'^voted .* on decision D-', _re.IGNORECASE), 'decision.voted'),
+    (_re.compile(r'^(set|cleared) the sitrep cadence', _re.IGNORECASE), 'sitrep.cadence'),
+]
+_WAR_ROOM_ACTIVITY_FAMILIES = [
+    (_re.compile(r'war-room team "', _re.IGNORECASE), 'team'),
+    (_re.compile(r'war-room note folder "', _re.IGNORECASE), 'folder'),
+    (_re.compile(r'^(shared|stopped sharing) war room (note|folder)|the sharing of war room|note share #',
+                 _re.IGNORECASE), 'share'),
+    (_re.compile(r'war room note "|^(restored|deleted) revision #', _re.IGNORECASE), 'note'),
+    (_re.compile(r'war room task "', _re.IGNORECASE), 'task'),
+    (_re.compile(r'war room timeline "', _re.IGNORECASE), 'timeline'),
+    (_re.compile(r'timeline event "', _re.IGNORECASE), 'event'),
+    (_re.compile(r'\bdatastore$', _re.IGNORECASE), 'datastore'),
+    (_re.compile(r'\bsitrep\b', _re.IGNORECASE), 'sitrep'),
+    (_re.compile(r'\bdecision D-\d', _re.IGNORECASE), 'decision'),
+    (_re.compile(r'\bvulnerability #', _re.IGNORECASE), 'vulnerability'),
+    (_re.compile(r'war room scope|^staged |registry asset', _re.IGNORECASE), 'scope'),
+    # Recorded before the member's name was
+    (_re.compile(r'war room member \(user #', _re.IGNORECASE), 'member'),
+    (_re.compile(r'\bwar room\b', _re.IGNORECASE), 'room'),
+]
+_WAR_ROOM_ACTIVITY_VERBS = [
+    (_re.compile(r'^(created|added|drafted|uploaded|tracked|staged|attached|shared|duplicated|pushed)\b',
+                 _re.IGNORECASE), 'created'),
+    (_re.compile(r'^renamed\b', _re.IGNORECASE), 'renamed'),
+    (_re.compile(r'^moved\b', _re.IGNORECASE), 'moved'),
+    (_re.compile(r'^(deleted|removed|stopped|detached|unlinked)\b', _re.IGNORECASE), 'deleted'),
+    (_re.compile(r'^(closed|implemented|published|archived|fanned out)\b', _re.IGNORECASE), 'closed'),
+    (_re.compile(r'^(reopened|unarchived)\b', _re.IGNORECASE), 'reopened'),
+    (_re.compile(r'^assigned\b', _re.IGNORECASE), 'assigned'),
+]
+
+# Activity the stream already shows as a chat row (`emit_system_event`,
+# or the row of the slash command) on every path that records it:
+# showing it twice would only be noise. Case-insensitive LIKE patterns.
+_WAR_ROOM_ACTIVITY_MIRRORED = (
+    'created war room task %',
+    'closed war room task %',
+    'reopened war room task %',
+    'fanned out war room task %',
+    'created war room note %',
+    'created decision %',
+    'implemented decision %',
+    'changed war room % state from %',
+    'archived war room %',
+    'unarchived war room %',
+)
+
+
+def classify_war_room_activity_text(text):
+    """`<family>.<verb>` slug of an activity of the war room itself;
+    `room.other` when nothing fits."""
+    if not isinstance(text, str) or not text:
+        return 'room.other'
+    for pattern, slug in _WAR_ROOM_ACTIVITY_SLUGS:
+        if pattern.search(text):
+            return slug
+    family = next((family for pattern, family in _WAR_ROOM_ACTIVITY_FAMILIES if pattern.search(text)), None)
+    if family is None:
+        return 'room.other'
+    verb = next((verb for pattern, verb in _WAR_ROOM_ACTIVITY_VERBS if pattern.search(text)), 'updated')
+    return f'{family}.{verb}'
+
+
 def _validate_kind(kind):
     if kind is None:
         return 'message'
@@ -303,7 +386,7 @@ def _validate_body(body, kind):
     return body
 
 
-def _virtual_activity_row(ua_row, war_room_id):
+def _virtual_activity_row(ua_row, war_room_id, kind='case_activity'):
     """Wrap a UserActivity row as a chat-list row.
 
     Same shape the REST serializer expects from the chat query
@@ -320,11 +403,12 @@ def _virtual_activity_row(ua_row, war_room_id):
         war_room_id=war_room_id,
         author_id=ua_row.user_id,
         body=ua_row.activity_desc,
-        kind='case_activity',
+        kind=kind,
         ref_type='user_activity',
         ref_id=int(ua_row.id),
         ref_case_id=ua_row.case_id,
-        activity_type=classify_activity_text(ua_row.activity_desc),
+        activity_type=(classify_war_room_activity_text(ua_row.activity_desc) if kind == 'war_room_activity'
+                       else classify_activity_text(ua_row.activity_desc)),
         # UA-derived rows never participate in threads; the fields are
         # set explicitly so the row's shape matches the chat-row tuple
         # and downstream serializers don't have to special-case it.
@@ -379,6 +463,14 @@ def _fetch_live_case_activities(war_room_id, before_dt, limit,
     return [_virtual_activity_row(r, war_room_id) for r in rows]
 
 
+def _fetch_war_room_activities(war_room_id, before_dt, limit, search=None):
+    """The activity of the war room itself, as stream rows. Leaves out
+    what the stream already shows as a chat row."""
+    rows = _build_war_room_activity_query(war_room_id, before_dt, search, limit,
+                                          excluded_patterns=_WAR_ROOM_ACTIVITY_MIRRORED)
+    return [_virtual_activity_row(r, war_room_id, kind='war_room_activity') for r in rows]
+
+
 def list_messages(war_room_id, before=None, limit=None, kinds=None,
                   case_ids=None, search=None, topic_ids=None, readable_case_ids=None):
     """Return the next page of the war-room stream, newest first.
@@ -392,6 +484,8 @@ def list_messages(war_room_id, before=None, limit=None, kinds=None,
          to this war room — no backfill, no duplication. A case
          attached later instantly surfaces its full activity history;
          a case detached drops out of the stream.
+      3. Live `UserActivity` rows of the war room itself (members,
+         notes, folders, teams, tasks, …), `war_room_activity` rows.
 
     The merge sorts by `created_at` descending. `before` remains a
     chat `message_id` for backwards compatibility with the SPA's
@@ -399,7 +493,8 @@ def list_messages(war_room_id, before=None, limit=None, kinds=None,
     and use that as the activity-side cursor.
 
     `kinds` filtering works as before. `case_ids` constrains both
-    sides (chat-row `ref_case_id` and `UserActivity.case_id`).
+    sides (chat-row `ref_case_id` and `UserActivity.case_id`) and
+    leaves the war room's own activity out.
     `search` case-insensitively matches the chat body / activity
     description with a `%needle%` LIKE — the SPA uses this to drive
     the top-of-stream quick-filter without pulling the full firehose
@@ -413,6 +508,7 @@ def list_messages(war_room_id, before=None, limit=None, kinds=None,
     limit = min(int(limit), _PAGE_MAX)
 
     want_case_activity = (not kinds) or ('case_activity' in kinds)
+    want_war_room_activity = ((not kinds) or ('war_room_activity' in kinds)) and not case_ids
 
     # Resolve the cursor to a timestamp so we can apply it to both
     # sources. None on initial load means "from now backwards".
@@ -539,19 +635,23 @@ def list_messages(war_room_id, before=None, limit=None, kinds=None,
 
     chat_rows = q.order_by(WarRoomChatMessage.message_id.desc()).limit(limit).all()
 
-    if not want_case_activity:
+    if not want_case_activity and not want_war_room_activity:
         return chat_rows
 
     # Overfetch live activities to fill the page after merge — we'll
     # trim down to `limit` after sorting.
-    activity_rows = _fetch_live_case_activities(
-        war_room_id, before_dt=before_dt, limit=limit, case_ids=case_ids,
-        search=needle, readable_case_ids=readable_case_ids,
-    )
+    activity_rows = []
+    if want_case_activity:
+        activity_rows += _fetch_live_case_activities(
+            war_room_id, before_dt=before_dt, limit=limit, case_ids=case_ids,
+            search=needle, readable_case_ids=readable_case_ids,
+        )
+    if want_war_room_activity:
+        activity_rows += _fetch_war_room_activities(war_room_id, before_dt, limit, search=needle)
 
     # Merge by created_at desc. When timestamps tie, real chat rows
     # come first so a /command + its emitted system row stay adjacent.
-    merged = list(chat_rows) + list(activity_rows)
+    merged = list(chat_rows) + activity_rows
     merged.sort(
         key=lambda r: (r.created_at or _DATETIME_MIN, r.message_id),
         reverse=True

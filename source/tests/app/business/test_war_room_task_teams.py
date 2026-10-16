@@ -142,7 +142,9 @@ class TestTaskAssigneeChecks(TestCase):
         db.session.add.assert_not_called()
 
     def test_update_checks_only_a_changed_assignee(self):
-        task = SimpleNamespace(task_id=4, assignee_id=99, title='t', description=None)
+        task = SimpleNamespace(task_id=4, war_room_id=10, assignee_id=99, title='t', description=None,
+                               status_id=None, due_at=None, tags=None, parent_task_id=None,
+                               source_case_id=None, source_case_task_id=None)
         with patch(f'{_TASKS}.war_room_task_get', return_value=task), \
                 patch('app.business.war_room_decisions.war_room_decisions_is_participant',
                       return_value=False) as check, \

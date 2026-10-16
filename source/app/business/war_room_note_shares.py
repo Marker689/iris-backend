@@ -524,7 +524,7 @@ def war_room_note_shares_update(war_room_id, share, parsed, updated_by_id):
     db.session.commit()
     share_id = share.share_id
     track_activity(
-        f'updated war room note share #{share_id}',
+        f'updated the sharing of war room {_source_label(war_room_id, share)} with cases',
         war_room_id=war_room_id,
     )
     war_room_note_shares_reconcile_safe(war_room_id, actor_id=updated_by_id)
@@ -534,9 +534,10 @@ def war_room_note_shares_update(war_room_id, share, parsed, updated_by_id):
 def war_room_note_shares_delete(war_room_id, share, deleted_by_id):
     deleted = {'war_room_id': war_room_id, 'share_id': share.share_id, 'note_id': share.note_id,
                'folder_id': share.folder_id, 'delivery': share.delivery}
+    source_label = _source_label(war_room_id, share)
     db.session.delete(share)
     db.session.commit()
-    track_activity(f'removed war room note share #{deleted["share_id"]}', war_room_id=war_room_id)
+    track_activity(f'stopped sharing war room {source_label} with cases', war_room_id=war_room_id)
     war_room_note_shares_reconcile_safe(war_room_id, actor_id=deleted_by_id)
     call_modules_hook('on_postload_war_room_note_share_delete', deleted)
 

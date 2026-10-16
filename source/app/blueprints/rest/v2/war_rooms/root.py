@@ -354,15 +354,8 @@ def add_member(war_room_id):
     except BusinessProcessingError as e:
         return response_api_error(e.get_message())
 
+    # The stream shows the member change from the war-room activity
     rows = war_room_members_list(war_room_id)
-    member_row = next((r for r in rows if r.user_id == user_id), None)
-    if member_row is not None:
-        emit_system_event(
-            war_room_id, 'system',
-            f'Added member {member_row.name or member_row.login} '
-            f'as {member_row.role}',
-            author_id=iris_current_user.id,
-        )
     return response_api_created([serialize_member(r) for r in rows if r.user_id == user_id][0])
 
 
@@ -374,11 +367,6 @@ def remove_member(war_room_id, user_id):
     if err is not None:
         return err
     war_room_remove_member(war_room_id, user_id)
-    emit_system_event(
-        war_room_id, 'system',
-        f'Removed member #{user_id}',
-        author_id=iris_current_user.id,
-    )
     return response_api_deleted()
 
 

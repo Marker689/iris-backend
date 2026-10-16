@@ -37,6 +37,7 @@ from app.iris_engine.module_handler.module_handler import call_modules_hook
 from app.iris_engine.utils.tracker import track_activity
 from app.models.errors import BusinessProcessingError
 from app.models.errors import ObjectNotFoundError
+from app.models.models import TaskStatus
 from app.models.war_rooms import WarRoomTask
 
 
@@ -381,6 +382,7 @@ def war_room_task_update(war_room_id, task_id, **fields):
         _validate_assignee(war_room_id, fields['assignee_id'])
     prior_title = task.title
     prior_description = task.description
+    prior = _activity_snapshot(task, team_ids is not None)
     if 'title' in fields and fields['title'] is not None:
         task.title = _validate_title(fields['title'])
     if 'parent_task_id' in fields:
@@ -412,7 +414,7 @@ def war_room_task_update(war_room_id, task_id, **fields):
     if team_ids is not None:
         added_team_ids = task_teams_db_replace(task.task_id, team_ids, updated_by_id)
     db.session.commit()
-    track_activity(f'updated war room task "{task.title}"', war_room_id=war_room_id)
+    _track_task_changes(task, prior, _activity_snapshot(task, team_ids is not None))
     _notify_assigned_teams(task, added_team_ids, updated_by_id)
     # Fire only when the mention-carrying fields changed.
     if task.title != prior_title or task.description != prior_description:
@@ -420,6 +422,39 @@ def war_room_task_update(war_room_id, task_id, **fields):
                                     previous_text=_mention_text(prior_title, prior_description))
     task = call_modules_hook('on_postload_war_room_task_update', task)
     return task
+
+
+def _activity_snapshot(task, with_teams):
+    teams = None
+    if with_teams:
+        teams = sorted(row.team_id for row in task_teams_db_for_tasks([task.task_id]))
+    return {
+        'title': task.title,
+        'status_id': task.status_id,
+        'assignee_id': task.assignee_id,
+        'other': (task.description, task.due_at, task.tags, task.parent_task_id,
+                  task.source_case_id, task.source_case_task_id, teams),
+    }
+
+
+def _track_task_changes(task, prior, current):
+    """One activity per kind of change, so the stream says what changed."""
+    war_room_id = task.war_room_id
+    if current['title'] != prior['title']:
+        track_activity(f'renamed war room task "{prior["title"]}" to "{task.title}"', war_room_id=war_room_id)
+    if current['status_id'] != prior['status_id']:
+        status = db.session.get(TaskStatus, task.status_id) if task.status_id is not None else None
+        target = f'"{status.status_name}"' if status else 'no status'
+        track_activity(f'moved war room task "{task.title}" to {target}', war_room_id=war_room_id)
+    if current['assignee_id'] != prior['assignee_id']:
+        if task.assignee_id is None:
+            track_activity(f'unassigned war room task "{task.title}"', war_room_id=war_room_id)
+        else:
+            from app.business.war_rooms import war_room_user_label
+            track_activity(f'assigned war room task "{task.title}" to {war_room_user_label(task.assignee_id)}',
+                           war_room_id=war_room_id)
+    if current['other'] != prior['other']:
+        track_activity(f'updated war room task "{task.title}"', war_room_id=war_room_id)
 
 
 def war_room_task_close(war_room_id, task_id, closed_by_id=None):

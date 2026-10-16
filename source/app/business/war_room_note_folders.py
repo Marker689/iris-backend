@@ -40,20 +40,47 @@ def war_room_note_folders_get(identifier: int) -> WarRoomNoteFolder:
 def war_room_note_folders_create(folder: WarRoomNoteFolder) -> WarRoomNoteFolder:
     db.session.add(folder)
     db.session.commit()
+    where = f' in {war_room_note_folders_label(folder.parent_id)}' if folder.parent_id else ''
     track_activity(
-        f'created war-room note folder "{folder.name}"',
+        f'created war-room note folder "{folder.name}"{where}',
         war_room_id=folder.war_room_id,
     )
     return folder
 
 
-def war_room_note_folders_update(folder: WarRoomNoteFolder) -> WarRoomNoteFolder:
+_UNSET = object()
+
+
+def war_room_note_folders_label(folder_id: Optional[int]) -> str:
+    """How the war-room activity names a destination folder."""
+    if folder_id is None:
+        return 'the root'
+    folder = get_folder(folder_id)
+    return f'folder "{folder.name}"' if folder else f'folder #{folder_id}'
+
+
+def war_room_note_folders_update(folder: WarRoomNoteFolder, name=_UNSET,
+                                 parent_id=_UNSET) -> WarRoomNoteFolder:
+    """Rename and/or move a folder; both already validated by the
+    caller. `parent_id=None` moves it to the root."""
+    previous_name = folder.name
+    previous_parent_id = folder.parent_id
+    if name is not _UNSET:
+        folder.name = name
+    if parent_id is not _UNSET:
+        folder.parent_id = parent_id
     folder.updated_at = datetime.utcnow()
     db.session.commit()
-    track_activity(
-        f'updated war-room note folder "{folder.name}"',
-        war_room_id=folder.war_room_id,
-    )
+    if folder.name != previous_name:
+        track_activity(
+            f'renamed war-room note folder "{previous_name}" to "{folder.name}"',
+            war_room_id=folder.war_room_id,
+        )
+    if folder.parent_id != previous_parent_id:
+        track_activity(
+            f'moved war-room note folder "{folder.name}" to {war_room_note_folders_label(folder.parent_id)}',
+            war_room_id=folder.war_room_id,
+        )
     _sync_note_shares(folder.war_room_id)
     return folder
 

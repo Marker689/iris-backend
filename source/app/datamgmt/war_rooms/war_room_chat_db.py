@@ -71,6 +71,41 @@ def build_case_activity_query(attached_ids, before_dt, search, limit):
     return q.order_by(desc(UserActivity.activity_date)).limit(limit).all()
 
 
+def build_war_room_activity_query(war_room_id, before_dt, search, limit, excluded_patterns=()):
+    """Activity recorded on the war room itself (`war_room_id` set, no
+    case: the activity of a case is read with the case's own access).
+    `excluded_patterns` are case-insensitive LIKE patterns left out."""
+    from app.models.authorization import User
+    from app.models.models import UserActivity
+
+    q = (
+        db.session.query(
+            UserActivity.id,
+            UserActivity.user_id,
+            UserActivity.case_id,
+            UserActivity.activity_date,
+            UserActivity.activity_desc,
+            User.user.label('user_login'),
+            User.name.label('user_name'),
+        )
+        .outerjoin(User, User.id == UserActivity.user_id)
+        .filter(
+            UserActivity.war_room_id == war_room_id,
+            UserActivity.case_id.is_(None),
+            UserActivity.display_in_ui == True,
+        )
+    )
+    for pattern in excluded_patterns:
+        q = q.filter(UserActivity.activity_desc.notilike(pattern))
+    if before_dt is not None:
+        q = q.filter(UserActivity.activity_date < before_dt)
+    needle = search.strip() if isinstance(search, str) else None
+    if needle:
+        q = q.filter(UserActivity.activity_desc.ilike(f'%{escape_like(needle)}%', escape='\\'))
+
+    return q.order_by(desc(UserActivity.activity_date), desc(UserActivity.id)).limit(limit).all()
+
+
 def apply_topic_filter(query, topic_ids, main_id):
     wants_main = main_id is not None and main_id in topic_ids
     clauses = [WarRoomChatMessage.topic_id.in_(list(topic_ids))]

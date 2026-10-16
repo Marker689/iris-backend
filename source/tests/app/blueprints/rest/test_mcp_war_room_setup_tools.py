@@ -149,7 +149,8 @@ class TestsWarRoomMembersAdd(_ToolTestCase):
         self.add.assert_called_once_with(12, 8, role='observer', added_by_id=_USER_ID,
                                          access_level=WarRoomAccessLevel.read_only.value)
         self.assertEqual(('jdoe', 'observer', 'read_only'), (result['user_login'], result['role'], result['access']))
-        self.assertEqual((12, 'system', 'Added member J. Doe as observer'), self.emit.call_args.args)
+        # The stream shows it from the war-room activity
+        self.emit.assert_not_called()
 
     def test_access_should_default_to_full_access(self):
         war_rooms_tools.iris_war_room_members_add({'war_room_id': 12, 'user_id': 8})

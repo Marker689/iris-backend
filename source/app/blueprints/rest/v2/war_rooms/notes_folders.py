@@ -131,14 +131,15 @@ def update_notes_folder(war_room_id, folder_id):
     raw = request.get_json()
     if not isinstance(raw, dict):
         return response_api_error('Invalid request')
+    changes = {}
     try:
         if 'name' in raw:
-            folder.name = _validate_name(raw['name'])
+            changes['name'] = _validate_name(raw['name'])
         if 'parent_id' in raw:
-            folder.parent_id = verify_parent_folder(
+            changes['parent_id'] = verify_parent_folder(
                 raw['parent_id'], war_room_id, current_id=folder.id,
             )
-        folder = war_room_note_folders_update(folder)
+        folder = war_room_note_folders_update(folder, **changes)
     except BusinessProcessingError as e:
         return response_api_error(e.get_message())
     return response_api_success(_serialize(folder))

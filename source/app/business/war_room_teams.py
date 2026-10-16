@@ -54,6 +54,12 @@ def _validate_color(color):
     return color
 
 
+def _user_label(user_id):
+    # Local import: see `war_room_team_member_add`
+    from app.business.war_rooms import war_room_user_label
+    return war_room_user_label(user_id)
+
+
 def war_room_team_list(war_room_id):
     return (
         WarRoomTeam.query
@@ -98,16 +104,15 @@ def war_room_team_create(war_room_id, name, description=None, color=None,
     )
     db.session.add(team)
     db.session.commit()
-    track_activity(
-        f'Created war-room team "{team.name}"',
-        user_input=False,
-    )
+    track_activity(f'created war-room team "{team.name}"', war_room_id=war_room_id)
     return call_modules_hook('on_postload_war_room_team_create', team)
 
 
 def war_room_team_update(war_room_id, team_id, name=None, description=None,
                          color=None):
     team = war_room_team_get(war_room_id, team_id)
+    previous_name = team.name
+    previous = (team.description, team.color)
 
     if name is not None:
         new_name = _validate_name(name)
@@ -130,6 +135,10 @@ def war_room_team_update(war_room_id, team_id, name=None, description=None,
         team.color = _validate_color(color)
 
     db.session.commit()
+    if team.name != previous_name:
+        track_activity(f'renamed war-room team "{previous_name}" to "{team.name}"', war_room_id=war_room_id)
+    if (team.description, team.color) != previous:
+        track_activity(f'updated war-room team "{team.name}"', war_room_id=war_room_id)
     return call_modules_hook('on_postload_war_room_team_update', team)
 
 
@@ -138,6 +147,7 @@ def war_room_team_delete(war_room_id, team_id):
     deleted = {'war_room_id': war_room_id, 'team_id': team.team_id, 'name': team.name}
     db.session.delete(team)
     db.session.commit()
+    track_activity(f'deleted war-room team "{deleted["name"]}"', war_room_id=war_room_id)
     call_modules_hook('on_postload_war_room_team_delete', deleted)
 
 
@@ -162,7 +172,7 @@ def war_room_team_member_add(war_room_id, team_id, user_id, added_by_id=None):
     can echo "user was also added to the war room as responder" back to
     the caller.
     """
-    war_room_team_get(war_room_id, team_id)
+    team = war_room_team_get(war_room_id, team_id)
 
     if not isinstance(user_id, int):
         raise BusinessProcessingError('user_id is required')
@@ -207,6 +217,8 @@ def war_room_team_member_add(war_room_id, team_id, user_id, added_by_id=None):
     )
     db.session.add(row)
     db.session.commit()
+    track_activity(f'added {_user_label(user_id)} to war-room team "{team.name}"',
+                   war_room_id=war_room_id)
     call_modules_hook('on_postload_war_room_team_member_add',
                       {'war_room_id': war_room_id, 'team_id': team_id, 'user_id': user_id,
                        'added_by_id': added_by_id})
@@ -214,7 +226,7 @@ def war_room_team_member_add(war_room_id, team_id, user_id, added_by_id=None):
 
 
 def war_room_team_member_remove(war_room_id, team_id, user_id):
-    war_room_team_get(war_room_id, team_id)
+    team = war_room_team_get(war_room_id, team_id)
     row = (
         WarRoomTeamMember.query
         .filter(WarRoomTeamMember.team_id == team_id)
@@ -225,6 +237,8 @@ def war_room_team_member_remove(war_room_id, team_id, user_id):
         raise ObjectNotFoundError('Team member not found')
     db.session.delete(row)
     db.session.commit()
+    track_activity(f'removed {_user_label(user_id)} from war-room team "{team.name}"',
+                   war_room_id=war_room_id)
     call_modules_hook('on_postload_war_room_team_member_remove',
                       {'war_room_id': war_room_id, 'team_id': team_id, 'user_id': user_id})
 

@@ -20,6 +20,7 @@ import re
 
 from app.business.categories import categories_resolve_id
 from app.datamgmt.manage.manage_common import get_severity_by_id
+from app.datamgmt.manage.manage_users_db import get_user
 from app.datamgmt.war_rooms.war_rooms_db import apply_search_filter as _apply_search_filter
 from app.datamgmt.war_rooms.war_rooms_db import state_priority_expr as _state_priority_expr_builder
 from app.datamgmt.war_rooms.war_rooms_db import war_room_case_attachments_rows
@@ -262,6 +263,8 @@ def war_room_update(war_room_id, name=None, description=None, state=None,
 
     previous_state = war_room.state
     previous_name = war_room.name
+    previous = {'description': war_room.description, 'severity_id': war_room.severity_id,
+                'color': war_room.color, 'custom_attributes': war_room.custom_attributes}
     if name is not None:
         war_room.name = _validate_name(name)
     if description is not None:
@@ -286,12 +289,20 @@ def war_room_update(war_room_id, name=None, description=None, state=None,
 
     db.session.commit()
 
-    if state is not None and war_room.state != previous_state:
+    if war_room.name != previous_name:
+        track_activity(f'renamed war room "{previous_name}" to "{war_room.name}"', war_room_id=war_room_id)
+    if war_room.state != previous_state:
         track_activity(
             f'changed war room "{war_room.name}" state from {previous_state} to {war_room.state}',
             war_room_id=war_room_id,
         )
-    else:
+    if war_room.description != previous['description']:
+        track_activity('updated war room summary', war_room_id=war_room_id)
+    if war_room.severity_id != previous['severity_id']:
+        severity = get_severity_by_id(war_room.severity_id) if war_room.severity_id else None
+        target = severity.severity_name if severity else 'none'
+        track_activity(f'set war room "{war_room.name}" severity to {target}', war_room_id=war_room_id)
+    if war_room.color != previous['color'] or war_room.custom_attributes != previous['custom_attributes']:
         track_activity(f'updated war room "{war_room.name}"', war_room_id=war_room_id)
     if war_room.name != previous_name:
         # Renames the locked "War room · <name>" mirror directories.
@@ -327,6 +338,14 @@ def war_room_delete(war_room_id):
 
 
 # ------------------------------------------------------------ Members ----
+
+def war_room_user_label(user_id):
+    """How the war-room activity names a user."""
+    user = get_user(user_id) if user_id else None
+    if user is None:
+        return f'user #{user_id}'
+    return user.name or user.user
+
 
 def war_room_members_list(war_room_id):
     from app.models.authorization import User
@@ -365,6 +384,7 @@ def war_room_add_member(war_room_id, user_id, role=None, added_by_id=None,
         war_room_id=war_room_id, user_id=user_id
     ).first()
     was_new = existing is None
+    previous_role = None if was_new else existing.role
     if was_new:
         member = WarRoomMember()
         member.war_room_id = war_room_id
@@ -379,11 +399,12 @@ def war_room_add_member(war_room_id, user_id, role=None, added_by_id=None,
     from app.business.war_rooms_access import set_user_war_room_access
     set_user_war_room_access(user_id, war_room_id, access_level)
 
-    verb = 'added' if was_new else 'updated'
-    track_activity(
-        f'{verb} war room member (user #{user_id}, role {role})',
-        war_room_id=war_room_id,
-    )
+    label = war_room_user_label(user_id)
+    if was_new:
+        track_activity(f'added {label} to the war room as {role}', war_room_id=war_room_id)
+    elif role != previous_role:
+        track_activity(f'changed the war room role of {label} from {previous_role} to {role}',
+                       war_room_id=war_room_id)
     call_modules_hook('on_postload_war_room_member_add',
                       {'war_room_id': war_room_id, 'user_id': user_id,
                        'role': role, 'access_level': access_level,
@@ -391,7 +412,7 @@ def war_room_add_member(war_room_id, user_id, role=None, added_by_id=None,
 
 
 def war_room_remove_member(war_room_id, user_id):
-    WarRoomMember.query.filter_by(
+    removed = WarRoomMember.query.filter_by(
         war_room_id=war_room_id, user_id=user_id
     ).delete()
     db.session.commit()
@@ -399,10 +420,9 @@ def war_room_remove_member(war_room_id, user_id):
     from app.business.war_rooms_access import remove_user_war_room_access
     remove_user_war_room_access(user_id, war_room_id)
 
-    track_activity(
-        f'removed war room member (user #{user_id})',
-        war_room_id=war_room_id,
-    )
+    if removed:
+        track_activity(f'removed {war_room_user_label(user_id)} from the war room',
+                       war_room_id=war_room_id)
     call_modules_hook('on_postload_war_room_member_remove',
                       {'war_room_id': war_room_id, 'user_id': user_id})
 

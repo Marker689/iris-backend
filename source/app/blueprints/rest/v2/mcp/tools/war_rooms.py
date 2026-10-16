@@ -404,11 +404,6 @@ def iris_war_room_members_add(args: dict) -> dict:
     member = next((r for r in war_rooms_biz.war_room_members_list(war_room_id) if r.user_id == user_id), None)
     if member is None:
         raise MCPError(protocol.INTERNAL_ERROR, f'User #{user_id} was not added.')
-    war_room_chat_biz.emit_system_event(
-        war_room_id, 'system',
-        f'Added member {member.name or member.login} as {member.role}',
-        author_id=user_obj.id,
-    )
     return {
         'war_room_id': war_room_id,
         'user_id': member.user_id,
@@ -809,6 +804,10 @@ def iris_war_room_notes_create(args: dict) -> dict:
     except (BusinessProcessingError, ValidationError) as exc:
         msg = exc.get_message() if isinstance(exc, BusinessProcessingError) else str(exc)
         raise MCPError(protocol.INVALID_PARAMS, msg) from exc
+    war_room_chat_biz.emit_system_event(
+        args['war_room_id'], 'note', f'Created note: {row.title}',
+        author_id=user_obj.id, ref_type='war_room_note', ref_id=row.note_id,
+    )
     return _note(row)
 
 
@@ -919,6 +918,10 @@ def iris_war_room_tasks_create(args: dict) -> dict:
     except (BusinessProcessingError, ValidationError) as exc:
         msg = exc.get_message() if isinstance(exc, BusinessProcessingError) else str(exc)
         raise MCPError(protocol.INVALID_PARAMS, msg) from exc
+    war_room_chat_biz.emit_system_event(
+        args['war_room_id'], 'task_assigned', f'Created task: {row.title}',
+        author_id=user_obj.id, ref_type='war_room_task', ref_id=row.task_id,
+    )
     return _task(row, war_room_tasks_biz.war_room_task_teams([row.task_id]).get(row.task_id))
 
 

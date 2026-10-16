@@ -6,6 +6,7 @@
 
 import datetime
 
+from app.business.war_room_note_folders import war_room_note_folders_label
 from app.datamgmt.war_rooms.war_room_notes_db import count_revisions
 from app.datamgmt.war_rooms.war_room_notes_db import get_folder
 from app.datamgmt.war_rooms.war_room_notes_db import get_revision
@@ -142,6 +143,8 @@ def war_room_note_update(war_room_id, note_id, title=None, content=None,
     (pass `None` explicitly)."""
     note = war_room_note_get(war_room_id, note_id)
     prior_content = note.content
+    prior_title = note.title
+    prior_folder_id = note.folder_id
     if title is not None:
         note.title = _validate_title(title)
     if content is not None:
@@ -155,7 +158,7 @@ def war_room_note_update(war_room_id, note_id, title=None, content=None,
     # revisions with identical title+content.
     write_revision(updated_by_id, note)
     db.session.commit()
-    track_activity(f'updated war room note "{note.title}"', war_room_id=war_room_id)
+    _track_note_changes(note, prior_title, prior_folder_id, prior_content)
     # Only fire when the body actually changed — pure title / folder edits
     # can't add a mention.
     if content is not None and content != prior_content:
@@ -164,6 +167,17 @@ def war_room_note_update(war_room_id, note_id, title=None, content=None,
     _sync_note_shares(war_room_id, updated_by_id)
     note = call_modules_hook('on_postload_war_room_note_update', note)
     return note
+
+
+def _track_note_changes(note, prior_title, prior_folder_id, prior_content):
+    war_room_id = note.war_room_id
+    if note.title != prior_title:
+        track_activity(f'renamed war room note "{prior_title}" to "{note.title}"', war_room_id=war_room_id)
+    if note.folder_id != prior_folder_id:
+        track_activity(f'moved war room note "{note.title}" to {war_room_note_folders_label(note.folder_id)}',
+                       war_room_id=war_room_id)
+    if note.content != prior_content:
+        track_activity(f'updated war room note "{note.title}"', war_room_id=war_room_id)
 
 
 def war_room_note_delete(war_room_id, note_id):
