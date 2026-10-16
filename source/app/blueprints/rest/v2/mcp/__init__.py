@@ -63,4 +63,5 @@ from app.blueprints.rest.v2.mcp.tools import search as _tools_search
 from app.blueprints.rest.v2.mcp.tools import profile as _tools_profile
 from app.blueprints.rest.v2.mcp.tools import taxonomies as _tools_taxonomies
 from app.blueprints.rest.v2.mcp.tools import war_rooms as _tools_war_rooms
+from app.blueprints.rest.v2.mcp.tools import war_room_scope as _tools_war_room_scope
 from app.blueprints.rest.v2.mcp.tools import vulnerabilities as _tools_vulnerabilities

@@ -79,9 +79,11 @@ def system_prompt(
         prompt = (
             _BASE
             + f'\n\nThis conversation is scoped to IRIS war-room #{war_room_id}. '
-            + 'All war-room-scoped tool calls (chat post, sitrep draft, notes, '
-            + 'tasks) are automatically bound to this war-room; you do not '
-            + 'need to (and should not) supply a war_room_id argument.'
+            + 'All war-room-scoped tool calls (summary, chat, sitreps, notes, '
+            + 'tasks, decisions, timelines, and the scope: assets and IOCs of '
+            + 'the attached cases, registry assets, staging) are automatically '
+            + 'bound to this war-room; you do not need to (and should not) '
+            + 'supply a war_room_id argument.'
         )
     elif case_id is not None:
         prompt = (

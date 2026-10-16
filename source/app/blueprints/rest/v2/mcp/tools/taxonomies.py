@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.blueprints.rest.v2.mcp.registry import mcp_tool
+from app.business.asset_flags import asset_flags_list
 from app.models.alert_clusters import AlertClusterStatus
 from app.models.alerts import AlertResolutionStatus
 from app.models.alerts import AlertStatus
@@ -85,7 +86,9 @@ def _dump_compromise_status() -> list[dict[str, Any]]:
         '(asset `analysis_status_id`), task statuses, case states, case '
         'classifications, severities, TLPs, alert statuses/resolutions/'
         'cluster statuses, asset types, IOC types, evidence types, event '
-        'categories, and the asset compromise-status enum. Rows are '
+        'categories, the asset compromise-status enum, and the asset flags '
+        '(`flag_id` of the war-room scope tools; a flag with requires_reason / '
+        'requires_decision needs a reason / decision_id when set). Rows are '
         '`{id, name, description?}`. Tables are small and rarely change — '
         'call this once per session and cache the map before setting any '
         '`*_status_id` / `*_type_id` field via an update tool.'
@@ -99,4 +102,8 @@ def iris_taxonomies_list(_args: dict) -> dict:
     for key, model, id_col, name_col, desc_col in _TAXONOMIES:
         payload[key] = _dump_model_taxonomy(model, id_col, name_col, desc_col)
     payload['asset_compromise_statuses'] = _dump_compromise_status()
+    payload['asset_flags'] = [
+        {k: flag[k] for k in ('id', 'name', 'description', 'kind', 'requires_reason', 'requires_decision')}
+        for flag in asset_flags_list()
+    ]
     return payload
