@@ -72,6 +72,8 @@ from app.iris_engine.llm.providers.base import (
     ToolSpec,
     ToolUseEnd,
 )
+from app.iris_engine.llm.attachments import attachments_expand
+from app.iris_engine.llm.attachments import attachments_reference_block
 from app.iris_engine.llm.redaction import redact_content_blocks
 from app.iris_engine.llm.system_prompt import system_prompt
 from app.iris_engine.utils.tracker import track_activity
@@ -173,11 +175,19 @@ def absorb_user_texts(
             'tool_name': row.tool_name,
             'result': {'denied': True, 'message': _SUPERSEDED_BY_USER},
         }))
+    # Files sent with these turns ride along with them.
+    attachments = case_chat_biz.take_staged_attachments(conversation.id)
+    text = '\n\n'.join(t for t in texts if t)
+    content: list[dict[str, Any]] = []
+    if text or not attachments:
+        content.append({'type': 'text', 'text': text})
+    content.extend(attachments_reference_block(a) for a in attachments)
     message = case_chat_biz.append_message(
         conversation=conversation,
         role=ROLE_USER,
-        content=[{'type': 'text', 'text': '\n\n'.join(texts)}],
+        content=content,
     )
+    case_chat_biz.link_attachments(attachments, message)
     emit(ChatEvent('user_message_persisted', {'message_id': message.id}))
 
 
@@ -476,9 +486,18 @@ def _load_history(
     # any interleaved tool messages.
     keep = max(2, cfg.max_turns_per_conversation) * 4
     trimmed = rows[-keep:]
+    attachments = case_chat_biz.get_attachments_by_id({
+        b['attachment_id']
+        for row in trimmed if row.role == ROLE_USER
+        for b in (row.content or [])
+        if isinstance(b, dict) and b.get('type') == 'attachment'
+        and isinstance(b.get('attachment_id'), int)
+    })
     out: list[ChatMessage] = []
     for row in trimmed:
         content: list[dict[str, Any]] = row.content or []
+        if row.role == ROLE_USER:
+            content = attachments_expand(content, attachments)
         if row.role == ROLE_TOOL:
             content, _ = redact_content_blocks(
                 content,
@@ -1125,8 +1144,22 @@ def _build_request_snapshot(
             }
             for t in tools
         ],
-        'user_message': last_user,
+        'user_message': _without_file_bytes(last_user),
     }
+
+
+def _without_file_bytes(content: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
+    """The user message as audited: an attached file is named, its bytes
+    are not copied into the audit row."""
+    if content is None:
+        return None
+    out: list[dict[str, Any]] = []
+    for block in content:
+        source = block.get('source') if isinstance(block, dict) else None
+        if isinstance(source, dict) and 'data' in source:
+            block = {**block, 'source': {**source, 'data': f'<{len(source["data"])} base64 characters>'}}
+        out.append(block)
+    return out
 
 
 def _event_bytes(event: LLMEvent) -> int:

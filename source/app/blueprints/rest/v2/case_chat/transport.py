@@ -17,6 +17,7 @@ back-door here — auditors use the egress-audit surface for oversight.
 """
 from __future__ import annotations
 
+from flask import make_response
 from flask import request
 
 from app.blueprints.access_controls import (
@@ -36,6 +37,13 @@ from app.blueprints.rest.endpoints import (
 )
 from app.blueprints.rest.v2.case_chat import case_chat_blueprint
 from app.business import case_chat as case_chat_biz
+from app.iris_engine.demo_builder import demo_mode_over_upload_cap
+from app.iris_engine.demo_builder import demo_mode_upload_cap_message
+from app.iris_engine.llm.attachments import ATTACHMENT_KIND_IMAGE
+from app.iris_engine.llm.attachments import ATTACHMENT_KIND_TEXT
+from app.iris_engine.llm.attachments import ATTACHMENT_MAX_BYTES
+from app.iris_engine.llm.attachments import AttachmentRejectedError
+from app.iris_engine.llm.attachments import attachments_reference_block
 from app.iris_engine.llm.client import ChatbotDisabledError, load_config
 from app.models.authorization import (
     CaseAccessLevel,
@@ -308,14 +316,9 @@ def get_conversation(conversation_id: int):
     # If the conversation is case- or war-room-scoped, still verify
     # access — the user may have lost access since the conversation
     # was created.
-    if conv.case_id is not None:
-        acl_err = _require_case_access(conv.case_id)
-        if acl_err is not None:
-            return acl_err
-    if conv.war_room_id is not None:
-        acl_err = _require_war_room_access(conv.war_room_id)
-        if acl_err is not None:
-            return acl_err
+    acl_err = _require_scope_access(conv)
+    if acl_err is not None:
+        return acl_err
     messages = case_chat_biz.list_messages(conversation_id)
     payload = _dump_conversation(conv)
     payload['messages'] = _msg_schema.dump(messages, many=True)
@@ -372,6 +375,88 @@ def rename_conversation(conversation_id: int):
         return response_api_error('title must be a string')
     conv = case_chat_biz.rename_conversation(conv, title)
     return response_api_success(_dump_conversation(conv))
+
+
+# ---- Attachments ----------------------------------------------------
+
+def _require_scope_access(conv: CaseChatConversation):
+    """The caller may have lost access to the case or war room since the
+    conversation was opened."""
+    if conv.case_id is not None:
+        acl_err = _require_case_access(conv.case_id)
+        if acl_err is not None:
+            return acl_err
+    if conv.war_room_id is not None:
+        acl_err = _require_war_room_access(conv.war_room_id)
+        if acl_err is not None:
+            return acl_err
+    return None
+
+
+@case_chat_blueprint.post('/conversations/<int:conversation_id>/attachments')
+@ac_api_requires(Permissions.standard_user)
+@api_doc(
+    response_shape='created', tags=['CaseChat'],
+    summary='Upload a file (image, PDF or text) for the next turn of a conversation',
+)
+def upload_attachment(conversation_id: int):
+    conv, err = _require_own_conversation(conversation_id)
+    if err is not None:
+        return err
+    acl_err = _require_scope_access(conv)
+    if acl_err is not None:
+        return acl_err
+    file = request.files.get('file')
+    if file is None or file.filename == '':
+        return response_api_error('Missing file part')
+    if demo_mode_over_upload_cap(file):
+        return response_api_error(demo_mode_upload_cap_message())
+    raw = file.read(ATTACHMENT_MAX_BYTES + 1)
+    try:
+        attachment = case_chat_biz.create_attachment(
+            conversation=conv,
+            user_id=iris_current_user.id,
+            filename=file.filename,
+            raw=raw,
+        )
+    except AttachmentRejectedError as exc:
+        return response_api_error(str(exc))
+    return response_api_created(attachments_reference_block(attachment))
+
+
+@case_chat_blueprint.get('/attachments/<int:attachment_id>')
+@ac_api_requires(Permissions.standard_user)
+@api_doc(
+    tags=['CaseChat'],
+    summary='Download a file sent in one of the caller\'s conversations',
+)
+def download_attachment(attachment_id: int):
+    try:
+        attachment = case_chat_biz.get_attachment(attachment_id)
+    except ObjectNotFoundError:
+        return response_api_not_found()
+    conv, err = _require_own_conversation(attachment.conversation_id)
+    if err is not None:
+        return err
+    acl_err = _require_scope_access(conv)
+    if acl_err is not None:
+        return acl_err
+    data = bytes(attachment.data)
+    response = make_response(data)
+    # Text is served as plain text whatever it holds (HTML, SVG…), and
+    # only images are shown inline.
+    response.headers['Content-Type'] = ('text/plain; charset=utf-8'
+                                        if attachment.kind == ATTACHMENT_KIND_TEXT
+                                        else attachment.media_type)
+    response.headers['Content-Length'] = str(len(data))
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Content-Security-Policy'] = "default-src 'none'; sandbox"
+    response.headers['Cache-Control'] = 'private, max-age=3600'
+    disposition = 'inline' if attachment.kind == ATTACHMENT_KIND_IMAGE else 'attachment'
+    filename = ''.join(c if c.isprintable() and c != '"' else '_'
+                       for c in attachment.filename.encode('ascii', 'replace').decode('ascii'))
+    response.headers['Content-Disposition'] = f'{disposition}; filename="{filename}"'
+    return response
 
 
 # ---- Configuration health probe (used by the SPA to render the

@@ -2959,6 +2959,29 @@ paths:
           $ref: '#/components/responses/ApiError'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /api/v2/case-chat/attachments/{attachment_id}:
+    get:
+      operationId: download_attachment_get
+      summary: Download a file sent in one of the caller's conversations
+      tags:
+      - CaseChat
+      security:
+      - ApiKey: []
+      parameters:
+      - name: attachment_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v2/case-chat/cases/{case_id}/conversations:
     get:
       operationId: list_case_conversations_get
@@ -3081,6 +3104,29 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CaseChatConversation'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/case-chat/conversations/{conversation_id}/attachments:
+    post:
+      operationId: upload_attachment_post
+      summary: Upload a file (image, PDF or text) for the next turn of a conversation
+      tags:
+      - CaseChat
+      security:
+      - ApiKey: []
+      parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
         '400':
           $ref: '#/components/responses/ApiError'
         '403':

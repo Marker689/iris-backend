@@ -39,6 +39,7 @@ from app.blueprints.rest.v2.case_chat.loop import run_one_iteration
 from app.business import case_chat as case_chat_biz
 from app.business.auth import validate_auth_token
 from app.models.authorization import CaseAccessLevel, WarRoomAccessLevel
+from app.models.errors import BusinessProcessingError
 from app.models.errors import ObjectNotFoundError
 
 
@@ -212,7 +213,14 @@ class ChatNamespace(Namespace):
             return
         conversation_id = _int(data, 'conversation_id')
         user_text = (data or {}).get('user_text') if isinstance(data, dict) else None
-        if conversation_id is None or not isinstance(user_text, str) or not user_text.strip():
+        attachment_ids = _int_list(data, 'attachment_ids')
+        if attachment_ids is None:
+            emit('error', {'message': 'attachment_ids must be a list of ids'})
+            return
+        if user_text is None and attachment_ids:
+            user_text = ''
+        if conversation_id is None or not isinstance(user_text, str) \
+                or not (user_text.strip() or attachment_ids):
             emit('error', {'message': 'conversation_id + user_text are required'})
             return
 
@@ -239,6 +247,12 @@ class ChatNamespace(Namespace):
                 return
 
         text = user_text.strip()
+        # The files go with the next user message the run hands over.
+        try:
+            attachments = case_chat_biz.stage_attachments(conv.id, user_id, attachment_ids)
+        except BusinessProcessingError as exc:
+            emit('error', {'message': exc.get_message()})
+            return
         # While Yuki is running, the turn waits in the queue for the run
         # to pick it up at its next step.
         run_token, texts = case_chat_biz.claim_run_or_queue(conv.id, text)
@@ -252,7 +266,7 @@ class ChatNamespace(Namespace):
             # First user turn seeds the conversation title.
             if not conv.title:
                 from app.db import db
-                conv.title = text[:80]
+                conv.title = (text or (attachments[0].filename if attachments else ''))[:80]
                 db.session.commit()
 
             emitter = _emit_for_conv(conv.id)
@@ -325,6 +339,21 @@ def _int(data: Any, key: str) -> int | None:
         return int(v) if v is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _int_list(data: Any, key: str) -> list[int] | None:
+    """The ids under `key` — empty when absent, None when malformed."""
+    if not isinstance(data, dict) or data.get(key) is None:
+        return []
+    values = data.get(key)
+    if not isinstance(values, list):
+        return None
+    out: list[int] = []
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        out.append(value)
+    return out
 
 
 def _json_safe(value: Any) -> Any:

@@ -28,6 +28,7 @@ from sqlalchemy import DateTime
 from sqlalchemy import ForeignKey
 from sqlalchemy import Index
 from sqlalchemy import Integer
+from sqlalchemy import LargeBinary
 from sqlalchemy import String
 from sqlalchemy import UniqueConstraint
 from sqlalchemy import text
@@ -179,6 +180,46 @@ class CaseChatMessage(db.Model):
     __table_args__ = (
         Index('ix_case_chat_message_conversation_created',
               'conversation_id', 'created_at'),
+    )
+
+
+class CaseChatAttachment(db.Model):
+    """A file the analyst sent to Yuki: an image, a PDF or a text file.
+
+    Uploaded on its own before the turn, then named by id in the `send`
+    event: `staged_at` marks it as sent, and the run that hands the turn
+    to the model links it to the user message (`message_id`). The
+    message keeps a small `{type: 'attachment', attachment_id, ...}`
+    block; the loop swaps it for the bytes on the way to the provider.
+    """
+    __tablename__ = 'case_chat_attachment'
+
+    id = Column(BigInteger, primary_key=True)
+    conversation_id = Column(
+        BigInteger,
+        ForeignKey('case_chat_conversation.id', ondelete='CASCADE'),
+        nullable=False,
+    )
+    message_id = Column(
+        BigInteger,
+        ForeignKey('case_chat_message.id', ondelete='SET NULL'),
+        nullable=True,
+    )
+    user_id = Column(
+        BigInteger, ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    filename = Column(String(255), nullable=False)
+    # 'image' | 'pdf' | 'text', from the bytes rather than the browser.
+    kind = Column(String(16), nullable=False)
+    media_type = Column(String(64), nullable=False)
+    size = Column(Integer, nullable=False)
+    data = Column(LargeBinary, nullable=False)
+    staged_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False,
+                        server_default=text('now()'))
+
+    __table_args__ = (
+        Index('ix_case_chat_attachment_conversation_message',
+              'conversation_id', 'message_id'),
     )
 
 

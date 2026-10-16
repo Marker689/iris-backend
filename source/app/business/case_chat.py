@@ -11,17 +11,21 @@ pulling the API layer back into itself.
 """
 from __future__ import annotations
 
+import base64
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_tokens_today
 from app.db import db
+from app.iris_engine.llm.attachments import ATTACHMENTS_MAX_PER_MESSAGE
+from app.iris_engine.llm.attachments import attachments_sniff
 from app.models.authorization import User
 from app.models.case_chat import (
     STATUS_APPROVED,
     STATUS_DENIED,
     STATUS_PENDING,
+    CaseChatAttachment,
     CaseChatConversation,
     CaseChatEgressAudit,
     CaseChatMessage,
@@ -172,6 +176,103 @@ def append_message(
     conversation.updated_at = datetime.now(timezone.utc)
     db.session.commit()
     return msg
+
+
+# ---- Attachments -----------------------------------------------------
+
+def create_attachment(
+    *,
+    conversation: CaseChatConversation,
+    user_id: int,
+    filename: str,
+    raw: bytes,
+) -> CaseChatAttachment:
+    """Store a file for the next turn. Raises `AttachmentRejectedError`
+    when the file can't be sent to the model."""
+    sniffed = attachments_sniff(raw)
+    attachment = CaseChatAttachment(
+        conversation_id=conversation.id,
+        user_id=user_id,
+        filename=(filename or 'file').strip()[:255] or 'file',
+        kind=sniffed.kind,
+        media_type=sniffed.media_type,
+        size=len(raw),
+        data=raw,
+    )
+    db.session.add(attachment)
+    db.session.commit()
+    return attachment
+
+
+def get_attachment(attachment_id: int) -> CaseChatAttachment:
+    attachment = db.session.get(CaseChatAttachment, attachment_id)
+    if attachment is None:
+        raise ObjectNotFoundError()
+    return attachment
+
+
+def stage_attachments(
+    conversation_id: int, user_id: int, attachment_ids: list[int],
+) -> list[CaseChatAttachment]:
+    """Mark the attachments of a sent turn, for the run to pick up with it.
+
+    Each must be the caller's, in this conversation, and not sent yet.
+    """
+    if not attachment_ids:
+        return []
+    wanted = list(dict.fromkeys(attachment_ids))
+    if len(wanted) > ATTACHMENTS_MAX_PER_MESSAGE:
+        raise BusinessProcessingError(
+            f'At most {ATTACHMENTS_MAX_PER_MESSAGE} files can be sent at once.')
+    rows = (
+        CaseChatAttachment.query
+        .filter(CaseChatAttachment.id.in_(wanted),
+                CaseChatAttachment.conversation_id == conversation_id,
+                CaseChatAttachment.user_id == user_id,
+                CaseChatAttachment.staged_at.is_(None))
+        .with_for_update()
+        .all()
+    )
+    if len(rows) != len(wanted):
+        db.session.rollback()
+        raise BusinessProcessingError('Unknown or already sent attachment.')
+    now = _now()
+    for row in rows:
+        row.staged_at = now
+    db.session.commit()
+    order = {attachment_id: i for i, attachment_id in enumerate(wanted)}
+    return sorted(rows, key=lambda row: order[row.id])
+
+
+def take_staged_attachments(conversation_id: int) -> list[CaseChatAttachment]:
+    """The attachments sent but not handed to the model yet, oldest first."""
+    return (
+        CaseChatAttachment.query
+        .filter(CaseChatAttachment.conversation_id == conversation_id,
+                CaseChatAttachment.staged_at.isnot(None),
+                CaseChatAttachment.message_id.is_(None))
+        .order_by(CaseChatAttachment.staged_at, CaseChatAttachment.id)
+        .all()
+    )
+
+
+def link_attachments(
+    attachments: list[CaseChatAttachment], message: CaseChatMessage,
+) -> None:
+    for attachment in attachments:
+        attachment.message_id = message.id
+    db.session.commit()
+
+
+def get_attachments_by_id(attachment_ids: set[int]) -> dict[int, CaseChatAttachment]:
+    if not attachment_ids:
+        return {}
+    rows = (
+        CaseChatAttachment.query
+        .filter(CaseChatAttachment.id.in_(attachment_ids))
+        .all()
+    )
+    return {row.id: row for row in rows}
 
 
 # ---- Live-run control ------------------------------------------------
@@ -709,6 +810,12 @@ def dpo_export_for_user(user_id: int) -> dict[str, Any]:
             .order_by(CaseChatEgressAudit.created_at.asc())
             .all()
         )
+        attachments = (
+            CaseChatAttachment.query
+            .filter(CaseChatAttachment.conversation_id == conv.id)
+            .order_by(CaseChatAttachment.id.asc())
+            .all()
+        )
         conv_payload.append({
             'id': conv.id,
             'case_id': conv.case_id,
@@ -739,6 +846,16 @@ def dpo_export_for_user(user_id: int) -> dict[str, Any]:
                     'created_at': e.created_at.isoformat() if e.created_at else None,
                 }
                 for e in egress
+            ],
+            'attachments': [
+                {
+                    'id': a.id, 'message_id': a.message_id,
+                    'filename': a.filename, 'kind': a.kind,
+                    'media_type': a.media_type, 'size': a.size,
+                    'data_base64': base64.b64encode(bytes(a.data)).decode('ascii'),
+                    'created_at': a.created_at.isoformat() if a.created_at else None,
+                }
+                for a in attachments
             ],
         })
     return {

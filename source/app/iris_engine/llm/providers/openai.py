@@ -237,10 +237,7 @@ def _ours_to_openai_messages(m: ChatMessage) -> list[dict[str, Any]]:
     role = m.role
     blocks = m.content or []
     if role == 'user':
-        # User messages are always plain text — flatten any content
-        # blocks into a single string.
-        text = _blocks_to_text(blocks)
-        return [{'role': 'user', 'content': text}]
+        return [{'role': 'user', 'content': _user_content(blocks)}]
     if role == 'assistant':
         text = _blocks_to_text(blocks)
         tool_calls: list[dict[str, Any]] = []
@@ -278,6 +275,28 @@ def _ours_to_openai_messages(m: ChatMessage) -> list[dict[str, Any]]:
             })
         return out
     return []
+
+
+def _user_content(blocks: list[dict[str, Any]]) -> str | list[dict[str, Any]]:
+    """A plain string, unless the analyst attached an image or a PDF:
+    then content parts, the files as data URLs."""
+    if not any(b.get('type') in ('image', 'document') for b in blocks):
+        return _blocks_to_text(blocks)
+    parts: list[dict[str, Any]] = []
+    for b in blocks:
+        kind = b.get('type')
+        source = b.get('source') or {}
+        if kind == 'text':
+            parts.append({'type': 'text', 'text': b.get('text') or ''})
+        elif kind == 'image':
+            url = f"data:{source.get('media_type')};base64,{source.get('data')}"
+            parts.append({'type': 'image_url', 'image_url': {'url': url}})
+        elif kind == 'document':
+            parts.append({'type': 'file', 'file': {
+                'filename': b.get('title') or 'document.pdf',
+                'file_data': f"data:{source.get('media_type')};base64,{source.get('data')}",
+            }})
+    return parts
 
 
 def _blocks_to_text(blocks: list[dict[str, Any]]) -> str:

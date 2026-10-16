@@ -192,7 +192,7 @@ def _ours_to_ollama_messages(m: ChatMessage) -> list[dict[str, Any]]:
     role = m.role
     blocks = m.content or []
     if role == 'user':
-        return [{'role': 'user', 'content': _blocks_to_text(blocks)}]
+        return [_user_message(blocks)]
     if role == 'assistant':
         text = _blocks_to_text(blocks)
         tool_calls: list[dict[str, Any]] = []
@@ -229,6 +229,26 @@ def _ours_to_ollama_messages(m: ChatMessage) -> list[dict[str, Any]]:
             })
         return out
     return []
+
+
+def _user_message(blocks: list[dict[str, Any]]) -> dict[str, Any]:
+    """Ollama takes images as a base64 list beside the text. It has no
+    PDF input: the model is told the document could not be sent."""
+    parts: list[str] = []
+    images: list[str] = []
+    for b in blocks:
+        kind = b.get('type')
+        if kind == 'text':
+            parts.append(b.get('text') or '')
+        elif kind == 'image':
+            images.append((b.get('source') or {}).get('data') or '')
+        elif kind == 'document':
+            parts.append(f"\n[The PDF \"{b.get('title') or 'document'}\" was not sent: "
+                         'this model provider does not read PDFs.]')
+    msg: dict[str, Any] = {'role': 'user', 'content': ''.join(parts)}
+    if images:
+        msg['images'] = images
+    return msg
 
 
 def _blocks_to_text(blocks: list[dict[str, Any]]) -> str:
