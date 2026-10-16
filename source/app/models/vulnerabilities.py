@@ -88,13 +88,16 @@ FINDING_REMEDIATION_STATUSES = FINDING_OPEN_STATUSES + FINDING_FIXED_STATUSES + 
 
 FINDING_EXPLOITATION_STATUSES = ('unknown', 'not-exploited', 'attempted', 'suspected', 'exploited')
 
-# CISA VEX justifications for `not-affected`.
+# Justifications for `not-affected`: the CISA VEX ones, then IRIS's own.
 FINDING_NOT_AFFECTED_JUSTIFICATIONS = (
     'component_not_present',
     'vulnerable_code_not_present',
     'vulnerable_code_not_in_execute_path',
     'vulnerable_code_cannot_be_controlled_by_adversary',
     'inline_mitigations_already_exist',
+    'version_not_affected',
+    'saas_deployment',
+    'on_prem_deployment',
 )
 
 FINDING_HISTORY_ACTIONS = ('create', 'update')
