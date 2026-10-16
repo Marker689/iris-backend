@@ -364,3 +364,65 @@ class TestsRestWarRoomsChatReactions(TestCase):
 
         users = self._reactions(room_id, message_id)[0]['users']
         self.assertEqual([stays.get_login()], [user['user_login'] for user in users])
+
+
+class TestsRestWarRoomTeamsImport(TestCase):
+
+    def setUp(self) -> None:
+        self._subject = Iris()
+
+    def tearDown(self):
+        self._subject.clear_database()
+
+    def _room(self):
+        return self._subject.create('/api/v2/war-rooms', {'name': 'Team Room'}).json()['war_room_id']
+
+    def _group_with_a_member(self):
+        group_id = self._subject.create_dummy_group(IRIS_PERMISSION_SERVER_ADMINISTRATOR)
+        user = self._subject.create_dummy_user()
+        self._subject.create(f'/manage/users/{user.get_identifier()}/groups/update',
+                             {'groups_membership': [group_id]})
+        return group_id, user
+
+    def test_groups_should_list_the_group_with_its_members(self):
+        room_id = self._room()
+        group_id, user = self._group_with_a_member()
+        groups = self._subject.get(f'/api/v2/war-rooms/{room_id}/teams/groups').json()
+        group = next(g for g in groups if g['group_id'] == group_id)
+        self.assertEqual([user.get_identifier()], group['member_ids'])
+
+    def test_import_should_create_a_team_with_the_group_members(self):
+        room_id = self._room()
+        group_id, user = self._group_with_a_member()
+        response = self._subject.create(f'/api/v2/war-rooms/{room_id}/teams/import', {'group_id': group_id})
+        self.assertEqual(201, response.status_code)
+        team = response.json()
+        self.assertEqual([user.get_identifier()], team['member_ids'])
+        self.assertEqual([user.get_identifier()], team['auto_added_room_member_ids'])
+        members = self._subject.get(f'/api/v2/war-rooms/{room_id}/members').json()
+        self.assertIn(user.get_identifier(), [m['user_id'] for m in members])
+
+    def test_import_should_accept_another_name(self):
+        room_id = self._room()
+        group_id, _ = self._group_with_a_member()
+        response = self._subject.create(f'/api/v2/war-rooms/{room_id}/teams/import',
+                                        {'group_id': group_id, 'name': 'Blue'})
+        self.assertEqual('Blue', response.json()['name'])
+
+    def test_import_twice_should_return_400(self):
+        room_id = self._room()
+        group_id, _ = self._group_with_a_member()
+        self._subject.create(f'/api/v2/war-rooms/{room_id}/teams/import', {'group_id': group_id})
+        response = self._subject.create(f'/api/v2/war-rooms/{room_id}/teams/import', {'group_id': group_id})
+        self.assertEqual(400, response.status_code)
+
+    def test_import_should_return_404_for_an_unknown_group(self):
+        room_id = self._room()
+        response = self._subject.create(f'/api/v2/war-rooms/{room_id}/teams/import', {'group_id': 999999999})
+        self.assertEqual(404, response.status_code)
+
+    def test_groups_should_be_refused_to_a_user_without_war_room_write(self):
+        room_id = self._room()
+        user = self._subject.create_dummy_user()
+        response = user.get(f'/api/v2/war-rooms/{room_id}/teams/groups')
+        self.assertIn(response.status_code, (403, 404))

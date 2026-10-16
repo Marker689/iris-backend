@@ -107,6 +107,43 @@ def get_member_identifiers_of_groups(group_identifiers) -> dict[int, list[int]]:
     return {row.group_id: sorted(row.user_identifiers) for row in rows}
 
 
+def get_groups_with_active_member_identifiers():
+    """Every group by name, as `{group_id, group_name, group_description,
+    member_ids}` where `member_ids` are its active members only."""
+    groups = Group.query.order_by(func.lower(Group.group_name), Group.group_id).all()
+    rows = UserGroup.query.with_entities(
+        UserGroup.group_id,
+        UserGroup.user_id
+    ).join(
+        UserGroup.user
+    ).filter(
+        User.active.is_(True)
+    ).all()
+    members = {}
+    for row in rows:
+        members.setdefault(row.group_id, set()).add(row.user_id)
+    return [{
+        'group_id': group.group_id,
+        'group_name': group.group_name,
+        'group_description': group.group_description,
+        'member_ids': sorted(members.get(group.group_id, ()))
+    } for group in groups]
+
+
+def get_group_active_member_identifiers(group_id) -> list[int]:
+    rows = UserGroup.query.with_entities(
+        UserGroup.user_id
+    ).join(
+        UserGroup.user
+    ).filter(
+        UserGroup.group_id == group_id,
+        User.active.is_(True)
+    ).order_by(
+        UserGroup.user_id
+    ).all()
+    return sorted({row.user_id for row in rows})
+
+
 def get_group(group_id):
     group = Group.query.filter(Group.group_id == group_id).first()
 

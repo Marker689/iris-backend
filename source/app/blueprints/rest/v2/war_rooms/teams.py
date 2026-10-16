@@ -14,6 +14,8 @@ layout mirrors members:
 
     GET    /<war_room_id>/teams                  list teams
     POST   /<war_room_id>/teams                  create a team
+    GET    /<war_room_id>/teams/groups           IRIS groups a team can be imported from
+    POST   /<war_room_id>/teams/import           create a team from an IRIS group
     GET    /<war_room_id>/teams/<tid>            get a team + its members
     PATCH  /<war_room_id>/teams/<tid>            rename / recolor
     DELETE /<war_room_id>/teams/<tid>            remove
@@ -36,6 +38,8 @@ from app.blueprints.rest.v2.war_rooms.access import require_war_room_write
 from app.business.war_room_teams import war_room_team_create
 from app.business.war_room_teams import war_room_team_delete
 from app.business.war_room_teams import war_room_team_get
+from app.business.war_room_teams import war_room_team_import_group
+from app.business.war_room_teams import war_room_team_importable_groups
 from app.business.war_room_teams import war_room_team_list
 from app.business.war_room_teams import war_room_team_member_add
 from app.business.war_room_teams import war_room_team_member_remove
@@ -121,6 +125,45 @@ def create_team(war_room_id):
     except BusinessProcessingError as e:
         return response_api_error(e.get_message())
     return response_api_created(_serialize_team(team, set()))
+
+
+@war_rooms_teams_blueprint.get('/groups')
+@ac_api_requires()
+@api_doc(tags=['WarRoomTeams'], summary='List the IRIS groups a war room team can be imported from')
+def list_importable_groups(war_room_id):
+    # Only who may create a team sees the groups
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    return response_api_success(data=war_room_team_importable_groups())
+
+
+@war_rooms_teams_blueprint.post('/import')
+@ac_api_requires()
+@api_doc(response_shape='created', tags=['WarRoomTeams'], summary='Import an IRIS group as a war room team')
+def import_group(war_room_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    raw = request.get_json()
+    if not isinstance(raw, dict):
+        return response_api_error('Invalid request')
+    try:
+        team, member_ids, auto_added = war_room_team_import_group(
+            war_room_id,
+            raw.get('group_id'),
+            name=raw.get('name'),
+            color=raw.get('color'),
+            imported_by_id=iris_current_user.id,
+        )
+    except ObjectNotFoundError:
+        return response_api_not_found()
+    except BusinessProcessingError as e:
+        return response_api_error(e.get_message())
+    payload = _serialize_team(team, set(member_ids))
+    # Members who were not in the war room and joined it as responder
+    payload['auto_added_room_member_ids'] = auto_added
+    return response_api_created(payload)
 
 
 @war_rooms_teams_blueprint.get('/<int:team_id>')

@@ -17,6 +17,9 @@ name uniqueness, membership add/remove, and cascade delete all key off
 
 import re
 
+from app.datamgmt.manage.manage_groups_db import get_group
+from app.datamgmt.manage.manage_groups_db import get_group_active_member_identifiers
+from app.datamgmt.manage.manage_groups_db import get_groups_with_active_member_identifiers
 from app.db import db
 from app.iris_engine.module_handler.module_handler import call_modules_hook
 from app.iris_engine.utils.tracker import track_activity
@@ -77,7 +80,7 @@ def war_room_team_get(war_room_id, team_id):
         .first()
     )
     if team is None:
-        raise ObjectNotFoundError('Team not found')
+        raise ObjectNotFoundError()
     return team
 
 
@@ -149,6 +152,43 @@ def war_room_team_delete(war_room_id, team_id):
     db.session.commit()
     track_activity(f'deleted war-room team "{deleted["name"]}"', war_room_id=war_room_id)
     call_modules_hook('on_postload_war_room_team_delete', deleted)
+
+
+def war_room_team_importable_groups():
+    """The IRIS groups a team can be imported from, with their active
+    members."""
+    return get_groups_with_active_member_identifiers()
+
+
+def war_room_team_import_group(war_room_id, group_id, name=None, color=None, imported_by_id=None):
+    """Create a team of `war_room_id` from the IRIS group `group_id`: its
+    name (unless `name` is given), its description and its active
+    members, the ones not in the war room yet joining it as responder.
+    The team is a copy: later changes to the group don't reach it, and
+    it can be edited like any team.
+
+    Returns `(team, member_ids, auto_added_room_member_ids)`."""
+    if isinstance(group_id, bool) or not isinstance(group_id, int):
+        raise BusinessProcessingError('group_id is required')
+    group = get_group(group_id)
+    if group is None:
+        raise ObjectNotFoundError()
+    if name is None:
+        name = (group.group_name or '').strip()[:_NAME_MAX_LEN]
+    team = war_room_team_create(
+        war_room_id, name,
+        description=group.group_description or f'Imported from the IRIS group "{group.group_name}"',
+        color=color,
+        created_by_id=imported_by_id,
+    )
+    member_ids = get_group_active_member_identifiers(group_id)
+    auto_added = []
+    for user_id in member_ids:
+        _, auto_added_room_member = war_room_team_member_add(
+            war_room_id, team.team_id, user_id, added_by_id=imported_by_id)
+        if auto_added_room_member:
+            auto_added.append(user_id)
+    return team, member_ids, auto_added
 
 
 def war_room_team_members_list(war_room_id, team_id):
@@ -234,7 +274,7 @@ def war_room_team_member_remove(war_room_id, team_id, user_id):
         .first()
     )
     if row is None:
-        raise ObjectNotFoundError('Team member not found')
+        raise ObjectNotFoundError()
     db.session.delete(row)
     db.session.commit()
     track_activity(f'removed {_user_label(user_id)} from war-room team "{team.name}"',

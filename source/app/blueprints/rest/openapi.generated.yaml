@@ -17327,6 +17327,52 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/v2/war-rooms/{war_room_id}/teams/groups:
+    get:
+      operationId: list_importable_groups_get
+      summary: List the IRIS groups a war room team can be imported from
+      tags:
+      - WarRoomTeams
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/war-rooms/{war_room_id}/teams/import:
+    post:
+      operationId: import_group_post
+      summary: Import an IRIS group as a war room team
+      tags:
+      - WarRoomTeams
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v2/war-rooms/{war_room_id}/timelines:
     get:
       operationId: list_room_timelines_get
