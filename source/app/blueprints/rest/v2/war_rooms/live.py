@@ -30,7 +30,6 @@ import logging
 
 from flask import request
 
-from app.blueprints.iris_user import iris_current_user
 from app.business.war_rooms_live import war_rooms_live_notify_case
 from app.iris_engine.war_rooms_live import TOPIC_CASES
 from app.iris_engine.war_rooms_live import TOPIC_CHAT
@@ -131,14 +130,6 @@ def _section(rule, placeholder):
     return tail.strip('/').split('/', 1)[0]
 
 
-def _actor_id():
-    try:
-        user = iris_current_user._get_current_object()  # type: ignore[attr-defined]
-        return getattr(user, 'id', None) if user is not None else None
-    except Exception:
-        return None
-
-
 def war_rooms_live_mark_case(case_id, topic):
     """Have the war rooms of `case_id` told `topic` changed once the
     current request succeeded (routes that don't carry the case id)."""
@@ -171,11 +162,10 @@ def war_rooms_live_after_request(response):
     try:
         if request.method in _WRITE_METHODS and response.status_code < 400 and request.url_rule is not None:
             rooms, cases = _changes(request.url_rule.rule, request.view_args or {})
-            actor_id = _actor_id() if rooms or cases else None
             for war_room_id, topic in rooms:
-                war_rooms_live_emit(war_room_id, topic, actor_id=actor_id)
+                war_rooms_live_emit(war_room_id, topic)
             for case_id, topic in sorted(cases):
-                war_rooms_live_notify_case(case_id, topic, actor_id=actor_id)
+                war_rooms_live_notify_case(case_id, topic)
     except Exception:
         logger.exception('Could not push the war-room changes of %s', request.path)
     return response
@@ -192,14 +182,13 @@ def war_rooms_live_after_mcp_tool(tool_name, args, war_room_scoped, case_scoped)
     """Push the war-room views a successful mutating MCP tool changed;
     never raises."""
     try:
-        actor_id = _actor_id()
         if war_room_scoped and args.get('war_room_id'):
             topic = _tool_topic(tool_name, ('iris_war_rooms_', 'iris_war_room_'), _WAR_ROOM_TOOL_SECTIONS)
             if topic is not None:
-                war_rooms_live_emit(args['war_room_id'], topic, actor_id=actor_id)
+                war_rooms_live_emit(args['war_room_id'], topic)
         if case_scoped and args.get('case_identifier'):
             topic = _tool_topic(tool_name, ('iris_cases_', 'iris_case_'), _CASE_TOOL_SECTIONS)
             if topic is not None:
-                war_rooms_live_notify_case(args['case_identifier'], topic, actor_id=actor_id)
+                war_rooms_live_notify_case(args['case_identifier'], topic)
     except Exception:
         logger.exception('Could not push the war-room changes of MCP tool %s', tool_name)

@@ -667,7 +667,7 @@ def create_message(war_room_id, author_id, body, kind=None,
     # rollouts).
     if kind == 'message':
         _fire_message_notifications(msg)
-    war_rooms_live_emit(war_room_id, TOPIC_CHAT, actor_id=author_id)
+    war_rooms_live_emit(war_room_id, TOPIC_CHAT)
     msg = call_modules_hook('on_postload_war_room_message_create', msg)
     return msg
 
@@ -883,7 +883,7 @@ def emit_system_event(war_room_id, kind, body, *, author_id=None,
         except Exception:
             pass
         return
-    war_rooms_live_emit(war_room_id, TOPIC_CHAT, actor_id=author_id)
+    war_rooms_live_emit(war_room_id, TOPIC_CHAT)
 
 
 # ----- Threads -------------------------------------------------------------
@@ -987,7 +987,7 @@ def create_reply(war_room_id, parent_message_id, author_id, body, kind='message'
     db.session.commit()
 
     _fire_reply_notifications(msg, root.message_id)
-    war_rooms_live_emit(war_room_id, TOPIC_CHAT, actor_id=author_id)
+    war_rooms_live_emit(war_room_id, TOPIC_CHAT)
     msg = call_modules_hook('on_postload_war_room_reply_create', msg)
     return msg
 

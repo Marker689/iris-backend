@@ -137,8 +137,8 @@ class TestsEmit(TestCase):
 
     def test_a_push_should_carry_ids_and_the_topic_only(self):
         with patch('app.iris_engine.notifications.service._safe_socket_emit') as emit:
-            engine_live.war_rooms_live_emit(3, engine_live.TOPIC_TASKS, actor_id=13)
-        emit.assert_called_once_with('war_room_changed', {'war_room_id': 3, 'topic': 'tasks', 'actor_id': 13},
+            engine_live.war_rooms_live_emit(3, engine_live.TOPIC_TASKS)
+        emit.assert_called_once_with('war_room_changed', {'war_room_id': 3, 'topic': 'tasks'},
                                      room='war-room-3')
 
     def test_an_unknown_topic_should_not_be_pushed_nor_raise(self):
@@ -150,8 +150,8 @@ class TestsEmit(TestCase):
         rows = [SimpleNamespace(war_room_id=4), SimpleNamespace(war_room_id=2)]
         with patch(f'{_BUSINESS}.war_rooms_for_case', return_value=rows), \
                 patch(f'{_BUSINESS}.war_rooms_live_emit') as emit:
-            business_live.war_rooms_live_notify_case(9, 'scope', actor_id=13)
-        self.assertEqual([call(2, 'scope', actor_id=13), call(4, 'scope', actor_id=13)], emit.call_args_list)
+            business_live.war_rooms_live_notify_case(9, 'scope')
+        self.assertEqual([call(2, 'scope'), call(4, 'scope')], emit.call_args_list)
 
 
 class TestsAfterRequest(TestCase):
@@ -160,7 +160,6 @@ class TestsAfterRequest(TestCase):
         emit = MagicMock()
         notify = MagicMock()
         with app.test_request_context(path, method=method), \
-                patch(f'{_REST}._actor_id', return_value=13), \
                 patch(f'{_REST}.war_rooms_live_emit', emit), \
                 patch(f'{_REST}.war_rooms_live_notify_case', notify):
             for case_id, topic in marks:
@@ -185,7 +184,7 @@ class TestsAfterRequest(TestCase):
         }
         for (path, method), topic in cases.items():
             emit, notify = self._run(path, method)
-            emit.assert_called_once_with(3, topic, actor_id=13)
+            emit.assert_called_once_with(3, topic)
             notify.assert_not_called()
 
     def test_a_case_write_should_push_the_war_rooms_of_the_case(self):
@@ -199,12 +198,12 @@ class TestsAfterRequest(TestCase):
         }
         for (path, method), topic in cases.items():
             emit, notify = self._run(path, method)
-            notify.assert_called_once_with(9, topic, actor_id=13)
+            notify.assert_called_once_with(9, topic)
             emit.assert_not_called()
 
     def test_a_route_naming_its_case_should_push_its_war_rooms(self):
         _, notify = self._run('/api/v2/iocs/4', 'PUT', marks=[(9, 'scope')])
-        notify.assert_called_once_with(9, 'scope', actor_id=13)
+        notify.assert_called_once_with(9, 'scope')
 
     def test_reads_and_failures_should_push_nothing(self):
         for path, method, status in (('/api/v2/war-rooms/3/tasks', 'GET', 200),
@@ -227,8 +226,7 @@ class TestsAfterMcpTool(TestCase):
     def _run(self, tool_name, args, war_room_scoped=False, case_scoped=False):
         emit = MagicMock()
         notify = MagicMock()
-        with patch(f'{_REST}._actor_id', return_value=13), \
-                patch(f'{_REST}.war_rooms_live_emit', emit), \
+        with patch(f'{_REST}.war_rooms_live_emit', emit), \
                 patch(f'{_REST}.war_rooms_live_notify_case', notify):
             rest_live.war_rooms_live_after_mcp_tool(tool_name, args, war_room_scoped, case_scoped)
         return emit, notify
@@ -245,7 +243,7 @@ class TestsAfterMcpTool(TestCase):
         }
         for tool_name, topic in cases.items():
             emit, _ = self._run(tool_name, {'war_room_id': 3}, war_room_scoped=True)
-            emit.assert_called_once_with(3, topic, actor_id=13)
+            emit.assert_called_once_with(3, topic)
 
     def test_a_case_tool_should_push_the_war_rooms_of_the_case(self):
         cases = {
@@ -257,7 +255,7 @@ class TestsAfterMcpTool(TestCase):
         }
         for tool_name, topic in cases.items():
             _, notify = self._run(tool_name, {'case_identifier': 9}, case_scoped=True)
-            notify.assert_called_once_with(9, topic, actor_id=13)
+            notify.assert_called_once_with(9, topic)
 
     def test_a_tool_with_nothing_to_show_should_push_nothing(self):
         emit, notify = self._run('iris_case_notes_create', {'case_identifier': 9}, case_scoped=True)

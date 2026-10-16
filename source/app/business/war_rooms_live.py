@@ -56,7 +56,7 @@ def war_rooms_live_join_room(user_id, war_room_id) -> str:
     return war_rooms_live_room(war_room_id)
 
 
-def war_rooms_live_notify_case(case_id, topic, actor_id=None):
+def war_rooms_live_notify_case(case_id, topic):
     """Push `topic` to every war room the case is attached to; never
     raises."""
     try:
@@ -65,4 +65,4 @@ def war_rooms_live_notify_case(case_id, topic, actor_id=None):
         logger.exception('Could not list the war rooms of case %s', case_id)
         return
     for war_room_id in sorted(war_room_ids):
-        war_rooms_live_emit(war_room_id, topic, actor_id=actor_id)
+        war_rooms_live_emit(war_room_id, topic)
