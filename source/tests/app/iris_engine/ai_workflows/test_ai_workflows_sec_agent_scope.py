@@ -104,6 +104,14 @@ class TestsPinnedIdentifiers(_ScopeTestCase):
         self.refused(run, 'iris_alerts_update', {'alert_identifier': 8, 'payload': {}})
         self.assertEqual(7, self.pin(run, 'iris_alerts_update', {'payload': {}})['alert_identifier'])
 
+    def test_alert_creation_should_stay_within_the_customers_of_the_run(self):
+        arguments = {'payload': {'alert_title': 'x', 'alert_severity_id': 1}}
+        self.refused(_run('alert', 7, customer_id=1), 'iris_alerts_create', {**arguments, 'alert_customer_id': 2})
+        self.refused(_run(scope=[1]), 'iris_alerts_create', {**arguments, 'alert_customer_id': 2})
+        pinned = self.pin(_run('alert', 7, customer_id=1), 'iris_alerts_create', {**arguments, 'alert_customer_id': 1})
+        self.assertEqual(1, pinned['alert_customer_id'])
+        self.assertNotIn('alert_identifier', pinned)
+
     def test_alert_run_should_read_alerts_of_its_customer_only(self):
         run = _run('alert', 7, customer_id=1)
         self.assertEqual({'alert_identifier': 7}, self.pin(run, 'iris_alerts_get', {'alert_identifier': 7}))

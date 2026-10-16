@@ -61,7 +61,7 @@ A block is a reusable fragment of graph (for example "look a hash up on VirusTot
 ```
 
 - **Node ids** are 1–64 characters from letters, digits, `_ . : -`, and are unique. Use short meaningful ids (`vt`, `summary`): later nodes reference outputs as `nodes.<id>.output`.
-- **Triggers.** A workflow has 1 to 10 `trigger` nodes, each starting the run its own way (section 3). Every node must be reachable from one of them, and no edge may lead to a trigger.
+- **Triggers.** A workflow has 1 to 10 `trigger` nodes, each starting the run its own way (section 3). Every node but a `note` must be reachable from one of them, and no edge may lead to a trigger.
 - **Edges** leave a node through a **port** (`source_port`, default `out`). The ports of each node type are listed in the catalogue, for example a condition has `true`/`false` and an HTTP request has `out`/`error`/`timeout`. Several edges may leave one port; their targets run in order.
 - **Errors.** When a node fails, the run follows its `error` port if one is wired; otherwise the run fails.
 - **Loops** are allowed: an edge may lead back to an earlier node (never to a trigger). Exit the loop with a `condition`, for example on a counter kept by a `set_variables` node, and read each pass through `vars` or `nodes.<id>.output`, which holds the output of the latest pass. A run fails once it has executed `IRIS_AI_WORKFLOWS_MAX_STEPS_PER_RUN` nodes (1000 by default), so a loop that never exits stops there; every node of every pass counts.
@@ -173,6 +173,7 @@ The config fields are listed with their defaults in the catalogue. Highlights:
   - Output: `ok`, `executed`, `result` and `tool_call_id`.
   - **Customer.** `iris_customers_get` reads the customer of the run's case (pinned like a case) or a `customer_id`: name, description, SLA, custom attributes, contacts and `customer_key_values`, free per-customer settings such as a tenant ID (`{"ENTRA_TENANT_ID": "…"}`) edited in Settings → Customers. The key/values are not secret: keep credentials in the keystore, and use a key/value to choose, per customer, what a request targets.
   - **Customers.** `iris_customers_list` lists the customers the run-as user can access (`search` on the name or description, or `customer_ids`), with their `customer_key_values`; it is the way to find the customer of an external tenant (a key/value such as `{"EXTERNAL_TENANT_ID": "…"}`, else the name). Under a customer scope it only lists those customers. Like `iris_customers_get`, the administrator must enable it in the MCP settings.
+  - **Alerts.** `iris_alerts_create` creates an alert: `alert_customer_id` (a customer the run-as user can access and, under a customer scope or on a run about an entity, one of the customers of the run), `payload` with `alert_title` and `alert_severity_id` (required), `alert_status_id` (New by default) and the other alert fields (`alert_description`, `alert_source`, `alert_source_ref`, `alert_source_link`, `alert_source_event_time`, `alert_tags`, `alert_note`, `alert_classification_id`, `alert_owner_id`, `alert_context`, `alert_source_content`), plus optional `alert_iocs` (`ioc_value`, `ioc_type_id`, `ioc_tlp_id`, …) and `alert_assets` (`asset_name`, `asset_type_id`, …). The new alert fires `on_postload_alert_create` like an ingested one, so an event workflow on that hook runs on it (up to `AI_WORKFLOWS_MAX_CHAIN_DEPTH` levels): a workflow creating alerts from an alert event should skip its own alerts with a trigger `condition`, e.g. on `alert_source`. Output `result` is the alert, with `alert_id`. `iris_alerts_update` changes an alert (`alert_identifier` and a partial `payload`: status, resolution, severity, classification, owner, tags, note…); on a run about an alert, the alert is pinned. The `iris_alerts_*_list` read tools give the numeric ids. Both tools need `alerts_write` and must be in `write_tool_allowlist`.
   - **War rooms.** `iris_war_rooms_create` creates a room (`name`, `description`, `state`, `severity_id`); the run-as user becomes its lead. `iris_war_room_cases_attach` attaches a case (full access on the case needed), `iris_war_room_members_add` adds a user (`role`: `lead`, `responder` or `observer`; `access`: `full_access` or `read_only`; the administrator must enable it, and an `ai_agent` can never use it). A run without a war room may still pass `war_room_id`, for the rooms the runs of the same workflow created (while their runs are kept, `AI_WORKFLOWS_RETENTION_DAYS`) and, under a customer scope, only while every case attached to them belongs to these customers. Any other war room is refused.
   - **Case access.** `iris_case_access_list` reads who can access the case (and, for a run-as user who may manage its access, every group with its level). `iris_case_access_set_user` and `iris_case_access_set_group` set an access level (`full_access`, `read_only` or `deny_all`) for a user or group id. The run-as user needs `case_access_manage` and full access to the case, or to be a server administrator. Typical use: on `on_postload_case_create`, a `condition` with the expression `'restricted' in (trigger.payload.data.tags | map(attribute='tag_title') | list)` (the tags are `{id, tag_title}` objects), then a set-group `action`.
 - **`ai_agent`**: ports `out` and `error`. It runs the configured LLM.
@@ -211,6 +212,9 @@ The config fields are listed with their defaults in the catalogue. Highlights:
   - In a dry run nothing is started.
 - **`delay`**: waits `minutes`.
 - **`stop`**: ends the run, with `status` `succeeded` or `failed` and a `reason`.
+- **`note`**: documents part of the workflow on the canvas, like a sticky note. It has no ports, no edge may lead to it and it never runs.
+  - Config: `text` (plain text, never rendered as a template), `color` (`yellow`, `blue`, `green`, `pink`, `purple` or `gray`), `width` and `height` (80–4000 pixels).
+  - Use a few notes to explain the intent of a group of nodes, the expected inputs or a manual step around the workflow.
 
 ## 6. Python transforms (`python` node)
 
@@ -317,7 +321,7 @@ More workflows ship in the workflow library; they are listed at the end of this 
 
 ## 9. Checklist before answering with a workflow
 
-- [ ] Each `trigger` node has a `trigger_type`; every node is reachable from a trigger; node ids are unique and short.
+- [ ] Each `trigger` node has a `trigger_type`; every node but a `note` is reachable from a trigger; node ids are unique and short.
 - [ ] Every `source_port` exists on its node type; `error` / `timeout` ports are wired where a failure matters.
 - [ ] Event names, tool names and keystore names come from the catalogue below.
 - [ ] Write tools used by `action` nodes are in `write_tool_allowlist`.

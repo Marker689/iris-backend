@@ -22,6 +22,7 @@ from app.blueprints.rest.v2.mcp.tools._common import (
 )
 from app.business.access_controls import check_ua_case_client
 from app.business.alerts import (
+    alerts_create,
     alerts_escalate,
     alerts_get,
     alerts_get_related,
@@ -32,14 +33,17 @@ from app.business.alerts import (
 from app.models.alerts import AlertResolutionStatus, AlertStatus, Severity
 from app.models.authorization import Permissions
 from app.models.cases import CaseClassification
+from app.business.customers import customers_get
 from app.models.errors import BusinessProcessingError, ObjectNotFoundError, SearchQueryError
-from app.schema.marshables import AlertSchema
+from app.schema.marshables import AlertSchema, CaseAssetsSchema, IocSchema
 from marshmallow.exceptions import ValidationError
 
 import copy
 
 
 _alert_schema = AlertSchema()
+_ioc_schema = IocSchema()
+_asset_schema = CaseAssetsSchema()
 
 # Default projection for `iris_alerts_list`. Everything a triage pass
 # reasons over — ids to act on, names so no taxonomy lookup is needed
@@ -159,6 +163,68 @@ _ALERT_UPDATE_PROPERTIES: dict[str, dict] = {
     },
     'alert_context':               {'type': 'object'},
 }
+
+
+# Fields iris_alerts_create accepts. The customer is a top-level argument
+# (checked before anything is written, and pinned to the customers of an
+# AI workflow run); ids, timestamps and history are never caller-set.
+_ALERT_CREATE_PROPERTIES: dict[str, dict] = {
+    **_ALERT_UPDATE_PROPERTIES,
+    'alert_source_content':        {'type': 'object', 'description': 'Raw event from the source.'},
+}
+_ALERT_IOC_PROPERTIES: dict[str, dict] = {
+    'ioc_value':       {'type': 'string'},
+    'ioc_type_id':     {'type': 'integer', 'description': 'IOC type id (see the manage IOC types).'},
+    'ioc_tlp_id':      {'type': 'integer', 'description': 'TLP id: 1 red, 2 amber, 3 green, 4 clear, 5 amber+strict.'},
+    'ioc_description': {'type': 'string'},
+    'ioc_tags':        {'type': 'string', 'description': 'Comma-separated tags.'},
+    'ioc_enrichment':  {'type': 'object'},
+}
+_ALERT_ASSET_PROPERTIES: dict[str, dict] = {
+    'asset_name':        {'type': 'string'},
+    'asset_type_id':     {'type': 'integer', 'description': 'Asset type id (see the manage asset types).'},
+    'asset_description': {'type': 'string'},
+    'asset_domain':      {'type': 'string'},
+    'asset_ip':          {'type': 'string'},
+    'asset_info':        {'type': 'string'},
+    'asset_tags':        {'type': 'string', 'description': 'Comma-separated tags.'},
+    'asset_enrichment':  {'type': 'object'},
+}
+_ALERT_CREATE_MAX_ITEMS = 500
+
+
+def _only_known_fields(name: str, value, allowed: dict) -> dict:
+    """`value` as a dict, refusing keys outside `allowed`: an id would make
+    the schema load (and change) an existing row."""
+    if not isinstance(value, dict):
+        raise MCPError(protocol.INVALID_PARAMS, f'`{name}` must be an object.')
+    unknown = sorted(set(value) - set(allowed))
+    if unknown:
+        raise MCPError(protocol.INVALID_PARAMS,
+                       f'`{name}`: unknown field(s) {", ".join(unknown)}; allowed: {", ".join(allowed)}.')
+    return dict(value)
+
+
+def _load_alert_items(name: str, items, allowed: dict, schema) -> list:
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        raise MCPError(protocol.INVALID_PARAMS, f'`{name}` must be a list.')
+    if len(items) > _ALERT_CREATE_MAX_ITEMS:
+        raise MCPError(protocol.INVALID_PARAMS, f'`{name}` holds at most {_ALERT_CREATE_MAX_ITEMS} items.')
+    rows = [_only_known_fields(f'{name}.{index}', item, allowed) for index, item in enumerate(items)]
+    try:
+        return schema.load(rows, many=True, partial=True)
+    except ValidationError as exc:
+        raise MCPError(protocol.INVALID_PARAMS, f'Validation error in `{name}`: {exc.messages}') from exc
+
+
+def _default_alert_status_id() -> int:
+    status = AlertStatus.query.filter(AlertStatus.status_name == 'New').first()
+    if status is None:
+        raise MCPError(protocol.INVALID_PARAMS,
+                       'No "New" alert status: set `alert_status_id` (see iris_alerts_status_list).')
+    return status.status_id
 
 
 def _get_alert(alert_id: int):
@@ -506,6 +572,79 @@ def iris_alerts_update(args: dict) -> dict:
 
     try:
         result = alerts_update(pristine_alert, updated_alert, activity_data)
+    except BusinessProcessingError as exc:
+        raise MCPError(protocol.INTERNAL_ERROR, exc.get_message()) from exc
+    return _alert_schema.dump(result)
+
+
+@mcp_tool(
+    name='iris_alerts_create',
+    description=(
+        'Create an alert for a customer, with optional IOCs and assets, as POST /api/v2/alerts does: '
+        'the alert runs the alert-create hooks, rules and workflows like any ingested alert. '
+        '`payload` needs `alert_title` and `alert_severity_id`; `alert_status_id` defaults to New. '
+        'Use `iris_alerts_severity_list` / `iris_alerts_status_list` / `iris_alerts_classification_list` '
+        'for the numeric ids, and `iris_customers_list` for the customer.'
+    ),
+    input_schema={
+        'type': 'object',
+        'properties': {
+            'alert_customer_id': {'type': 'integer', 'description': 'Customer the alert belongs to.'},
+            'payload': {
+                'type': 'object',
+                'description': 'Alert fields.',
+                'properties': _ALERT_CREATE_PROPERTIES,
+                'required': ['alert_title', 'alert_severity_id'],
+                'additionalProperties': False,
+            },
+            'alert_iocs': {
+                'type': 'array',
+                'description': 'IOCs of the alert: each needs `ioc_value`, `ioc_type_id` and `ioc_tlp_id`.',
+                'items': {'type': 'object', 'properties': _ALERT_IOC_PROPERTIES, 'additionalProperties': False},
+            },
+            'alert_assets': {
+                'type': 'array',
+                'description': 'Assets of the alert: each needs `asset_name` and `asset_type_id`.',
+                'items': {'type': 'object', 'properties': _ALERT_ASSET_PROPERTIES, 'additionalProperties': False},
+            },
+        },
+        'required': ['alert_customer_id', 'payload'],
+    },
+    permissions=(Permissions.alerts_write,),
+    mvp=True,
+)
+def iris_alerts_create(args: dict) -> dict:
+    customer_id = args['alert_customer_id']
+    # Checked before anything is written: the customer must exist and be
+    # one the caller may create alerts for.
+    try:
+        customers_get(customer_id)
+    except ObjectNotFoundError as exc:
+        raise MCPError(protocol.INVALID_PARAMS, f'Customer #{customer_id} not found or access denied.') from exc
+    if not ac_current_user_has_customer_access(customer_id):
+        raise MCPError(protocol.INVALID_PARAMS, f'Customer #{customer_id} not found or access denied.')
+
+    payload = _only_known_fields('payload', args['payload'], _ALERT_CREATE_PROPERTIES)
+    for key in ('alert_title', 'alert_severity_id'):
+        if payload.get(key) in (None, ''):
+            raise MCPError(protocol.INVALID_PARAMS, f'`payload.{key}` is required.')
+    if Severity.query.filter(Severity.severity_id == payload['alert_severity_id']).first() is None:
+        raise MCPError(protocol.INVALID_PARAMS, 'Unknown `alert_severity_id` (see iris_alerts_severity_list).')
+    if payload.get('alert_status_id') is None:
+        payload['alert_status_id'] = _default_alert_status_id()
+    elif AlertStatus.query.filter(AlertStatus.status_id == payload['alert_status_id']).first() is None:
+        raise MCPError(protocol.INVALID_PARAMS, 'Unknown `alert_status_id` (see iris_alerts_status_list).')
+    if payload.get('alert_owner_id') in (-1, '-1'):
+        payload['alert_owner_id'] = None
+    payload['alert_customer_id'] = customer_id
+
+    iocs = _load_alert_items('alert_iocs', args.get('alert_iocs'), _ALERT_IOC_PROPERTIES, _ioc_schema)
+    assets = _load_alert_items('alert_assets', args.get('alert_assets'), _ALERT_ASSET_PROPERTIES, _asset_schema)
+    try:
+        alert = _alert_schema.load(payload)
+        result = alerts_create(alert, iocs, assets)
+    except ValidationError as exc:
+        raise MCPError(protocol.INVALID_PARAMS, f'Validation error: {exc.messages}') from exc
     except BusinessProcessingError as exc:
         raise MCPError(protocol.INTERNAL_ERROR, exc.get_message()) from exc
     return _alert_schema.dump(result)

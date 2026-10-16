@@ -17849,6 +17849,145 @@ paths:
                 $ref: '#/components/schemas/McpToolResult'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /api/v2/mcp/tools/iris_alerts_create:
+    post:
+      operationId: mcp_tool_iris_alerts_create
+      summary: 'Create an alert for a customer, with optional IOCs and assets, as POST /api/v2/alerts
+        does: the alert runs the alert-create hooks, rules and workflows like any ingested alert. `payload`
+        needs `alert_title` and `alert_severity_id`; `alert_status_id` defaults to New. Use `iris_alerts_severity_list`
+        / `iris_alerts_status_list` / `iris_alerts_classification_list` for the numeric ids, and `iris_customers_list`
+        for the customer.'
+      tags:
+      - MCP
+      - MCP:tools
+      security:
+      - ApiKey: []
+      x-mcp: true
+      x-mcp-tool: iris_alerts_create
+      x-mcp-mvp: true
+      x-mcp-admin-only: false
+      description: "Synthesised documentation entry \u2014 MCP tools are actually dispatched via a single\
+        \ POST /api/v2/mcp with `method: \"tools/call\"` and `params.name = \"iris_alerts_create\"`. The\
+        \ request body schema below is the tool's `input_schema` (identical to what `tools/list` returns\
+        \ for this tool)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                alert_customer_id:
+                  type: integer
+                  description: Customer the alert belongs to.
+                payload:
+                  type: object
+                  description: Alert fields.
+                  properties:
+                    alert_title:
+                      type: string
+                    alert_description:
+                      type: string
+                    alert_source:
+                      type: string
+                    alert_source_ref:
+                      type: string
+                    alert_source_link:
+                      type: string
+                    alert_source_event_time:
+                      type: string
+                      description: ISO-8601 datetime.
+                    alert_note:
+                      type: string
+                      description: Free-form analyst note.
+                    alert_tags:
+                      type: string
+                      description: Comma-separated tags.
+                    alert_severity_id:
+                      type: integer
+                    alert_status_id:
+                      type: integer
+                    alert_resolution_status_id:
+                      type:
+                      - integer
+                      - 'null'
+                    alert_classification_id:
+                      type:
+                      - integer
+                      - 'null'
+                    alert_owner_id:
+                      type:
+                      - integer
+                      - 'null'
+                      description: User id to assign as owner. Use -1 or null to unassign.
+                    alert_context:
+                      type: object
+                    alert_source_content:
+                      type: object
+                      description: Raw event from the source.
+                  required:
+                  - alert_title
+                  - alert_severity_id
+                  additionalProperties: false
+                alert_iocs:
+                  type: array
+                  description: 'IOCs of the alert: each needs `ioc_value`, `ioc_type_id` and `ioc_tlp_id`.'
+                  items:
+                    type: object
+                    properties:
+                      ioc_value:
+                        type: string
+                      ioc_type_id:
+                        type: integer
+                        description: IOC type id (see the manage IOC types).
+                      ioc_tlp_id:
+                        type: integer
+                        description: 'TLP id: 1 red, 2 amber, 3 green, 4 clear, 5 amber+strict.'
+                      ioc_description:
+                        type: string
+                      ioc_tags:
+                        type: string
+                        description: Comma-separated tags.
+                      ioc_enrichment:
+                        type: object
+                    additionalProperties: false
+                alert_assets:
+                  type: array
+                  description: 'Assets of the alert: each needs `asset_name` and `asset_type_id`.'
+                  items:
+                    type: object
+                    properties:
+                      asset_name:
+                        type: string
+                      asset_type_id:
+                        type: integer
+                        description: Asset type id (see the manage asset types).
+                      asset_description:
+                        type: string
+                      asset_domain:
+                        type: string
+                      asset_ip:
+                        type: string
+                      asset_info:
+                        type: string
+                      asset_tags:
+                        type: string
+                        description: Comma-separated tags.
+                      asset_enrichment:
+                        type: object
+                    additionalProperties: false
+              required:
+              - alert_customer_id
+              - payload
+      responses:
+        '200':
+          description: "Tool result \u2014 JSON-RPC content wrapper."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/v2/mcp/tools/iris_alerts_escalate:
     post:
       operationId: mcp_tool_iris_alerts_escalate

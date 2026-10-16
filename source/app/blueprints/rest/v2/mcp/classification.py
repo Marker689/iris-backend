@@ -68,7 +68,7 @@ WRITE_TOOLS: frozenset[str] = frozenset({
     'iris_cases_close', 'iris_cases_reopen',
     'iris_case_access_set_user', 'iris_case_access_set_group',
     # Alerts
-    'iris_alerts_update',
+    'iris_alerts_create', 'iris_alerts_update',
     'iris_alerts_escalate', 'iris_alerts_merge',
     # IOCs / assets / notes / tasks (case-scoped mutating ops)
     'iris_case_iocs_create', 'iris_case_iocs_update', 'iris_case_iocs_delete',
