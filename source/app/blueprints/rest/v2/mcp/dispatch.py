@@ -35,6 +35,7 @@ from app.blueprints.rest.v2.mcp.registry import (
     active_tool_names,
 )
 from app.blueprints.rest.v2.mcp.result_budget import apply_result_budget
+from app.blueprints.rest.v2.war_rooms.live import war_rooms_live_after_mcp_tool
 from app.business.server_settings import get_srv_settings
 from app.iris_engine.utils.tracker import track_activity
 from app.models.authorization import CaseAccessLevel, Permissions, WarRoomAccessLevel
@@ -239,6 +240,9 @@ def dispatch_tool_call(tool_name: str, raw_args: dict) -> Any:
             protocol.INTERNAL_ERROR,
             f'Tool {tool_name!r} raised: {exc}',
         ) from exc
+
+    if is_mutating:
+        war_rooms_live_after_mcp_tool(tool_name, args, spec.war_room_scoped, spec.case_scoped)
 
     # Bound the payload before it reaches the caller. Tool bodies choose
     # their own projections; this is the floor that applies even to the

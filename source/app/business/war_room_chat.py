@@ -27,6 +27,8 @@ from app.datamgmt.war_rooms.war_room_chat_db import probe_column_exists as _prob
 from app.datamgmt.war_rooms.war_room_chat_db import trace_pin_filter as _trace_pin_filter
 from app.db import db
 from app.iris_engine.module_handler.module_handler import call_modules_hook
+from app.iris_engine.war_rooms_live import TOPIC_CHAT
+from app.iris_engine.war_rooms_live import war_rooms_live_emit
 from app.models.authorization import User
 from app.models.errors import BusinessProcessingError
 from app.models.errors import ObjectNotFoundError
@@ -665,6 +667,7 @@ def create_message(war_room_id, author_id, body, kind=None,
     # rollouts).
     if kind == 'message':
         _fire_message_notifications(msg)
+    war_rooms_live_emit(war_room_id, TOPIC_CHAT, actor_id=author_id)
     msg = call_modules_hook('on_postload_war_room_message_create', msg)
     return msg
 
@@ -879,6 +882,8 @@ def emit_system_event(war_room_id, kind, body, *, author_id=None,
             db.session.rollback()
         except Exception:
             pass
+        return
+    war_rooms_live_emit(war_room_id, TOPIC_CHAT, actor_id=author_id)
 
 
 # ----- Threads -------------------------------------------------------------
@@ -982,6 +987,7 @@ def create_reply(war_room_id, parent_message_id, author_id, body, kind='message'
     db.session.commit()
 
     _fire_reply_notifications(msg, root.message_id)
+    war_rooms_live_emit(war_room_id, TOPIC_CHAT, actor_id=author_id)
     msg = call_modules_hook('on_postload_war_room_reply_create', msg)
     return msg
 

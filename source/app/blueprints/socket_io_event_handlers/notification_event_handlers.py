@@ -28,9 +28,11 @@ from app.blueprints.iris_user import iris_current_user
 from app.business.ai_workflows import ai_workflows_editor_session
 from app.business.ai_workflows import ai_workflows_live_room
 from app.business.auth import validate_auth_token
+from app.business.war_rooms_live import war_rooms_live_join_room
 from app.iris_engine.ai_workflows.live import EDITOR_EVENT
 from app.iris_engine.ai_workflows.live import ai_workflows_live_run_room
 from app.iris_engine.ai_workflows.live import ai_workflows_live_workflow_room
+from app.iris_engine.war_rooms_live import war_rooms_live_room
 
 
 logger = logging.getLogger(__name__)
@@ -179,6 +181,34 @@ def on_ai_workflow_unwatch(data=None):
         leave_room(ai_workflows_live_run_room(run_uuid[:64]))
     if isinstance(workflow_id, int) and not isinstance(workflow_id, bool):
         leave_room(ai_workflows_live_workflow_room(workflow_id))
+
+
+# ---- War-room live views ---------------------------------------------------
+
+@socket_io.on('war_room_watch', namespace=NAMESPACE)
+def on_war_room_watch(data=None):
+    """Follow the changes of a war room (`{war_room_id}`) the user may
+    read: `war_room_changed` events. The ack tells whether the room was
+    joined."""
+    user_id = _current_user_id()
+    if not user_id or not isinstance(data, dict):
+        return {'ok': False}
+    try:
+        room = war_rooms_live_join_room(user_id, data.get('war_room_id'))
+    except Exception:
+        return {'ok': False}
+    join_room(room)
+    return {'ok': True}
+
+
+@socket_io.on('war_room_unwatch', namespace=NAMESPACE)
+def on_war_room_unwatch(data=None):
+    """Leaving needs no access check (nor still having access)."""
+    if not isinstance(data, dict):
+        return
+    war_room_id = data.get('war_room_id')
+    if isinstance(war_room_id, int) and not isinstance(war_room_id, bool) and war_room_id > 0:
+        leave_room(war_rooms_live_room(war_room_id))
 
 
 # ---- AI workflow editor presence -------------------------------------------

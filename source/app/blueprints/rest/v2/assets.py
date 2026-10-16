@@ -24,6 +24,8 @@ from app.blueprints.rest.endpoints import response_api_error
 from app.blueprints.rest.endpoints import response_api_success
 from app.blueprints.rest.endpoints import response_api_not_found
 from app.blueprints.rest.v2.assets_routes.comments import assets_comments_blueprint
+from app.blueprints.rest.v2.war_rooms.live import war_rooms_live_mark_case
+from app.iris_engine.war_rooms_live import TOPIC_SCOPE
 from app.business.assets import assets_delete
 from app.business.assets import assets_get
 from app.models.errors import BusinessProcessingError
@@ -64,6 +66,8 @@ class AssetsOperation:
             if not ac_fast_check_current_user_has_case_access(asset.case_id, [CaseAccessLevel.full_access]):
                 return ac_api_return_access_denied(caseid=asset.case_id)
 
+            # Before the delete expires the row; only pushed if it succeeds
+            war_rooms_live_mark_case(asset.case_id, TOPIC_SCOPE)
             assets_delete(asset)
             return response_api_deleted()
         except ObjectNotFoundError:

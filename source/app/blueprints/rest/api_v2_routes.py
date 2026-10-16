@@ -45,6 +45,7 @@ from app.blueprints.rest.v2.avatars import me_avatar_blueprint
 from app.blueprints.rest.v2.avatars import users_public_blueprint
 from app.blueprints.rest.v2.cases_filters import cases_filters_blueprint
 from app.blueprints.rest.v2.war_rooms.root import war_rooms_blueprint
+from app.blueprints.rest.v2.war_rooms.live import war_rooms_live_after_request
 from app.blueprints.rest.v2.notifications import notifications_blueprint
 from app.blueprints.rest.v2.notifications import admin_notifications_blueprint
 from app.blueprints.rest.v2.mail import mail_blueprint
@@ -61,6 +62,8 @@ from app.blueprints.rest.v2.ai_suggestions import ai_suggestions_blueprint
 
 # Create root /api/v2 blueprint
 rest_v2_blueprint = Blueprint('rest_v2', __name__, url_prefix='/api/v2')
+# Tell the open war-room views what a successful write changed
+rest_v2_blueprint.after_request(war_rooms_live_after_request)
 
 # Register child blueprints
 rest_v2_blueprint.register_blueprint(cases_blueprint)

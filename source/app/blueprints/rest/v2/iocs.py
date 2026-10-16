@@ -35,6 +35,8 @@ from app.schema.marshables import IocSchemaForAPIV2
 from app.blueprints.access_controls import ac_api_return_access_denied
 from app.blueprints.rest.api_doc import api_doc
 from app.blueprints.rest.v2.iocs_routes.comments import iocs_comments_blueprint
+from app.blueprints.rest.v2.war_rooms.live import war_rooms_live_mark_case
+from app.iris_engine.war_rooms_live import TOPIC_SCOPE
 from app.iris_engine.module_handler.module_handler import call_deprecated_on_preload_modules_hook
 from app.schema.marshables import IocSchema
 
@@ -72,6 +74,7 @@ class IocsOperations:
             ioc_sc = ioc_schema.load(request_data, instance=ioc, partial=True)
 
             ioc = iocs_update(ioc, ioc_sc)
+            war_rooms_live_mark_case(ioc.case_id, TOPIC_SCOPE)
 
             result = self._schema.dump(ioc)
             return response_api_success(result)
@@ -91,6 +94,8 @@ class IocsOperations:
             if not ac_fast_check_current_user_has_case_access(ioc.case_id, [CaseAccessLevel.full_access]):
                 return ac_api_return_access_denied(caseid=ioc.case_id)
 
+            # Before the delete expires the row; only pushed if it succeeds
+            war_rooms_live_mark_case(ioc.case_id, TOPIC_SCOPE)
             iocs_delete(ioc)
             return response_api_deleted()
 

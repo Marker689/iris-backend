@@ -33,6 +33,8 @@ from app.models.authorization import CaseAccessLevel
 from app.schema.marshables import CaseTaskSchema
 from app.blueprints.rest.api_doc import api_doc
 from app.blueprints.rest.v2.tasks_routes.comments import tasks_comments_blueprint
+from app.blueprints.rest.v2.war_rooms.live import war_rooms_live_mark_case
+from app.iris_engine.war_rooms_live import TOPIC_TASKS
 
 
 class Tasks:
@@ -61,6 +63,8 @@ class Tasks:
             if not ac_fast_check_current_user_has_case_access(task.task_case_id, [CaseAccessLevel.full_access]):
                 return ac_api_return_access_denied(caseid=identifier)
 
+            # Before the delete expires the row; only pushed if it succeeds
+            war_rooms_live_mark_case(task.task_case_id, TOPIC_TASKS)
             tasks_delete(task)
             return response_api_deleted()
         except ObjectNotFoundError:
