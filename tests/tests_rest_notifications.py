@@ -114,6 +114,9 @@ class TestsRestNotifications(TestCase):
         user = self._subject.create_dummy_user(
             [IRIS_PERMISSION_SERVER_ADMINISTRATOR])
         case_identifier = self._subject.create_dummy_case()
+        # A mention only notifies users who can open the case, and the
+        # server_administrator permission alone does not grant that.
+        self._subject.grant_case_access(user, case_identifier)
 
         # Content shape mirrors what the TipTap editor emits.
         mention_span = (

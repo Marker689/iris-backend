@@ -590,7 +590,7 @@ class TestsRestManagedAssetsSightings(TestCase):
         # referencing both joins twice.
         case_identifier = self._subject.create_dummy_case()
         first = self._add_case_asset(case_identifier)
-        second = self._add_case_asset(case_identifier, name=_ASSET_NAME.lower())
+        second = self._add_case_asset(case_identifier, name=f' {_ASSET_NAME} ')
         identifier = self._registry_identifier()
         self._create_event(case_identifier, first['asset_id'], second['asset_id'])
 
@@ -602,7 +602,7 @@ class TestsRestManagedAssetsSightings(TestCase):
         # computed by two different statements and can disagree.
         case_identifier = self._subject.create_dummy_case()
         first = self._add_case_asset(case_identifier)
-        second = self._add_case_asset(case_identifier, name=_ASSET_NAME.lower())
+        second = self._add_case_asset(case_identifier, name=f' {_ASSET_NAME} ')
         identifier = self._registry_identifier()
         self._create_event(case_identifier, first['asset_id'], second['asset_id'])
 
