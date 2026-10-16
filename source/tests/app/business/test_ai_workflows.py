@@ -546,7 +546,8 @@ class TestsTestNode(_WorkflowsTestCase):
     def test_trigger_and_waiting_nodes_should_be_rejected(self):
         for node in (self._node(type='trigger', config={}), self._node(type='delay', config={'minutes': 5}),
                      self._node(type='ask_analyst', config={'question': 'Why?'}),
-                     self._node(type='run_workflow', config={'workflow_id': 4, 'mode': 'async'})):
+                     self._node(type='run_workflow', config={'workflow_id': 4, 'mode': 'async'}),
+                     self._node(type='note', config={'text': 'Why'})):
             with self.assertRaises(BusinessProcessingError):
                 ai_workflows_test_node(3, {'node': node}, _OWNER, False)
         self.test_node.assert_not_called()

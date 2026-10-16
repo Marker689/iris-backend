@@ -111,6 +111,7 @@ from app.iris_engine.ai_workflows.live import ai_workflows_live_editor_room
 from app.iris_engine.ai_workflows.live import ai_workflows_live_emit_saved
 from app.iris_engine.ai_workflows.live import ai_workflows_live_run_room
 from app.iris_engine.ai_workflows.live import ai_workflows_live_workflow_room
+from app.iris_engine.ai_workflows.nodes import NODE_NOTE
 from app.iris_engine.ai_workflows.nodes import NODE_RUN_WORKFLOW
 from app.iris_engine.ai_workflows.nodes import NODE_TRIGGER
 from app.iris_engine.ai_workflows.nodes import ai_workflows_nodes_catalogue
@@ -1565,6 +1566,8 @@ def ai_workflows_test_node(workflow_id, body, user_id, is_admin, scope_mask=None
         raise BusinessProcessingError('Invalid node', data={'errors': errors})
     if node.get('type') == NODE_TRIGGER:
         raise BusinessProcessingError('A trigger cannot be tested on its own: run the workflow')
+    if node.get('type') == NODE_NOTE:
+        raise BusinessProcessingError('A note is not run, there is nothing to test')
     if ai_workflows_nodes_is_waiting(node):
         raise BusinessProcessingError('A node that waits cannot be tested on its own: run the workflow')
     if node.get('type') == NODE_RUN_WORKFLOW:

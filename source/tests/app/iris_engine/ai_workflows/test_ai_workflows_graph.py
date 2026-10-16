@@ -98,6 +98,27 @@ class TestsGraphStructure(TestCase):
         graph = _graph([_node('vars', 'set_variables')], [_edge('trigger', 'vars'), _edge('vars', 'trigger')])
         self.assertIn(('trigger', 'Nothing can lead to a trigger'), _messages(self._validate(graph)))
 
+    def test_note_should_need_no_edge(self):
+        graph = _graph([_node('doc', 'note', text='Triage {{ not a template', color='blue', width=300, height=200)],
+                       [])
+        self.assertEqual([], self._validate(graph))
+
+    def test_note_should_be_allowed_in_a_block(self):
+        fragment = {'nodes': [_node('a', 'set_variables'), _node('doc', 'note', text='Why')], 'edges': []}
+        self.assertEqual([], ai_workflows_graph_validate_fragment(fragment))
+
+    def test_edge_into_or_out_of_a_note_should_be_reported(self):
+        graph = _graph([_node('doc', 'note'), _node('end', 'stop')],
+                       [_edge('trigger', 'doc'), _edge('doc', 'end'), _edge('trigger', 'end')])
+        messages = _messages(self._validate(graph))
+        self.assertIn(('doc', 'A note cannot be connected'), messages)
+        self.assertIn(('doc', 'note nodes have no "out" output'), messages)
+
+    def test_note_config_should_be_checked(self):
+        graph = _graph([_node('doc', 'note', text=['x'], color='orange', width=10, height='tall')], [])
+        fields = [(e['node_id'], e['field']) for e in self._validate(graph)]
+        self.assertEqual([('doc', 'text'), ('doc', 'color'), ('doc', 'width'), ('doc', 'height')], fields)
+
     def test_cycle_without_waiting_node_should_be_allowed(self):
         graph = _graph([_node('a', 'set_variables'), _node('b', 'set_variables')],
                        [_edge('trigger', 'a'), _edge('a', 'b'), _edge('b', 'a')])

@@ -44,6 +44,7 @@ from app.iris_engine.ai_workflows.nodes import NODE_DELAY
 from app.iris_engine.ai_workflows.nodes import NODE_FIND_RELATED
 from app.iris_engine.ai_workflows.nodes import NODE_FIND_WAR_ROOM_TASKS
 from app.iris_engine.ai_workflows.nodes import NODE_HTTP_REQUEST
+from app.iris_engine.ai_workflows.nodes import NODE_NOTE
 from app.iris_engine.ai_workflows.nodes import NODE_NOTIFY
 from app.iris_engine.ai_workflows.nodes import NODE_PORTS
 from app.iris_engine.ai_workflows.nodes import NODE_PYTHON
@@ -52,6 +53,7 @@ from app.iris_engine.ai_workflows.nodes import NODE_SET_VARIABLES
 from app.iris_engine.ai_workflows.nodes import NODE_STOP
 from app.iris_engine.ai_workflows.nodes import NODE_SUGGEST
 from app.iris_engine.ai_workflows.nodes import NODE_TRIGGER
+from app.iris_engine.ai_workflows.nodes import NOTE_COLORS
 from app.iris_engine.ai_workflows.nodes import OAUTH_CLIENT_AUTH
 from app.iris_engine.ai_workflows.sandbox import MAX_STEPS
 from app.iris_engine.ai_workflows.sandbox import MAX_TIMEOUT_SECONDS
@@ -93,6 +95,8 @@ _MAX_BLOCK_NODES = 50
 _MAX_EDGES = 1000
 _MAX_DEFINITION_BYTES = 1024 * 1024
 _MAX_CONFIG_STRING = 64 * 1024
+_NOTE_MIN_SIZE = 80
+_NOTE_MAX_SIZE = 4000
 _MAX_PROMPT = 32 * 1024
 _MAX_LABEL = 255
 # Editor only: the sides of a node its connectors are drawn on
@@ -688,6 +692,16 @@ def _check_run_workflow(check):
         check.templates_in(f'inputs.{index}.value', item.get('value'))
 
 
+def _check_note(check):
+    # Free text, never rendered as a template
+    text = check.config.get('text')
+    if text is not None and not isinstance(text, str):
+        check.add('text', 'Must be a string')
+    check.one_of('color', NOTE_COLORS, NOTE_COLORS[0])
+    check.integer('width', _NOTE_MIN_SIZE, _NOTE_MAX_SIZE)
+    check.integer('height', _NOTE_MIN_SIZE, _NOTE_MAX_SIZE)
+
+
 def _size_errors(node_id, field, value, errors):
     """Strings over the config caps (prompts are capped tighter)."""
     if isinstance(value, str):
@@ -756,6 +770,8 @@ def _check_node(node, allowlist, errors):
     elif node_type == NODE_STOP:
         check.one_of('status', (RUN_SUCCEEDED, RUN_FAILED), RUN_SUCCEEDED)
         check.template('reason')
+    elif node_type == NODE_NOTE:
+        _check_note(check)
 
 
 # ---- Graph structure ------------------------------------------------------------
@@ -822,6 +838,9 @@ def _structure_errors(nodes, edges, fragment=False) -> tuple:
         if target.get('type') == NODE_TRIGGER:
             errors.append(_error(target['id'], f'edges.{index}', 'Nothing can lead to a trigger'))
             continue
+        if target.get('type') == NODE_NOTE:
+            errors.append(_error(target['id'], f'edges.{index}', 'A note cannot be connected'))
+            continue
         bad_side = next((key for key in ('source_side', 'target_side')
                          if edge.get(key) is not None and edge.get(key) not in _HANDLE_SIDES), None)
         if bad_side:
@@ -834,8 +853,9 @@ def _structure_errors(nodes, edges, fragment=False) -> tuple:
         reached = set()
         for trigger in triggers:
             reached |= _reachable(adjacency, trigger['id'])
-        for node_id in by_id:
-            if node_id not in reached:
+        for node_id, node in by_id.items():
+            # A note only documents the canvas
+            if node_id not in reached and node.get('type') != NODE_NOTE:
                 errors.append(_error(node_id, None, 'Not reachable from a trigger'))
 
     return errors, by_id, adjacency

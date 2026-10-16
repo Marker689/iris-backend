@@ -120,6 +120,9 @@ NODE_SET_VARIABLES = 'set_variables'
 NODE_PYTHON = 'python'
 NODE_STOP = 'stop'
 NODE_RUN_WORKFLOW = 'run_workflow'
+NODE_NOTE = 'note'
+
+NOTE_COLORS = ('yellow', 'blue', 'green', 'pink', 'purple', 'gray')
 
 PORT_OUT = 'out'
 PORT_ERROR = 'error'
@@ -286,6 +289,8 @@ _CATALOGUE = (
                'inputs. In wait mode the run continues once it ends, with its status, `vars` and last output.',
                'flow', (PORT_OUT, PORT_ERROR, PORT_TIMEOUT),
                {'workflow_id': None, 'inputs': [], 'mode': 'wait', 'timeout_minutes': 60}),
+    _node_spec(NODE_NOTE, 'Note', 'Documents a part of the workflow on the canvas. Never connected and never '
+               'run.', 'annotation', (), {'text': '', 'color': NOTE_COLORS[0], 'width': 260, 'height': 160}),
 )
 
 NODE_PORTS = {spec['type']: tuple(spec['ports']) for spec in _CATALOGUE}
