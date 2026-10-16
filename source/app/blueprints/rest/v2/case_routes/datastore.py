@@ -47,6 +47,7 @@ from app.business.datastore import datastore_get_local_file_path
 from app.business.datastore import datastore_get_path_node
 from app.business.datastore import datastore_get_standard_path
 from app.business.datastore import datastore_hook_file_saved
+from app.business.datastore import datastore_is_within_node
 from app.business.datastore import datastore_rename_node
 from app.business.datastore import ds_list_tree
 from app.iris_engine.demo_builder import DEMO_MODE_UPLOAD_MAX_BYTES
@@ -458,8 +459,14 @@ class DatastoreOperations:
         if not dsp_dst:
             return response_api_error('Invalid destination node ID for this case')
 
+        if dsp.path_is_root:
+            return response_api_error('The root folder cannot be moved')
+
         if dsp.path_id == dsp_dst.path_id:
             return response_api_error('Source and destination folders are the same')
+
+        if datastore_is_within_node(dsp_dst, dsp.path_id, case_identifier):
+            return response_api_error('A folder cannot be moved into one of its own subfolders')
 
         dsp.path_parent_id = dsp_dst.path_id
         db.session.commit()

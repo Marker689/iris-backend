@@ -49,6 +49,7 @@ __all__ = [
     'datastore_get_path_node',
     'datastore_get_standard_path',
     'datastore_hook_file_saved',
+    'datastore_is_within_node',
     'datastore_rename_node',
     'ds_list_tree',
 ]
@@ -116,3 +117,17 @@ def datastore_delete_file(file_id, caseid):
         call_modules_hook('on_postload_datastore_file_delete',
                           data={'id': file_id, 'file_id': file_id, 'case_id': caseid}, caseid=caseid)
     return has_error, logs
+
+
+def datastore_is_within_node(node, ancestor_id, caseid):
+    """True when the folder `node` is `ancestor_id` itself or sits anywhere
+    beneath it. A folder moved there would become its own ancestor: the
+    loop detaches the whole branch from the root, so it vanishes from the
+    tree. `seen` stops the walk on a loop already in the data."""
+    seen = set()
+    while node is not None and node.path_id not in seen:
+        if node.path_id == ancestor_id:
+            return True
+        seen.add(node.path_id)
+        node = datastore_get_path_node(node.path_parent_id, caseid)
+    return False

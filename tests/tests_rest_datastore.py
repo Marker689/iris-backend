@@ -152,6 +152,27 @@ class TestsRestDatastore(TestCase):
         )
         self.assertEqual(400, response.status_code)
 
+    def test_move_folder_should_return_400_when_destination_is_a_subfolder(self):
+        case_identifier = self._subject.create_dummy_case()
+        parent = self._create_folder(case_identifier, 'A').json()
+        child = self._create_folder(case_identifier, 'B', parent=parent['path_id']).json()
+        grandchild = self._create_folder(case_identifier, 'C', parent=child['path_id']).json()
+        response = self._subject.create(
+            f'/api/v2/cases/{case_identifier}/datastore/folders/{parent["path_id"]}/move',
+            {'destination_node': grandchild['path_id']}
+        )
+        self.assertEqual(400, response.status_code)
+
+    def test_move_folder_should_return_400_when_moving_the_root(self):
+        case_identifier = self._subject.create_dummy_case()
+        root = self._get_root_folder_id(case_identifier)
+        folder = self._create_folder(case_identifier, 'A', parent=root).json()
+        response = self._subject.create(
+            f'/api/v2/cases/{case_identifier}/datastore/folders/{root}/move',
+            {'destination_node': folder['path_id']}
+        )
+        self.assertEqual(400, response.status_code)
+
     def test_delete_folder_should_return_204(self):
         case_identifier = self._subject.create_dummy_case()
         folder = self._create_folder(case_identifier, 'Folder1').json()

@@ -32,6 +32,7 @@ from app.blueprints.iris_user import iris_current_user
 from app.business.datastore import datastore_add_file_as_evidence
 from app.business.datastore import datastore_delete_file
 from app.business.datastore import datastore_hook_file_saved
+from app.business.datastore import datastore_is_within_node
 from app.datamgmt.datastore.datastore_db import datastore_add_child_node
 from app.datamgmt.datastore.datastore_db import datastore_add_file_as_ioc
 from app.datamgmt.datastore.datastore_db import datastore_delete_node
@@ -230,6 +231,12 @@ def datastore_move_folder(cur_id: int, caseid: int):
 
     if dsp.path_id == dsp_dst.path_id:
         return response_error("If that's true, then I've made a mistake, and you should kill me now.")
+
+    if dsp.path_is_root:
+        return response_error('The root folder cannot be moved')
+
+    if datastore_is_within_node(dsp_dst, dsp.path_id, caseid):
+        return response_error('A folder cannot be moved into one of its own subfolders')
 
     dsp.path_parent_id = dsp_dst.path_id
     db.session.commit()
