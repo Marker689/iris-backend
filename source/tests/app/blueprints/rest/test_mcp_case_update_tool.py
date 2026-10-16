@@ -17,7 +17,8 @@
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 """Unit tests for `iris_cases_update`: tags and protagonists the call
-does not mention are left as they are. The business layer is mocked."""
+does not mention are left as they are, and a new summary reaches the
+collaborative document. The business layer is mocked."""
 
 from types import SimpleNamespace
 from unittest import TestCase
@@ -35,12 +36,15 @@ _CASES = 'app.blueprints.rest.v2.mcp.tools.cases'
 class TestCasesUpdateTool(TestCase):
 
     def _run(self, payload=None, assignee_has_access=True, **args):
-        case = SimpleNamespace(case_id=4, client_id=1, state_id=1, reviewer_id=None, owner_id=2)
+        case = SimpleNamespace(case_id=4, client_id=1, state_id=1, reviewer_id=None, owner_id=2,
+                               description=(payload or {}).get('case_description', 'old summary'))
         self.schema = MagicMock()
         self.schema.load.return_value = case
         self.schema.dump.return_value = {'case_id': 4}
         update = MagicMock(return_value=case)
-        with patch(f'{_CASES}.cases_get_by_identifier', return_value=case), \
+        self.collab_replace = MagicMock()
+        with patch(f'{_CASES}.collab_replace_markdown', self.collab_replace), \
+                patch(f'{_CASES}.cases_get_by_identifier', return_value=case), \
                 patch(f'{_CASES}._case_schema', self.schema), \
                 patch(f'{_CASES}.db'), \
                 patch(f'{_CASES}.ac_fast_check_user_has_case_access', return_value=assignee_has_access), \
@@ -88,3 +92,25 @@ class TestCasesUpdateTool(TestCase):
         call = self._run(tags='', protagonists=[])
         self.assertEqual([], call.args[2])
         self.assertEqual('', call.args[3])
+
+    def test_new_summary_is_pushed_into_the_collaborative_document(self):
+        self._run(payload={'case_description': 'post-mortem'})
+        self.collab_replace.assert_called_once_with('case-summary:4', 'post-mortem')
+
+    def test_update_without_summary_leaves_the_collaborative_document_alone(self):
+        self._run(payload={'case_name': '#4 - renamed'})
+        self.collab_replace.assert_not_called()
+
+
+class TestCasesGetTool(TestCase):
+
+    def test_summary_is_read_from_the_collaborative_document(self):
+        case = SimpleNamespace(case_id=4)
+        schema = MagicMock()
+        schema.dump.return_value = {'case_id': 4, 'case_description': 'stale column'}
+        with patch(f'{_CASES}.cases_get_by_identifier', return_value=case), \
+                patch(f'{_CASES}._case_schema', schema), \
+                patch(f'{_CASES}.collab_current_markdown', return_value='live summary') as current:
+            data = cases_tools.iris_cases_get({'case_identifier': 4})
+        current.assert_called_once_with('case-summary:4', 'stale column')
+        self.assertEqual('live summary', data['case_description'])

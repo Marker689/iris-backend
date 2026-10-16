@@ -30,6 +30,8 @@ from app.business.cases import (
     cases_update,
 )
 from app.db import db
+from app.iris_engine.collab.sync import collab_current_markdown
+from app.iris_engine.collab.sync import collab_replace_markdown
 from app.models.authorization import CaseAccessLevel
 from app.models.authorization import Permissions
 from app.models.errors import BusinessProcessingError, ObjectNotFoundError
@@ -285,7 +287,12 @@ def iris_cases_get(args: dict) -> dict:
         case = cases_get_by_identifier(args['case_identifier'])
     except ObjectNotFoundError as exc:
         raise MCPError(protocol.INVALID_PARAMS, 'Case not found.') from exc
-    return _case_schema.dump(case)
+    data = _case_schema.dump(case)
+    # Live summary: the column lags while someone has the case open, and
+    # an edit built on it would revert their unsaved typing.
+    data['case_description'] = collab_current_markdown(f'case-summary:{case.case_id}',
+                                                       data.get('case_description'))
+    return data
 
 
 @mcp_tool(
@@ -427,6 +434,11 @@ def iris_cases_update(args: dict) -> dict:
         raise MCPError(protocol.INVALID_PARAMS, f'Validation error: {exc.messages}') from exc
     except BusinessProcessingError as exc:
         raise MCPError(protocol.INTERNAL_ERROR, exc.get_message()) from exc
+    if 'case_description' in payload:
+        # Once the case has been opened the summary's Y.Doc is
+        # authoritative: without this the editor keeps showing the old
+        # summary and the next flush writes it back over the column.
+        collab_replace_markdown(f'case-summary:{case.case_id}', case.description or '')
     return _case_schema.dump(case)
 
 
