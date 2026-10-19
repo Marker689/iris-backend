@@ -2,9 +2,11 @@
 
 A `tutorial` row is a guided walkthrough written by a server administrator
 (Settings → Tutorials). Published rows join the built-in catalogue every
-user sees under Help → Tutorials.
+user sees under Help → Tutorials. A row with `builtin_id` is an
+administrator's version of a built-in tutorial: it replaces it when
+published, and hides it when not.
 
-Idempotent via `_has_table`.
+Idempotent via `_has_table` / `_table_has_column`.
 
 Revision ID: d8a3f6c1e2b7
 Revises: b7e4d2a9c5f1
@@ -15,6 +17,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 from app.alembic.alembic_utils import _has_table
+from app.alembic.alembic_utils import _table_has_column
 
 
 revision = 'd8a3f6c1e2b7'
@@ -42,10 +45,15 @@ def upgrade():
             sa.Column('updated_at', sa.DateTime(), nullable=False,
                       server_default=sa.text('now()')),
             sa.Column('created_by', sa.BigInteger(), nullable=True),
+            sa.Column('builtin_id', sa.String(length=64), nullable=True),
             sa.ForeignKeyConstraint(['created_by'], ['user.id'],
                                     ondelete='SET NULL'),
             sa.PrimaryKeyConstraint('id'),
+            sa.UniqueConstraint('builtin_id', name='tutorial_builtin_id_key'),
         )
+    elif not _table_has_column('tutorial', 'builtin_id'):
+        op.add_column('tutorial', sa.Column('builtin_id', sa.String(length=64), nullable=True))
+        op.create_unique_constraint('tutorial_builtin_id_key', 'tutorial', ['builtin_id'])
 
 
 def downgrade():

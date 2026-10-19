@@ -18,6 +18,8 @@
 
 """Query helpers for the `tutorial` table."""
 
+from sqlalchemy import or_
+
 from app.models.tutorials import Tutorial
 
 
@@ -26,10 +28,12 @@ def list_tutorials():
     return Tutorial.query.order_by(Tutorial.title.asc(), Tutorial.id.asc()).all()
 
 
-def list_published_tutorials():
+def list_catalogue_tutorials():
+    """Published tutorials, and every version of a built-in one: the
+    catalogue needs the unpublished ones too, to hide those built-ins."""
     return (
         Tutorial.query
-        .filter(Tutorial.published.is_(True))
+        .filter(or_(Tutorial.published.is_(True), Tutorial.builtin_id.isnot(None)))
         .order_by(Tutorial.title.asc(), Tutorial.id.asc())
         .all()
     )
@@ -37,3 +41,7 @@ def list_published_tutorials():
 
 def get_tutorial(tutorial_id: int):
     return Tutorial.query.filter(Tutorial.id == tutorial_id).first()
+
+
+def get_tutorial_by_builtin_id(builtin_id: str):
+    return Tutorial.query.filter(Tutorial.builtin_id == builtin_id).first()

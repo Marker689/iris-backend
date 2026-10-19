@@ -22,7 +22,8 @@ The SPA ships a catalogue of built-in tutorials; server administrators can
 add their own from Settings → Tutorials (the team's own procedures, the
 house way of opening a case…). A published row shows up in every user's
 Help → Tutorials catalogue next to the built-in ones and runs in the same
-overlay.
+overlay. The built-in tutorials can be edited the same way: the edited
+version is a row pointing at the built-in through `builtin_id`.
 
 `steps` is the step list exactly as the SPA's tutorial engine reads it,
 stored as JSONB: the engine owns the format, the backend only validates
@@ -54,6 +55,10 @@ class Tutorial(db.Model):
     steps = Column(JSONB, nullable=False, default=list)
     # Drafts are only listed to administrators.
     published = Column(Boolean, nullable=False, default=False)
+    # Set when the row is an administrator's version of a built-in
+    # tutorial (its SPA id, e.g. `first-investigation`): published, it
+    # replaces the built-in in the catalogue; unpublished, it hides it.
+    builtin_id = Column(String(64), nullable=True, unique=True)
 
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(DateTime, nullable=False,

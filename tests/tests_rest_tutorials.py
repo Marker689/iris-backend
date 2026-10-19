@@ -122,3 +122,25 @@ class TestsRestTutorials(TestCase):
         self._subject.delete(f'{_TUTORIALS}/{identifier}')
         response = self._subject.get(f'{_TUTORIALS}/{identifier}')
         self.assertEqual(404, response.status_code)
+
+    def test_create_tutorial_should_return_the_built_in_it_replaces(self):
+        response = self._create(builtin_id='first-investigation').json()
+        self.assertEqual('first-investigation', response['builtin_id'])
+
+    def test_create_tutorial_should_return_400_when_the_built_in_is_already_edited(self):
+        self._create(builtin_id='first-investigation')
+        response = self._create(builtin_id='first-investigation')
+        self.assertEqual(400, response.status_code)
+
+    def test_update_tutorial_should_not_change_the_built_in_it_replaces(self):
+        identifier = self._create(builtin_id='first-investigation').json()['id']
+        response = self._subject.update(f'{_TUTORIALS}/{identifier}',
+                                        {'builtin_id': 'power-user-shortcuts'}).json()
+        self.assertEqual('first-investigation', response['builtin_id'])
+
+    def test_published_should_list_hidden_built_ins_without_their_steps(self):
+        self._create(title='draft')
+        self._create(title='hidden', builtin_id='first-investigation')
+        response = self._subject.get(f'{_TUTORIALS}/published').json()
+        self.assertEqual([('hidden', 'first-investigation', [])],
+                         [(t['title'], t['builtin_id'], t['steps']) for t in response])

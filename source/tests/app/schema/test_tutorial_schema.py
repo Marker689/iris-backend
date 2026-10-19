@@ -45,6 +45,15 @@ class TestTutorialSchema(unittest.TestCase):
         self.assertEqual('', tutorial.summary)
         self.assertEqual('', tutorial.duration)
         self.assertFalse(tutorial.published)
+        self.assertIsNone(tutorial.builtin_id)
+
+    def test_builtin_id_loads(self):
+        self.assertEqual('first-investigation', self._load(builtin_id='first-investigation').builtin_id)
+
+    def test_builtin_id_that_is_not_a_tutorial_id_raises(self):
+        with self.assertRaises(ValidationError) as ctx:
+            self._load(builtin_id='First Investigation')
+        self.assertIn('builtin_id', ctx.exception.messages)
 
     def test_missing_title_raises(self):
         with self.assertRaises(ValidationError) as ctx:

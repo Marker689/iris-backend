@@ -18,7 +18,9 @@
 
 """v2 endpoints for admin-authored guided tutorials.
 
-`/published` serves the tutorials catalogue to *any* authenticated user.
+`/published` serves the tutorials catalogue to *any* authenticated user:
+the published tutorials, plus the administrators' versions of built-in
+ones even unpublished (without their steps), which hide those built-ins.
 Every other route is admin-only (`Permissions.server_administrator`) and
 backs Settings → Tutorials, where drafts are written and published.
 """
@@ -39,9 +41,10 @@ from app.business.tutorials import tutorials_create
 from app.business.tutorials import tutorials_delete
 from app.business.tutorials import tutorials_get
 from app.business.tutorials import tutorials_list
-from app.business.tutorials import tutorials_list_published
+from app.business.tutorials import tutorials_list_catalogue
 from app.business.tutorials import tutorials_update
 from app.models.authorization import Permissions
+from app.models.errors import BusinessProcessingError
 from app.models.errors import ObjectNotFoundError
 from app.schema.marshables import TutorialSchema
 
@@ -55,8 +58,11 @@ class TutorialsOperations:
         self._schema = TutorialSchema()
 
     def list_published(self):
-        tutorials = tutorials_list_published()
-        return response_api_success(self._schema.dump(tutorials, many=True))
+        tutorials = self._schema.dump(tutorials_list_catalogue(), many=True)
+        for tutorial in tutorials:
+            if not tutorial['published']:
+                tutorial['steps'] = []
+        return response_api_success(tutorials)
 
     def list_all(self):
         tutorials = tutorials_list()
@@ -70,6 +76,8 @@ class TutorialsOperations:
             return response_api_created(self._schema.dump(tutorial))
         except ValidationError as e:
             return response_api_error('Data error', data=e.messages)
+        except BusinessProcessingError as e:
+            return response_api_error(e.get_message())
 
     def read(self, identifier):
         try:
@@ -82,6 +90,8 @@ class TutorialsOperations:
         try:
             tutorial = tutorials_get(identifier)
             request_data = request.get_json() or {}
+            # Which built-in a row stands for is set once, at creation.
+            request_data.pop('builtin_id', None)
             # The schema can only see the fields that were sent; publishing
             # an existing empty draft must be caught against the row.
             published = request_data.get('published', tutorial.published)
@@ -114,7 +124,7 @@ tutorials_operations = TutorialsOperations()
 @tutorials_blueprint.get('/published')
 @ac_api_requires()
 @api_doc(response=TutorialSchema, tags=['ManageTutorials'],
-         summary='List published tutorials (any authenticated user)')
+         summary='List the tutorials of the catalogue (any authenticated user)')
 def list_published_tutorials_route():
     return tutorials_operations.list_published()
 

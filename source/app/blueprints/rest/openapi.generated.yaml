@@ -12095,7 +12095,7 @@ paths:
   /api/v2/manage/tutorials/published:
     get:
       operationId: list_published_tutorials_route_get
-      summary: List published tutorials (any authenticated user)
+      summary: List the tutorials of the catalogue (any authenticated user)
       tags:
       - ManageTutorials
       security:
@@ -28107,6 +28107,10 @@ components:
             $ref: '#/components/schemas/TutorialStep'
         published:
           type: boolean
+        builtin_id:
+          type:
+          - string
+          - 'null'
         id:
           type: integer
           format: int64
@@ -28146,6 +28150,10 @@ components:
             $ref: '#/components/schemas/TutorialStep'
         published:
           type: boolean
+        builtin_id:
+          type:
+          - string
+          - 'null'
         id:
           type: integer
           format: int64

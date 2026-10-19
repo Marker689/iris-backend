@@ -36,6 +36,7 @@ from marshmallow import validates_schema
 from marshmallow.exceptions import ValidationError
 from marshmallow.validate import Length
 from marshmallow.validate import OneOf
+from marshmallow.validate import Regexp
 from marshmallow_sqlalchemy import auto_field
 from pathlib import Path
 from sqlalchemy import func
@@ -3574,6 +3575,9 @@ class TutorialSchema(ma.SQLAlchemyAutoSchema):
     steps = fields.List(fields.Nested(TutorialStepSchema), load_default=list,
                         validate=Length(max=100))
     published = fields.Boolean(load_default=False)
+    # The built-in tutorial this row is the administrator's version of.
+    builtin_id = fields.String(allow_none=True, load_default=None,
+                               validate=[Length(min=1, max=64), Regexp(r'^[a-z0-9-]+$')])
 
     class Meta:
         model = Tutorial

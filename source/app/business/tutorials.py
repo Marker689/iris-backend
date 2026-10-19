@@ -19,16 +19,19 @@
 """Business layer for admin-authored guided tutorials.
 
 Tutorials are org-wide, so every write is tracked `ctx_less`, like the
-banners and the server settings.
+banners and the server settings. A built-in tutorial has at most one
+administrator's version (`builtin_id`); deleting it restores the built-in.
 """
 
 from app.datamgmt.db_operations import db_create
 from app.datamgmt.db_operations import db_delete
 from app.datamgmt.manage.manage_tutorials_db import get_tutorial
-from app.datamgmt.manage.manage_tutorials_db import list_published_tutorials
+from app.datamgmt.manage.manage_tutorials_db import get_tutorial_by_builtin_id
+from app.datamgmt.manage.manage_tutorials_db import list_catalogue_tutorials
 from app.datamgmt.manage.manage_tutorials_db import list_tutorials
 from app.db import db
 from app.iris_engine.utils.tracker import track_activity
+from app.models.errors import BusinessProcessingError
 from app.models.errors import ObjectNotFoundError
 from app.models.tutorials import Tutorial
 
@@ -37,8 +40,8 @@ def tutorials_list() -> list[Tutorial]:
     return list_tutorials()
 
 
-def tutorials_list_published() -> list[Tutorial]:
-    return list_published_tutorials()
+def tutorials_list_catalogue() -> list[Tutorial]:
+    return list_catalogue_tutorials()
 
 
 def tutorials_get(identifier: int) -> Tutorial:
@@ -49,6 +52,9 @@ def tutorials_get(identifier: int) -> Tutorial:
 
 
 def tutorials_create(tutorial: Tutorial, user) -> Tutorial:
+    if tutorial.builtin_id and get_tutorial_by_builtin_id(tutorial.builtin_id):
+        raise BusinessProcessingError('This built-in tutorial has already been edited: '
+                                      'change that version instead')
     tutorial.created_by = user.id
     db_create(tutorial)
     track_activity(f'Tutorial #{tutorial.id} "{tutorial.title}" created', ctx_less=True)
