@@ -121,6 +121,7 @@ MENU_ENTITY_TYPES = {
     'note': ENTITY_CASE,
     'event': ENTITY_CASE,
     'evidence': ENTITY_CASE,
+    'datastore_file': ENTITY_CASE,
     'task': ENTITY_CASE,
 }
 MENU_LABEL_MAX_LENGTH = 64
