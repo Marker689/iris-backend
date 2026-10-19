@@ -53,6 +53,7 @@ from app.iris_engine.ai_workflows.nodes import NODE_SET_VARIABLES
 from app.iris_engine.ai_workflows.nodes import NODE_STOP
 from app.iris_engine.ai_workflows.nodes import NODE_SUGGEST
 from app.iris_engine.ai_workflows.nodes import NODE_TRIGGER
+from app.iris_engine.ai_workflows.nodes import RUN_WORKFLOW_SELF
 from app.iris_engine.ai_workflows.nodes import NOTE_COLORS
 from app.iris_engine.ai_workflows.nodes import OAUTH_CLIENT_AUTH
 from app.iris_engine.ai_workflows.sandbox import MAX_STEPS
@@ -672,7 +673,8 @@ def _check_python(check):
 
 
 def _check_run_workflow(check):
-    if not _int_in(check.config.get('workflow_id'), 1, 2 ** 62):
+    workflow_id = check.config.get('workflow_id')
+    if workflow_id != RUN_WORKFLOW_SELF and not _int_in(workflow_id, 1, 2 ** 62):
         check.add('workflow_id', 'Select the workflow to run')
     check.one_of('mode', ('wait', 'async'), 'wait')
     check.integer('timeout_minutes', 1, 60 * 24 * 30)
@@ -909,8 +911,8 @@ def ai_workflows_graph_validate_node(node, write_tool_allowlist) -> list:
 
 def _trigger_errors(by_id, adjacency) -> list:
     """Across the trigger nodes: a webhook and a workflow-call trigger at
-    most once each, and no node needing an entity after a schedule that
-    has none."""
+    most once each, no node needing an entity after a schedule that has
+    none, and a workflow-call trigger when the workflow calls itself."""
     errors = []
     seen = set()
     for node in by_id.values():
@@ -932,6 +934,12 @@ def _trigger_errors(by_id, adjacency) -> list:
                     error = _error(node_id, None, 'Needs an entity, but a schedule without target leads here')
                     if error not in errors:
                         errors.append(error)
+    if TRIGGER_WORKFLOW not in seen:
+        for node in by_id.values():
+            if node.get('type') == NODE_RUN_WORKFLOW \
+                    and (node.get('config') or {}).get('workflow_id') == RUN_WORKFLOW_SELF:
+                errors.append(_error(node['id'], 'workflow_id', 'Calls this workflow, which needs a '
+                                                                '"Called by a workflow" trigger'))
     return errors
 
 

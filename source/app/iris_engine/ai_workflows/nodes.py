@@ -120,6 +120,9 @@ NODE_SET_VARIABLES = 'set_variables'
 NODE_PYTHON = 'python'
 NODE_STOP = 'stop'
 NODE_RUN_WORKFLOW = 'run_workflow'
+# `workflow_id` of a run_workflow node calling the workflow it belongs to:
+# no id to fix after an import or an export
+RUN_WORKFLOW_SELF = 'self'
 NODE_NOTE = 'note'
 
 NOTE_COLORS = ('yellow', 'blue', 'green', 'pink', 'purple', 'gray')
@@ -1152,6 +1155,8 @@ def _run_workflow(ctx, config):
 
     run = ctx.run
     workflow_id = config.get('workflow_id')
+    if workflow_id == RUN_WORKFLOW_SELF:
+        workflow_id = run.workflow_id
     template = ctx.template_context()
     inputs = {}
     for index, item in enumerate(config.get('inputs') or []):

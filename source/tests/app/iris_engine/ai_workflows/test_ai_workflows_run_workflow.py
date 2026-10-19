@@ -160,6 +160,13 @@ class TestsRunWorkflowNode(EngineTestCase):
         self.assertEqual({'dry_run': True, 'workflow_id': 5, 'mode': 'wait', 'inputs': {'title': 'Phishing'}},
                          self.steps(run)[1].output)
 
+    def test_self_should_call_the_workflow_of_the_run(self):
+        graph = chain(_call(mode='async', workflow_id='self'), {'id': 'ok', 'type': 'stop', 'config': {}})
+        run = self.run_to_rest(workflow(graph, workflow_id=42))
+        self.assertEqual('succeeded', run.status)
+        self.assertEqual(42, self.calls[0][2])
+        self.assertEqual(42, self.steps(run)[1].input['workflow_id'])
+
     def test_refused_start_should_fail_the_node_and_drop_the_wait(self):
         self.refusal = 'Chain depth limit reached'
         run = self.run_to_rest(workflow(self._graph()))

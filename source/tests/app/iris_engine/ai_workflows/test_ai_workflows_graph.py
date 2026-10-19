@@ -160,6 +160,8 @@ class TestsGraphNodeConfig(TestCase):
                      inputs=[{'name': 'ioc', 'value': '{{ trigger.payload.data.ioc_value }}'},
                              {'name': 'data', 'value': {'$path': 'nodes.x.output'}}])
         self.assertEqual([], self._errors(node))
+        node = _node('call', 'run_workflow', workflow_id='other', mode='wait')
+        self.assertEqual(['workflow_id'], [field for field, _message in self._errors(node)])
         node = _node('call', 'run_workflow', workflow_id=None, mode='later', timeout_minutes=0,
                      inputs=[{'name': '1x', 'value': ''}, {'name': 'a', 'value': '{{'}, {'name': 'a', 'value': ''}])
         self.assertEqual(['workflow_id', 'mode', 'timeout_minutes', 'inputs.0.name', 'inputs.1.value',
@@ -352,6 +354,16 @@ class TestsTriggerNodes(TestCase):
         nodes = [_node('w1', 'trigger', trigger_type='workflow'), _node('w2', 'trigger', trigger_type='workflow')]
         self.assertEqual([('w2', 'trigger_type', 'A workflow has at most one workflow trigger')],
                          self._errors(nodes, []))
+
+    def test_workflow_calling_itself_should_have_a_workflow_trigger(self):
+        nodes = [_node('manual', 'trigger', trigger_type='manual'),
+                 _node('again', 'run_workflow', workflow_id='self', mode='async'), _node('end', 'stop')]
+        edges = [_edge('manual', 'again'), _edge('again', 'end')]
+        self.assertEqual([('again', 'workflow_id', 'Calls this workflow, which needs a "Called by a workflow" '
+                                                   'trigger')], self._errors(nodes, edges))
+        nodes.append(_node('call', 'trigger', trigger_type='workflow'))
+        edges.append(_edge('call', 'end'))
+        self.assertEqual([], self._errors(nodes, edges))
 
     def test_entityless_schedule_should_flag_only_what_it_reaches(self):
         nodes = [_node('cron', 'trigger', trigger_type='cron', cron='* * * * *'),
