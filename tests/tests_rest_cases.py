@@ -342,6 +342,51 @@ class TestsRestCases(TestCase):
         self.assertEqual(victim['case_name'], unchanged['case_name'])
         self.assertEqual(victim['case_description'], unchanged['case_description'])
 
+    def _set_case_custom_attributes_schema(self, content):
+        rows = self._subject.get('/api/v2/manage/custom-attributes', query_parameters={'attribute_for': 'case'}).json()
+        row = rows[0]
+        self.addCleanup(self._subject.update, f'/api/v2/manage/custom-attributes/{row["attribute_id"]}',
+                        {'attribute_content': row['attribute_content']})
+        response = self._subject.update(f'/api/v2/manage/custom-attributes/{row["attribute_id"]}',
+                                        {'attribute_content': content})
+        self.assertEqual(200, response.status_code)
+
+    def test_update_case_custom_attributes_should_succeed_when_the_case_has_none_issue_1154(self):
+        self._set_case_custom_attributes_schema({'SLA': {'Status': {'type': 'input_string', 'mandatory': False, 'value': ''}}})
+        identifier = self._subject.create_dummy_case()
+        response = self._subject.update(f'/api/v2/cases/{identifier}', {'custom_attributes': {'SLA': {'Status': 'x'}}})
+        self.assertEqual(200, response.status_code)
+        attributes = self._subject.get(f'/api/v2/cases/{identifier}').json()['custom_attributes']
+        self.assertEqual({'type': 'input_string', 'mandatory': False, 'value': 'x'}, attributes['SLA']['Status'])
+
+    def test_update_case_custom_attributes_should_keep_tabs_not_sent_issue_1154(self):
+        self._set_case_custom_attributes_schema({
+            'A': {'f': {'type': 'input_string', 'mandatory': False, 'value': ''}},
+            'B': {'g': {'type': 'input_string', 'mandatory': False, 'value': ''}},
+        })
+        identifier = self._subject.create_dummy_case()
+        self._subject.update(f'/api/v2/cases/{identifier}', {'custom_attributes': {'A': {'f': '1'}, 'B': {'g': '2'}}})
+        self._subject.update(f'/api/v2/cases/{identifier}', {'custom_attributes': {'A': {'f': '3'}}})
+        attributes = self._subject.get(f'/api/v2/cases/{identifier}').json()['custom_attributes']
+        self.assertEqual('3', attributes['A']['f']['value'])
+        self.assertEqual('2', attributes['B']['g']['value'])
+
+    def test_update_case_custom_attributes_should_not_let_the_client_write_html_issue_1154(self):
+        self._set_case_custom_attributes_schema({'R': {'h': {'type': 'html', 'mandatory': False, 'value': '<b>schema</b>'}}})
+        identifier = self._subject.create_dummy_case()
+        self._subject.update(f'/api/v2/cases/{identifier}', {'custom_attributes': {'R': {'h': '<script>alert(1)</script>'}}})
+        attributes = self._subject.get(f'/api/v2/cases/{identifier}').json()['custom_attributes']
+        self.assertEqual('<b>schema</b>', attributes['R']['h']['value'])
+
+    def test_update_case_custom_attributes_should_unwrap_values_sent_in_the_stored_shape_issue_1154(self):
+        self._set_case_custom_attributes_schema({'A': {'f': {'type': 'input_string', 'mandatory': False, 'value': ''}}})
+        identifier = self._subject.create_dummy_case()
+        echoed = {'type': 'input_string', 'mandatory': False, 'value': 'echo'}
+        self._subject.update(f'/api/v2/cases/{identifier}', {'custom_attributes': {'A': {'f': echoed}}})
+        self._subject.update(f'/api/v2/cases/{identifier}', {'custom_attributes': {'A': {'f': echoed}}})
+        attributes = self._subject.get(f'/api/v2/cases/{identifier}').json()['custom_attributes']
+        self.assertEqual(echoed, attributes['A']['f'])
+
     def _customer_member(self, permissions=None):
         user = self._subject.create_dummy_user(permissions=permissions)
         self._subject.create(
