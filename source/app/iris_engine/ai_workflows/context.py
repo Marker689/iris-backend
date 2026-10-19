@@ -305,6 +305,12 @@ def ai_workflows_context_get_path(context, path):
     return current
 
 
+def ai_workflows_context_path_value(context, path):
+    """Value at a dotted path, None when it does not exist."""
+    value = ai_workflows_context_get_path(context, path)
+    return None if value is _MISSING else value
+
+
 class _Missing:
 
     def __repr__(self):

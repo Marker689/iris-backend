@@ -67,6 +67,7 @@ from app.iris_engine.ai_workflows.context import ai_workflows_context_split_url
 from app.iris_engine.ai_workflows.context import ai_workflows_context_eval_expression
 from app.iris_engine.ai_workflows.context import ai_workflows_context_eval_rules
 from app.iris_engine.ai_workflows.context import ai_workflows_context_get_path
+from app.iris_engine.ai_workflows.context import ai_workflows_context_path_value
 from app.iris_engine.ai_workflows.context import ai_workflows_context_render
 from app.iris_engine.ai_workflows.context import ai_workflows_context_render_arguments
 from app.iris_engine.ai_workflows.context import ai_workflows_context_template
@@ -201,6 +202,9 @@ class NodeContext:
         self.allowlist = set(snapshot.get('write_tool_allowlist') or [])
         self.snapshot = snapshot
         self.tokens = 0
+        # What the node works on, set by the executor as soon as it is
+        # known: the step keeps it as its input even when the node fails
+        self.input = None
         # Entries used by earlier nodes: masked here too, and their host
         # restrictions apply to this node's requests
         restore = getattr(resolver, 'restore', None)
@@ -332,6 +336,7 @@ def _trigger(ctx, _config):
     entity = ai_workflows_entities_snapshot(run.entity_type, run.entity_id) if run.entity_type else {}
     trigger = (run.context or {}).get('trigger') or {}
     return NodeResult(
+        input=trigger,
         output={
             'type': trigger.get('type'),
             'node_id': trigger.get('node_id') or (ctx.node or {}).get('id'),
@@ -345,17 +350,25 @@ def _trigger(ctx, _config):
 
 
 def _ai_agent(ctx, config):
+    ctx.input = {'prompt': config.get('prompt'), 'tools': config.get('tools') or []}
     output = ai_workflows_agent_run(ctx, config)
-    return NodeResult(output=output, input={'prompt': config.get('prompt'), 'tools': config.get('tools') or []})
+    return NodeResult(output=output, input=ctx.input)
 
 
 def _condition(ctx, config):
     context = ctx.template_context()
     if (config.get('mode') or 'rules') == 'expression':
+        ctx.input = {'expression': config.get('expression')}
         result = ai_workflows_context_eval_expression(config.get('expression'), context)
     else:
+        # Each rule with the value it found at its path
+        rules = [rule for rule in config.get('rules') or [] if isinstance(rule, dict)]
+        ctx.input = {'logic': config.get('logic') or 'and', 'rules': [
+            {**rule, 'actual': ai_workflows_context_path_value(context, rule.get('path'))} for rule in rules
+        ]}
         result = ai_workflows_context_eval_rules(config.get('rules'), config.get('logic'), context)
-    return NodeResult(output={'result': bool(result)}, port=PORT_TRUE if result else PORT_FALSE)
+    return NodeResult(output={'result': bool(result)}, port=PORT_TRUE if result else PORT_FALSE,
+                      input=ctx.input)
 
 
 def _text_body(text):
@@ -700,6 +713,7 @@ def _http_request(ctx, config):
                                     'headers': request['log_headers']}, token))
     if oauth is not None:
         logged['oauth'] = ctx.mask(oauth['log'])
+    ctx.input = logged
     if request['errors']:
         details = '; '.join(f'{e["field"]}: {e["message"]}' for e in request['errors'])
         raise AiWorkflowNodeError(ctx.mask(_scrub_token(f'Request could not be rendered — {details}', token)))
@@ -968,6 +982,7 @@ def _action(ctx, config):
     arguments = ai_workflows_context_render_arguments(config.get('arguments') or {}, ctx.template_context(),
                                                       'arguments')
     arguments = ai_workflows_agent_pin_arguments(run, tool, arguments)
+    ctx.input = {'tool': tool, 'arguments': arguments}
     if classification == CLASSIFICATION_WRITE and (run.is_dry_run or tool not in ctx.allowlist):
         # Dry run, or allowlist changed since the graph was validated: ask
         suggestion = ai_workflows_suggestions_create(
@@ -1098,6 +1113,9 @@ def _delay(_ctx, config):
 def _set_variables(ctx, config):
     template = ctx.template_context()
     variables = dict((ctx.run.context or {}).get('vars') or {})
+    # The templates; the output holds what they rendered to
+    ctx.input = {str(item['name']): item.get('value') for item in config.get('variables') or []
+                 if isinstance(item, dict) and item.get('name')}
     assigned = {}
     for index, item in enumerate(config.get('variables') or []):
         if not isinstance(item, dict) or not item.get('name'):
@@ -1106,7 +1124,7 @@ def _set_variables(ctx, config):
         assigned[str(item['name'])] = ctx.mask(value)
         template['vars'] = {**variables, **assigned}
     variables.update(assigned)
-    return NodeResult(output=assigned, context_updates={'vars': variables})
+    return NodeResult(output=assigned, input=ctx.input, context_updates={'vars': variables})
 
 
 def _python(ctx, config):
@@ -1118,6 +1136,7 @@ def _python(ctx, config):
         if isinstance(item, dict) and item.get('name'):
             inputs[str(item['name'])] = ai_workflows_context_render_arguments(item.get('value'), template,
                                                                                 f'inputs.{index}')
+    ctx.input = {'inputs': inputs}
     # Plain data only: the keystore never reaches a script
     variables = ctx.mask({
         'inputs': inputs,
@@ -1140,7 +1159,7 @@ def _python(ctx, config):
                                   + (f' — logs: {" | ".join(logs)[:1000]}' if logs else ''))
     return NodeResult(output={'result': ctx.mask(outcome.get('result')), 'logs': logs,
                               'steps': outcome.get('steps')},
-                      input={'inputs': inputs})
+                      input=ctx.input)
 
 
 def _stop(ctx, config):

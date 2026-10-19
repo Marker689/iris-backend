@@ -743,6 +743,16 @@ def _execute_node(run_id, step_id, node):
         return False
 
 
+def _step_input(node, ctx, result, mask):
+    """What the step shows as its input: what the node reported, else
+    what it had prepared before failing, else its configuration (the
+    nodes that only read the context)."""
+    value = result.input if result is not None and result.input is not None else ctx.input
+    if value is None:
+        value = node.get('config') or None
+    return mask(ai_workflows_tools_json_safe(value)) if value is not None else None
+
+
 def _record_node(run_id, step_id, node, ctx, resolver, result, error):
     run = ai_workflows_db_get_run(run_id, lock=True)
     step = ai_workflows_db_get_step(step_id)
@@ -760,6 +770,7 @@ def _record_node(run_id, step_id, node, ctx, resolver, result, error):
     if alive:
         _remember_keys(run, resolver)
 
+    step.input = _step_input(node, ctx, result, mask)
     if error is not None:
         error = str(mask(error))[:_MAX_ERROR]
         step.status = STEP_FAILED
@@ -784,7 +795,6 @@ def _record_node(run_id, step_id, node, ctx, resolver, result, error):
         return False
 
     output = mask(ai_workflows_tools_json_safe(result.output if result.output is not None else {}))
-    step.input = mask(ai_workflows_tools_json_safe(result.input)) if result.input is not None else None
     step.output = output
     step.port = result.port
     step.status = STEP_SUCCEEDED
