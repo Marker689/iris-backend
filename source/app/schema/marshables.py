@@ -74,6 +74,7 @@ from app.models.cases import Cases, CaseStatus, CaseClassification
 from app.models.cases import CasesEvent
 from app.models.banners import Banner
 from app.models.banners import BANNER_PURPOSES
+from app.models.tutorials import Tutorial
 from app.models.customers import Client
 from app.models.managed_assets import MANAGED_ASSET_CRITICALITIES
 from app.models.managed_assets import MANAGED_ASSET_ENVIRONMENTS
@@ -3448,6 +3449,141 @@ class BannerSchema(ma.SQLAlchemyAutoSchema):
         if start is not None and end is not None and end <= start:
             raise ValidationError('end_at must be strictly after start_at',
                                   field_name='end_at')
+
+
+_TUTORIAL_VAR_NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]{0,63}$')
+_TUTORIAL_ANCHOR_MAX = 500
+
+
+def _validate_tutorial_app_path(value: str) -> None:
+    # `goTo` and wait paths are app paths the SPA navigates to or
+    # compares against. Anything that could leave the app (`//host`,
+    # `\\host`, `javascript:`) is refused.
+    if not value.startswith('/') or value.startswith('//') or '\\' in value:
+        raise ValidationError('Must be a path inside IRIS, starting with a single "/"')
+
+
+def _validate_tutorial_anchor(value: Any) -> None:
+    anchors = value if isinstance(value, list) else [value]
+    if not anchors or len(anchors) > 5:
+        raise ValidationError('Give between 1 and 5 anchors')
+    for anchor in anchors:
+        if not isinstance(anchor, str) or not 0 < len(anchor) <= _TUTORIAL_ANCHOR_MAX:
+            raise ValidationError(f'Each anchor must be a string of 1 to {_TUTORIAL_ANCHOR_MAX} characters')
+
+
+def _validate_tutorial_fill_value(value: Any) -> None:
+    if isinstance(value, bool):
+        return
+    if not isinstance(value, str) or len(value) > 2000:
+        raise ValidationError('Must be a string of at most 2000 characters, or a boolean')
+
+
+def _validate_tutorial_capture(value: Dict[str, str]) -> None:
+    if len(value) > 10:
+        raise ValidationError('At most 10 captured values per step')
+    for name in value:
+        if not _TUTORIAL_VAR_NAME.match(name):
+            raise ValidationError(f'"{name}" is not a valid value name (letters, digits, _)')
+
+
+class TutorialWaitSchema(Schema):
+    """What a tutorial step waits for before moving on by itself.
+
+    Mirrors `StepWait` in the SPA (`src/lib/tutorials/types.ts`): an API
+    call that succeeded, a page the user reached, or an element that
+    appeared. Which fields are required depends on `kind`.
+    """
+
+    kind = fields.String(required=True, validate=OneOf(('api', 'route', 'element')))
+    method = fields.String(validate=OneOf(('POST', 'PUT', 'PATCH', 'DELETE')))
+    path = fields.String(validate=[Length(min=1, max=500), _validate_tutorial_app_path])
+    capture = fields.Dict(keys=fields.String(), values=fields.String(validate=Length(min=1, max=200)),
+                          validate=_validate_tutorial_capture)
+    anchor = fields.String(validate=Length(min=1, max=_TUTORIAL_ANCHOR_MAX))
+
+    class Meta:
+        unknown = EXCLUDE
+
+    @validates_schema
+    def _check_kind_fields(self, data: Dict[str, Any], **kwargs: Any) -> None:
+        kind = data.get('kind')
+        if kind == 'api':
+            if 'method' not in data:
+                raise ValidationError('Required for an API wait', field_name='method')
+            if 'path' not in data:
+                raise ValidationError('Required for an API wait', field_name='path')
+        elif kind == 'route' and 'path' not in data:
+            raise ValidationError('Required for a page wait', field_name='path')
+        elif kind == 'element' and 'anchor' not in data:
+            raise ValidationError('Required for an element wait', field_name='anchor')
+
+    @post_load
+    def _drop_foreign_fields(self, data: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
+        # Keep only what the chosen kind reads, so switching the kind in
+        # the editor does not leave stale fields behind.
+        allowed = {'api': ('method', 'path', 'capture'), 'route': ('path',), 'element': ('anchor',)}
+        keep = allowed.get(data['kind'], ())
+        return {key: value for key, value in data.items() if key == 'kind' or key in keep}
+
+
+class TutorialFillSchema(Schema):
+    anchor = fields.String(required=True, validate=Length(min=1, max=_TUTORIAL_ANCHOR_MAX))
+    label = fields.String(required=True, validate=Length(min=1, max=100))
+    value = fields.Raw(required=True, validate=_validate_tutorial_fill_value)
+
+    class Meta:
+        unknown = EXCLUDE
+
+
+class TutorialStepSchema(Schema):
+    """One step of a tutorial — the SPA's `TutorialStep`, camelCase on the wire."""
+
+    title = fields.String(required=True, validate=Length(min=1, max=200))
+    body = fields.String(required=True, validate=Length(max=4000))
+    anchor = fields.Raw(validate=_validate_tutorial_anchor)
+    go_to = fields.String(data_key='goTo', validate=[Length(min=1, max=500), _validate_tutorial_app_path])
+    fills = fields.List(fields.Nested(TutorialFillSchema), validate=Length(max=10))
+    wait_for = fields.Nested(TutorialWaitSchema, data_key='waitFor')
+
+    class Meta:
+        unknown = EXCLUDE
+
+    @pre_load
+    def _blank_optionals_to_missing(self, data: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
+        # The editor sends `""` / `null` / `[]` for an optional left empty.
+        if not isinstance(data, dict):
+            return data
+        return {key: value for key, value in data.items()
+                if key in ('title', 'body') or value not in ('', None, [])}
+
+
+class TutorialSchema(ma.SQLAlchemyAutoSchema):
+    """Marshmallow schema for admin-authored tutorials.
+
+    `steps` is validated step by step so a malformed row can never reach
+    the catalogue; a published tutorial needs at least one step.
+    """
+
+    title = fields.String(required=True, validate=Length(min=1, max=200))
+    summary = fields.String(load_default='', validate=Length(max=1000))
+    duration = fields.String(load_default='', validate=Length(max=32))
+    steps = fields.List(fields.Nested(TutorialStepSchema), load_default=list,
+                        validate=Length(max=100))
+    published = fields.Boolean(load_default=False)
+
+    class Meta:
+        model = Tutorial
+        load_instance = True
+        include_fk = True
+        exclude = ('created_by',)
+        unknown = EXCLUDE
+
+    @validates_schema
+    def _check_publishable(self, data: Dict[str, Any], partial: Any = None, **kwargs: Any) -> None:
+        if data.get('published') and 'steps' in data and not data['steps']:
+            raise ValidationError('A published tutorial needs at least one step',
+                                  field_name='steps')
 
 
 class ManagedAssetSchema(ma.SQLAlchemyAutoSchema):

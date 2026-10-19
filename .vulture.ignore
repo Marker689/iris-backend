@@ -669,3 +669,10 @@ get_connection  # requests HTTPAdapter hook (iris_engine/webhooks/sender.py)
 get_connection_with_tls_context  # requests HTTPAdapter hook (iris_engine/webhooks/sender.py)
 key_values  # Column of models/customers.py:Client, read through CustomerSchema(attribute='key_values')
 customer_key_values  # marshmallow field of schema/marshables.py:CustomerSchema, consumed reflectively
+
+######### Tutorials: model column + marshmallow fields read reflectively
+duration  # Column of models/tutorials.py:Tutorial and field of schema/marshables.py:TutorialSchema
+capture  # marshmallow field of schema/marshables.py:TutorialWaitSchema, consumed reflectively
+go_to  # marshmallow field of schema/marshables.py:TutorialStepSchema (data_key goTo)
+fills  # marshmallow field of schema/marshables.py:TutorialStepSchema, consumed reflectively
+wait_for  # marshmallow field of schema/marshables.py:TutorialStepSchema (data_key waitFor)

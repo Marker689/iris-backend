@@ -609,15 +609,18 @@ def _parse_schema_class(
         if field_name_call == 'Nested':
             nested_overlays.add(field_name)
 
+        # `data_key` renames the field on the wire (`go_to` → `goTo`).
+        wire_name = _extract_field_kwarg_constant(value, 'data_key') or field_name
+
         if _extract_field_kwarg_constant(value, 'required') is True:
-            required.append(field_name)
+            required.append(wire_name)
 
         if _extract_field_kwarg_constant(value, 'allow_none') is True:
             # OpenAPI 3.1: express nullability with a type union.
             if 'type' in schema and 'nullable' not in schema:
                 schema = {**schema, 'type': [schema['type'], 'null']}
 
-        properties[field_name] = schema or {}
+        properties[wire_name] = schema or {}
 
     # If the schema binds to a SQLAlchemy model via `Meta.model = X`,
     # merge in the model's columns so auto_field / SQLAlchemyAutoSchema

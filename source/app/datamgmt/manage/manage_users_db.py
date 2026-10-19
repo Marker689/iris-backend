@@ -43,6 +43,7 @@ from app.models.custom_dashboard import CustomDashboard
 from app.models.customers import Client
 from app.models.investigation_flows import InvestigationFlow
 from app.models.models import UserActivity
+from app.models.tutorials import Tutorial
 from app.models.authorization import CaseAccessLevel, ac_access_level_mask_from_val_list
 from app.models.authorization import UserClient
 from app.models.authorization import Group
@@ -757,6 +758,9 @@ def delete_user(user_id):
     Banner.query.filter(
         Banner.created_by == user_id
     ).update({Banner.created_by: None}, synchronize_session=False)
+    Tutorial.query.filter(
+        Tutorial.created_by == user_id
+    ).update({Tutorial.created_by: None}, synchronize_session=False)
 
     # TODO should rather do this with cascade?
     UserClient.query.filter(UserClient.user_id == user_id).delete()

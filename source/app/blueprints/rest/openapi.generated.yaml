@@ -11968,6 +11968,149 @@ paths:
           $ref: '#/components/responses/ApiError'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /api/v2/manage/tutorials:
+    get:
+      operationId: list_tutorials_route_get
+      summary: List all tutorials, drafts included
+      tags:
+      - ManageTutorials
+      security:
+      - ApiKey: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tutorial'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: create_tutorial_route_post
+      summary: Create a tutorial
+      tags:
+      - ManageTutorials
+      security:
+      - ApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TutorialRequest'
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tutorial'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v2/manage/tutorials/{identifier}:
+    delete:
+      operationId: delete_tutorial_route_delete
+      summary: Delete a tutorial
+      tags:
+      - ManageTutorials
+      security:
+      - ApiKey: []
+      parameters:
+      - name: identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '204':
+          $ref: '#/components/responses/Deleted'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    get:
+      operationId: get_tutorial_route_get
+      summary: Get a tutorial
+      tags:
+      - ManageTutorials
+      security:
+      - ApiKey: []
+      parameters:
+      - name: identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tutorial'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: put_tutorial_route_put
+      summary: Update a tutorial
+      tags:
+      - ManageTutorials
+      security:
+      - ApiKey: []
+      parameters:
+      - name: identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TutorialRequest'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tutorial'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/manage/tutorials/published:
+    get:
+      operationId: list_published_tutorials_route_get
+      summary: List published tutorials (any authenticated user)
+      tags:
+      - ManageTutorials
+      security:
+      - ApiKey: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tutorial'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/v2/manage/users:
     get:
       operationId: search_users_get
@@ -27947,6 +28090,108 @@ components:
           type:
           - string
           - 'null'
+    Tutorial:
+      type: object
+      properties:
+        title:
+          type: string
+        summary:
+          type: string
+        duration:
+          type: string
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/TutorialStep'
+        published:
+          type: boolean
+        id:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - title
+      description: Marshmallow schema for admin-authored tutorials.
+    TutorialFill:
+      type: object
+      properties:
+        anchor:
+          type: string
+        label:
+          type: string
+        value: {}
+      required:
+      - anchor
+      - label
+      - value
+    TutorialRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        summary:
+          type: string
+        duration:
+          type: string
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/TutorialStep'
+        published:
+          type: boolean
+        id:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+      - title
+      description: Marshmallow schema for admin-authored tutorials.
+    TutorialStep:
+      type: object
+      properties:
+        title:
+          type: string
+        body:
+          type: string
+        anchor: {}
+        goTo:
+          type: string
+        fills:
+          type: array
+          items:
+            $ref: '#/components/schemas/TutorialFill'
+        waitFor:
+          $ref: '#/components/schemas/TutorialWait'
+      required:
+      - body
+      - title
+      description: "One step of a tutorial \u2014 the SPA's `TutorialStep`, camelCase on the wire."
+    TutorialWait:
+      type: object
+      properties:
+        kind:
+          type: string
+        method:
+          type: string
+        path:
+          type: string
+        capture:
+          type: object
+        anchor:
+          type: string
+      required:
+      - kind
+      description: What a tutorial step waits for before moving on by itself.
     User:
       type: object
       properties:
