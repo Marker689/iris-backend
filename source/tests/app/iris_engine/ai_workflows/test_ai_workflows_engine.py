@@ -260,6 +260,34 @@ class TestsActions(EngineTestCase):
         self.assertEqual([], list(self.store.waits.values()))
         self.assertEqual('timeout', self.steps(run)[1].port)
 
+    def test_suggest_should_bundle_the_actions_whose_condition_holds(self):
+        graph = chain(
+            {'id': 'vars', 'type': 'set_variables', 'config': {'variables': [{'name': 'fix', 'value': 'yes'}]}},
+            {'id': 'ask', 'type': 'suggest', 'config': {'title': 'Review', 'actions': [
+                {'label': 'Save the review', 'tool': _WRITE_TOOL,
+                 'arguments': {'note_title': 'Review', 'case_identifier': 7}},
+                {'label': 'Only when fixing ({{ vars.fix }})', 'tool': _WRITE_TOOL,
+                 'arguments': {'note_title': 'Fix'}, 'when': 'vars.fix == "yes"'},
+                {'label': 'Never', 'tool': _WRITE_TOOL, 'arguments': {}, 'when': 'vars.fix == "no"'},
+            ]}})
+        run = self.run_to_rest(workflow(graph))
+        self.assertEqual('succeeded', run.status)
+        self.assertEqual([], self.executed)
+        suggestion = self.store.suggestions[0]
+        self.assertNotIn('proposed_action', vars(suggestion))
+        self.assertEqual(['Save the review', 'Only when fixing (yes)'],
+                         [a['label'] for a in suggestion.proposed_actions])
+        # Pinned to the run's case like a single proposed action
+        self.assertEqual(42, suggestion.proposed_actions[0]['arguments']['case_identifier'])
+        self.assertEqual(['Save the review', 'Only when fixing (yes)'], self.steps(run)[-1].output['actions'])
+
+    def test_suggest_should_refuse_a_read_tool_in_its_actions(self):
+        graph = chain({'id': 'ask', 'type': 'suggest', 'config': {'title': 'Review', 'actions': [
+            {'label': 'Read', 'tool': _READ_TOOL, 'arguments': {}}]}})
+        run = self.run_to_rest(workflow(graph))
+        self.assertEqual('failed', run.status)
+        self.assertEqual([], self.store.suggestions)
+
 
 class TestsAgent(EngineTestCase):
 

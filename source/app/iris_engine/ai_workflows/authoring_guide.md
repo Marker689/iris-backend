@@ -194,6 +194,7 @@ The config fields are listed with their defaults in the catalogue. Highlights:
     - `kind`, `title` and `body` (templates)
     - `confidence` and `severity`
     - optionally `proposed_action: {tool, arguments}`, a write tool the analyst runs in one click under their own rights
+    - or `actions`: up to 10 `{label, tool, arguments, when}` in one suggestion. The analyst accepts all of them, or ticks the ones to run. `label` is a template. `when` is an optional expression, like a `condition` node's, and the action is left out when it is false. Prefer one suggestion with several actions to several suggestions about the same object: a run proposes at most 5 suggestions, and a bundle counts once.
 - **`ask_analyst`**: ports `answered` and `timeout`. It asks a question with a form and waits.
   - Config: `title` and `question`, plus `timeout_minutes`.
   - `fields`: a list of `{name, label, type, required, options}`. The types are `text textarea number boolean select multiselect date`.

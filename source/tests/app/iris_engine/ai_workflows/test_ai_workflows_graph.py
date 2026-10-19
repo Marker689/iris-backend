@@ -171,6 +171,30 @@ class TestsGraphNodeConfig(TestCase):
         node = _node('s', 'suggest', title='Add a note', proposed_action={'tool': _WRITE_TOOL, 'arguments': {}})
         self.assertEqual([], self._errors(node))
 
+    def test_suggest_may_bundle_several_write_tools(self):
+        node = _node('s', 'suggest', title='Review', actions=[
+            {'label': 'Save {{ vars.x }}', 'tool': _WRITE_TOOL, 'arguments': {'note_title': '{{ vars.x }}'}},
+            {'label': 'Fix', 'tool': 'iris_cases_update', 'arguments': {'severity_id': {'$path': 'vars.id'}},
+             'when': 'vars.fix == true'}])
+        self.assertEqual([], self._errors(node))
+
+    def test_suggest_actions_should_be_checked_one_by_one(self):
+        node = _node('s', 'suggest', title='Review', actions=[
+            {'label': 'Read', 'tool': _READ_TOOL, 'arguments': {}},
+            {'label': '{{', 'tool': _WRITE_TOOL, 'arguments': ['x'], 'when': 'vars.x =='},
+            'junk'])
+        self.assertEqual(['actions.0.tool', 'actions.1.arguments', 'actions.1.label', 'actions.1.when', 'actions.2'],
+                         [field for field, _message in self._errors(node)])
+
+    def test_suggest_should_not_take_one_action_and_a_bundle(self):
+        action = {'tool': _WRITE_TOOL, 'arguments': {}}
+        node = _node('s', 'suggest', title='Review', proposed_action=action, actions=[action])
+        self.assertEqual(['actions'], [field for field, _message in self._errors(node)])
+
+    def test_suggest_should_bundle_ten_actions_at_most(self):
+        node = _node('s', 'suggest', title='Review', actions=[{'tool': _WRITE_TOOL, 'arguments': {}}] * 11)
+        self.assertEqual(['actions'], [field for field, _message in self._errors(node)])
+
     def test_unknown_tool_should_be_reported(self):
         self.assertEqual([('tools.0', 'Unknown tool nope')],
                          self._errors(_node('ai', 'ai_agent', prompt='x', tools=['nope'])))

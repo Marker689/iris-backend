@@ -140,6 +140,12 @@ SUGGESTION_DISMISSED = 'dismissed'
 SUGGESTION_EXPIRED = 'expired'
 SUGGESTION_DRY_RUN = 'dry_run'
 
+# Status of one action of a bundled suggestion
+SUGGESTION_ACTION_PENDING = 'pending'
+SUGGESTION_ACTION_DONE = 'done'
+SUGGESTION_ACTION_SKIPPED = 'skipped'
+MAX_SUGGESTION_ACTIONS = 10
+
 AUDIENCE_ENTITY = 'entity'
 AUDIENCE_OWNER = 'owner'
 AUDIENCES = (AUDIENCE_ENTITY, AUDIENCE_OWNER)
@@ -478,6 +484,9 @@ class AiSuggestion(db.Model):
     body = Column(Text, nullable=True)
     # {tool, arguments} run as the accepting analyst, or null
     proposed_action = Column(JSONB, nullable=True)
+    # Or several, accepted all at once or a few of them: [{id, label,
+    # tool, arguments, status, tool_call_id, error}]
+    proposed_actions = Column(JSONB, nullable=True)
     # info_request fields: [{name, label, type, required, options}]
     form_schema = Column(JSONB, nullable=True)
     # Other objects the suggestion refers to: [{type, id, title}]; the

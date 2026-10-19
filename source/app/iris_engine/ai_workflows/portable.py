@@ -128,10 +128,11 @@ def ai_workflows_portable_tools(nodes, allowlist=()) -> list:
             tools.add(config['tool'])
         elif node_type == 'ai_agent' and isinstance(config.get('tools'), list):
             tools.update(t for t in config['tools'] if isinstance(t, str))
-        elif node_type == 'suggest' and isinstance(config.get('proposed_action'), dict):
-            tool = config['proposed_action'].get('tool')
-            if isinstance(tool, str):
-                tools.add(tool)
+        elif node_type == 'suggest':
+            proposed = [config.get('proposed_action')]
+            if isinstance(config.get('actions'), list):
+                proposed += config['actions']
+            tools.update(a['tool'] for a in proposed if isinstance(a, dict) and isinstance(a.get('tool'), str))
     return sorted(t for t in tools if t)
 
 

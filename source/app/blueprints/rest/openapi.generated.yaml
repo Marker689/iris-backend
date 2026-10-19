@@ -127,7 +127,8 @@ paths:
   /api/v2/ai-suggestions/{identifier}/accept:
     post:
       operationId: accept_ai_suggestion_route_post
-      summary: 'Accept an AI suggestion: its proposed write action runs as the current user'
+      summary: 'Accept an AI suggestion: its proposed write actions (all, or the `actions` ids selected)
+        run as the current user'
       tags:
       - AiSuggestions
       security:

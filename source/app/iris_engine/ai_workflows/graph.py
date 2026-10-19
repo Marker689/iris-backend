@@ -70,6 +70,7 @@ from app.models.ai_workflows import AUDIENCE_ENTITY
 from app.models.ai_workflows import AUDIENCE_OWNER
 from app.models.ai_workflows import ENTITY_TYPES
 from app.models.ai_workflows import MENU_ENTITY_TYPES
+from app.models.ai_workflows import MAX_SUGGESTION_ACTIONS
 from app.models.ai_workflows import MENU_LABEL_MAX_LENGTH
 from app.models.ai_workflows import RUN_FAILED
 from app.models.ai_workflows import RUN_SUCCEEDED
@@ -588,15 +589,47 @@ def _check_suggest(check, allowlist):
     if check.config.get('audience') == 'users':
         _check_user_ids(check)
     action = check.config.get('proposed_action')
+    actions = check.config.get('actions')
+    if actions not in (None, []):
+        if action not in (None, {}):
+            check.add('actions', 'Propose one action or several actions, not both')
+        if not isinstance(actions, list):
+            check.add('actions', 'Must be a list')
+            return
+        if len(actions) > MAX_SUGGESTION_ACTIONS:
+            check.add('actions', f'At most {MAX_SUGGESTION_ACTIONS} actions')
+        for index, item in enumerate(actions):
+            _check_proposed_action(check, f'actions.{index}', item, allowlist)
     if action not in (None, {}):
-        if not isinstance(action, dict):
-            check.add('proposed_action', 'Must be an object')
-        else:
-            classification = check.tool('proposed_action.tool', action.get('tool'), allowlist)
-            if classification is not None and classification != CLASSIFICATION_WRITE:
-                check.add('proposed_action.tool', f'{action.get("tool")} is not a write tool: a proposed action '
-                                                  'must change something')
-            check.templates_in('proposed_action.arguments', action.get('arguments') or {})
+        _check_proposed_action(check, 'proposed_action', action, allowlist)
+
+
+def _check_proposed_action(check, field, action, allowlist):
+    if not isinstance(action, dict):
+        check.add(field, 'Must be an object')
+        return
+    classification = check.tool(f'{field}.tool', action.get('tool'), allowlist)
+    if classification is not None and classification != CLASSIFICATION_WRITE:
+        check.add(f'{field}.tool', f'{action.get("tool")} is not a write tool: a proposed action '
+                                   'must change something')
+    arguments = action.get('arguments') or {}
+    if not isinstance(arguments, dict):
+        check.add(f'{field}.arguments', 'Must be an object')
+    else:
+        check.templates_in(f'{field}.arguments', arguments)
+    if field == 'proposed_action':
+        return
+    check.template(f'{field}.label', action.get('label'))
+    when = action.get('when')
+    if when in (None, ''):
+        return
+    if not isinstance(when, str):
+        check.add(f'{field}.when', 'Must be a string')
+        return
+    try:
+        webhooks_check_condition(when)
+    except WebhookRenderError as e:
+        check.add(f'{field}.when', e.message)
 
 
 def _check_action(check, allowlist):

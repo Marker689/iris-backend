@@ -135,11 +135,12 @@ def get_ai_suggestion_route(identifier):
 
 @ai_suggestions_blueprint.post('/<int:identifier>/accept')
 @ac_api_requires()
-@api_doc(tags=['AiSuggestions'], summary='Accept an AI suggestion: its proposed write action runs as the current user')
+@api_doc(tags=['AiSuggestions'], summary='Accept an AI suggestion: its proposed write actions (all, or the '
+                                          '`actions` ids selected) run as the current user')
 def accept_ai_suggestion_route(identifier):
     body = _body()
     return _handle(lambda: ai_suggestions_accept(identifier, iris_current_user.id, note=body.get('note'),
-                                                 scope_mask=_scope_mask()))
+                                                 scope_mask=_scope_mask(), actions=body.get('actions')))
 
 
 @ai_suggestions_blueprint.post('/<int:identifier>/dismiss')

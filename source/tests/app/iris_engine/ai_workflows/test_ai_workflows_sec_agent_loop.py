@@ -170,6 +170,29 @@ class TestsAgentScope(_AgentTestCase):
         self.run_agent(_agent(tools=[_WRITE_TOOL]))
         self.assertEqual(42, self.store.suggestions[0].proposed_action['arguments']['case_identifier'])
 
+    def test_proposed_actions_should_each_be_checked_and_pinned(self):
+        good = {'label': 'Note', 'tool': _WRITE_TOOL, 'arguments': {'payload': {'note_title': 'x'}}}
+        cases = (
+            ([good, {'label': 'Read', 'tool': _READ_TOOL, 'arguments': {}}], 'proposed_actions[1]'),
+            ([good, {'label': 'Other case', 'tool': _WRITE_TOOL, 'arguments': {'case_identifier': 43}}], 'refused'),
+            ([good] * 11, 'at most 10'),
+            ('all', 'must be a list'),
+        )
+        for actions, message in cases:
+            provider = self.use_policy(tool_turn('propose_suggestion', {'title': 'Do', 'proposed_actions': actions}),
+                                       text_turn('ok'))
+            self.run_agent(_agent(tools=[_WRITE_TOOL]))
+            result = _tool_results(provider, 1)[0]
+            self.assertTrue(result.get('is_error'), actions)
+            self.assertIn(message, result['content'])
+        self.assertEqual([], self.store.suggestions)
+        self.use_policy(tool_turn('propose_suggestion', {'title': 'Do', 'proposed_actions': [good, good]}),
+                        text_turn('ok'))
+        self.run_agent(_agent(tools=[_WRITE_TOOL]))
+        bundle = self.store.suggestions[0].proposed_actions
+        self.assertEqual(['Note', 'Note'], [a['label'] for a in bundle])
+        self.assertEqual([42, 42], [a['arguments']['case_identifier'] for a in bundle])
+
     def test_suggestion_limit_should_be_reported_to_the_model(self):
         def _limited(*_args, **_kwargs):
             raise AiWorkflowSuggestionLimitError('At most 5 suggestions per run')

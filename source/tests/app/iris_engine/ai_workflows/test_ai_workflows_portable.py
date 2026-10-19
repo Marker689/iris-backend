@@ -237,8 +237,9 @@ class TestsPortableRead(TestCase):
         self.assertEqual(['A', 'B_2'], ai_workflows_portable_key_references(
             {'x': ['{{ key("B_2") }}', "{{ key('A') }} {{ key(\"A\") }}"]}))
         nodes = [{'type': 'action', 'config': {'tool': 't1'}}, {'type': 'ai_agent', 'config': {'tools': ['t2']}},
-                 {'type': 'suggest', 'config': {'proposed_action': {'tool': 't3'}}}, 'junk']
-        self.assertEqual(['t0', 't1', 't2', 't3'], ai_workflows_portable_tools(nodes, ['t0']))
+                 {'type': 'suggest', 'config': {'proposed_action': {'tool': 't3'}}},
+                 {'type': 'suggest', 'config': {'actions': [{'tool': 't4'}, {'tool': 't5'}, 'junk']}}, 'junk']
+        self.assertEqual(['t0', 't1', 't2', 't3', 't4', 't5'], ai_workflows_portable_tools(nodes, ['t0']))
 
 
 class TestsAuthoringGuide(TestCase):

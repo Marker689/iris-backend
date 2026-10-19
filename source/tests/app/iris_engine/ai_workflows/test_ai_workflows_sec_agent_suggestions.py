@@ -107,6 +107,25 @@ class TestsSuggestionCreation(TestCase):
         self.assertEqual('Open case (https://evil.example/x)', suggestion.title)
         self.assertEqual('See img (http://evil.example/p.png)', suggestion.body)
 
+    def test_bundled_actions_should_be_numbered_pending_and_neutralised(self):
+        actions = [{'label': '[Save](https://evil.example)', 'tool': 'iris_case_notes_create', 'arguments': {'a': 1}},
+                   {'tool': 'iris_cases_update'}, 'junk', {'label': 'No tool'}]
+        suggestion = ai_workflows_suggestions_create(_run(), None, title='Review', proposed_actions=actions,
+                                                     proposed_action={'tool': 'ignored'})
+        self.assertIsNone(suggestion.proposed_action)
+        self.assertEqual([
+            {'id': 1, 'label': 'Save (https://evil.example)', 'tool': 'iris_case_notes_create', 'arguments': {'a': 1},
+             'status': 'pending', 'tool_call_id': None, 'error': None},
+            {'id': 2, 'label': 'iris_cases_update', 'tool': 'iris_cases_update', 'arguments': {},
+             'status': 'pending', 'tool_call_id': None, 'error': None},
+        ], suggestion.proposed_actions)
+
+    def test_bundle_should_hold_ten_actions_at_most(self):
+        with self.assertRaises(AiWorkflowSuggestionLimitError):
+            ai_workflows_suggestions_create(_run(), None, title='Many',
+                                            proposed_actions=[{'tool': 'iris_cases_update'}] * 11)
+        self.assertEqual([], self.added)
+
     def test_dry_run_suggestion_should_go_to_whoever_started_it(self):
         suggestion = ai_workflows_suggestions_create(_run(), None, title='Would close')
         self.assertEqual('dry_run', suggestion.status)
@@ -132,9 +151,9 @@ class TestsSuggestionCreation(TestCase):
 
 class TestsSuggestionPublication(TestCase):
 
-    def _publish(self, status):
-        suggestion = SimpleNamespace(id=42, title='Close the alert', body=None, status=status,
-                                     audience_user_ids=[9], case_id=None)
+    def _publish(self, status, proposed_actions=None, body=None):
+        suggestion = SimpleNamespace(id=42, title='Close the alert', body=body, status=status,
+                                     proposed_actions=proposed_actions, audience_user_ids=[9], case_id=None)
         with patch('app.iris_engine.notifications.service.notify_many') as notify, \
                 patch(f'{_SUGGESTIONS}.ai_workflows_suggestions_emit') as emit, \
                 patch(f'{_SUGGESTIONS}.ai_workflows_suggestions_serialize', return_value={}), \
@@ -156,6 +175,11 @@ class TestsSuggestionPublication(TestCase):
         self.assertEqual('/suggestions?id=42', notify.call_args.kwargs['link'])
         emit.assert_called_once()
         hook.assert_not_called()
+
+    def test_notification_should_list_the_bundled_actions_first(self):
+        actions = [{'label': 'Save the review', 'tool': 't1'}, {'label': '', 'tool': 't2'}]
+        notify, _emit, _hook = self._publish('open', actions, 'Long reasoning')
+        self.assertEqual('2 proposed actions: Save the review; t2\n\nLong reasoning', notify.call_args.kwargs['body'])
 
 
 class TestsNeutraliseLinks(TestCase):

@@ -50,6 +50,8 @@ from app.models.ai_workflows import ENTITY_ALERT
 from app.models.ai_workflows import ENTITY_CASE
 from app.models.ai_workflows import ENTITY_TYPES
 from app.models.ai_workflows import ENTITY_WAR_ROOM
+from app.models.ai_workflows import MAX_SUGGESTION_ACTIONS
+from app.models.ai_workflows import SUGGESTION_ACTION_PENDING
 from app.models.ai_workflows import SUGGESTION_DRY_RUN
 from app.models.ai_workflows import SUGGESTION_GENERIC_ACTION
 from app.models.ai_workflows import SUGGESTION_INFO_REQUEST
@@ -191,6 +193,28 @@ def _confidence(value):
     return min(max(value, 0.0), 1.0)
 
 
+def _actions(actions):
+    """The actions of a bundled suggestion, numbered from 1 and pending;
+    None when there are none."""
+    bundle = []
+    for action in actions or []:
+        if not isinstance(action, dict) or not action.get('tool'):
+            continue
+        if len(bundle) >= MAX_SUGGESTION_ACTIONS:
+            raise AiWorkflowSuggestionLimitError(f'A suggestion proposes at most {MAX_SUGGESTION_ACTIONS} actions')
+        label = ai_workflows_suggestions_neutralise_links(str(action.get('label') or '').strip())[:255]
+        bundle.append({
+            'id': len(bundle) + 1,
+            'label': label or action['tool'],
+            'tool': action['tool'],
+            'arguments': action.get('arguments') or {},
+            'status': SUGGESTION_ACTION_PENDING,
+            'tool_call_id': None,
+            'error': None,
+        })
+    return bundle or None
+
+
 def _audience(run, entity_type, entity_id) -> list:
     snapshot = run.definition_snapshot or {}
     if run.is_dry_run:
@@ -236,8 +260,11 @@ def ai_workflows_suggestions_create(run, step, **fields) -> AiSuggestion:
     related_refs, confidence, severity, status, wait_id`, and optionally
     `audience_user_ids` to address it to those users rather than to the
     workflow's suggestion audience (not for a dry run, which only goes
-    to whoever started it). Raises AiWorkflowSuggestionLimitError past
-    `MAX_SUGGESTIONS_PER_RUN`."""
+    to whoever started it). `proposed_actions` (`[{label, tool,
+    arguments}]`) bundles several actions in one suggestion; it replaces
+    `proposed_action`. Raises AiWorkflowSuggestionLimitError past
+    `MAX_SUGGESTIONS_PER_RUN` (a bundle counts once) or
+    `MAX_SUGGESTION_ACTIONS`."""
     kind = fields.get('kind') if fields.get('kind') in SUGGESTION_KINDS else SUGGESTION_GENERIC_ACTION
     _check_limit(run, kind)
     status = fields.get('status') or SUGGESTION_OPEN
@@ -249,6 +276,7 @@ def ai_workflows_suggestions_create(run, step, **fields) -> AiSuggestion:
     title = ai_workflows_suggestions_neutralise_links(
         (str(fields.get('title') or '').strip() or 'AI workflow suggestion'))[:1000]
     body = ai_workflows_suggestions_neutralise_links(fields.get('body') or None)
+    actions = _actions(fields.get('proposed_actions'))
 
     suggestion = AiSuggestion(
         run_id=run.id,
@@ -264,7 +292,8 @@ def ai_workflows_suggestions_create(run, step, **fields) -> AiSuggestion:
         kind=kind,
         title=title,
         body=body or None,
-        proposed_action=fields.get('proposed_action') or None,
+        proposed_action=None if actions else fields.get('proposed_action') or None,
+        proposed_actions=actions,
         form_schema=fields.get('form_schema') or None,
         related_refs=_verified_refs(run, fields.get('related_refs')) or None,
         confidence=_confidence(fields.get('confidence')),
@@ -291,12 +320,17 @@ def _publish_created(run, suggestion):
 
     dry_run = suggestion.status == SUGGESTION_DRY_RUN
     prefix = 'Suggestion (dry run)' if dry_run else 'Suggestion'
+    body = suggestion.body or ''
+    if suggestion.proposed_actions:
+        # The actions first: the body may be cut
+        labels = '; '.join(a.get('label') or a.get('tool') for a in suggestion.proposed_actions)
+        body = f'{len(suggestion.proposed_actions)} proposed actions: {labels}' + (f'\n\n{body}' if body else '')
     try:
         notify_many(
             suggestion.audience_user_ids or [],
             'ai_suggestion',
             f'{prefix}: {suggestion.title}'[:250],
-            body=(suggestion.body or '')[:1000] or None,
+            body=body[:1000] or None,
             link=ai_workflows_suggestions_inbox_link(suggestion.id),
             source_type='ai_suggestion',
             source_id=suggestion.id,
@@ -327,6 +361,7 @@ def ai_workflows_suggestions_serialize(suggestion) -> dict:
     if form_schema is not None and not isinstance(form_schema.get('fields'), list):
         form_schema = {**form_schema, 'fields': []}
     action = suggestion.proposed_action if isinstance(suggestion.proposed_action, dict) else None
+    actions = suggestion.proposed_actions if isinstance(suggestion.proposed_actions, list) else None
     return {
         'id': suggestion.id,
         'uuid': str(suggestion.uuid) if suggestion.uuid else None,
@@ -343,6 +378,7 @@ def ai_workflows_suggestions_serialize(suggestion) -> dict:
         'title': suggestion.title,
         'body': suggestion.body,
         'proposed_action': action,
+        'proposed_actions': actions,
         'form_schema': form_schema,
         'related_refs': suggestion.related_refs or [],
         'confidence': suggestion.confidence,
@@ -354,7 +390,8 @@ def ai_workflows_suggestions_serialize(suggestion) -> dict:
         'resolution_note': suggestion.resolution_note,
         'answer': suggestion.answer,
         'result': suggestion.result,
-        'can_accept': suggestion.status == SUGGESTION_OPEN and suggestion.kind != SUGGESTION_INFO_REQUEST,
+        'can_accept': suggestion.status == SUGGESTION_OPEN and suggestion.kind != SUGGESTION_INFO_REQUEST and (
+            actions is None or any(a.get('status') == SUGGESTION_ACTION_PENDING for a in actions)),
     }
 
 

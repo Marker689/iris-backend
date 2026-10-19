@@ -40,6 +40,9 @@ from app.iris_engine.ai_workflows.tools import CLASSIFICATION_READ
 from app.iris_engine.ai_workflows.tools import CLASSIFICATION_WRITE
 from app.models.ai_workflows import EXEC_ACCEPTED_BY_USER
 from app.models.ai_workflows import SUGGESTION_ACCEPTED
+from app.models.ai_workflows import SUGGESTION_ACTION_DONE
+from app.models.ai_workflows import SUGGESTION_ACTION_PENDING
+from app.models.ai_workflows import SUGGESTION_ACTION_SKIPPED
 from app.models.ai_workflows import SUGGESTION_DISMISSED
 from app.models.ai_workflows import SUGGESTION_EXPIRED
 from app.models.ai_workflows import SUGGESTION_GENERIC_ACTION
@@ -68,6 +71,7 @@ def _suggestion(suggestion_id=1, kind=SUGGESTION_GENERIC_ACTION, wait_id=None, *
         'title': 'Tag the alert',
         'status': SUGGESTION_OPEN,
         'proposed_action': {'tool': 'update_alert', 'arguments': {'alert_id': 4, 'tags': 'phish'}},
+        'proposed_actions': None,
         'form_schema': _FORM if kind == SUGGESTION_INFO_REQUEST else None,
         'wait_id': wait_id,
         'run': _RUN,
@@ -287,6 +291,114 @@ class TestsDismiss(_SuggestionsTestCase):
         ai_suggestions_dismiss(1, _ANALYST)
         with self.assertRaises(BusinessProcessingError):
             ai_suggestions_dismiss(1, _ANALYST)
+
+
+def _bundle(*statuses):
+    """A bundle of actions on alert 4, pending unless told otherwise."""
+    statuses = statuses or (SUGGESTION_ACTION_PENDING,) * 3
+    return [{'id': index + 1, 'label': f'Action {index + 1}', 'tool': f'tool_{index + 1}',
+             'arguments': {'alert_id': 4, 'step': index + 1}, 'status': status, 'tool_call_id': None, 'error': None}
+            for index, status in enumerate(statuses)]
+
+
+class TestsAcceptBundle(_SuggestionsTestCase):
+
+    def _bundled(self, *statuses, **overrides):
+        return self._add(_suggestion(proposed_action=None, proposed_actions=_bundle(*statuses), **overrides))
+
+    def _statuses(self, suggestion):
+        return [a['status'] for a in suggestion.proposed_actions]
+
+    def test_accept_should_run_every_pending_action_in_order(self):
+        suggestion = self._bundled()
+        self.execute.side_effect = [{'ok': True, 'result': {'n': n}, 'error': None, 'tool_call_id': 80 + n}
+                                    for n in (1, 2, 3)]
+        ai_suggestions_accept(1, _ANALYST)
+        self.assertEqual(['tool_1', 'tool_2', 'tool_3'], [c.args[1] for c in self.execute.call_args_list])
+        self.assertTrue(all(c.args[0] == _ANALYST for c in self.execute.call_args_list))
+        self.assertEqual([SUGGESTION_ACTION_DONE] * 3, self._statuses(suggestion))
+        self.assertEqual([81, 82, 83], [a['tool_call_id'] for a in suggestion.proposed_actions])
+        self.assertEqual({'actions': {'1': {'n': 1}, '2': {'n': 2}, '3': {'n': 3}}}, suggestion.result)
+        self.assertEqual(SUGGESTION_ACCEPTED, suggestion.status)
+
+    def test_accept_should_run_only_the_selected_actions_and_skip_the_rest(self):
+        suggestion = self._bundled()
+        ai_suggestions_accept(1, _ANALYST, actions=[3, '1'])
+        self.assertEqual(['tool_1', 'tool_3'], [c.args[1] for c in self.execute.call_args_list])
+        self.assertEqual([SUGGESTION_ACTION_DONE, SUGGESTION_ACTION_SKIPPED, SUGGESTION_ACTION_DONE],
+                         self._statuses(suggestion))
+        self.assertEqual(SUGGESTION_ACCEPTED, suggestion.status)
+
+    def test_accept_should_tell_the_run_which_actions_ran(self):
+        wait = self._add_wait()
+        self._bundled(wait_id=wait.id)
+        ai_suggestions_accept(1, _ANALYST, actions=[2])
+        payload = self.resume.call_args.args[1]
+        self.assertTrue(payload['accepted'])
+        self.assertEqual([SUGGESTION_ACTION_SKIPPED, SUGGESTION_ACTION_DONE, SUGGESTION_ACTION_SKIPPED],
+                         [a['status'] for a in payload['actions']])
+        self.assertNotIn('arguments', payload['actions'][0])
+        self.assertNotIn('result', payload)
+
+    def test_failure_should_stop_keep_the_done_actions_and_reopen(self):
+        suggestion = self._bundled()
+        self.execute.side_effect = [{'ok': True, 'result': {'n': 1}, 'error': None, 'tool_call_id': 81},
+                                    {'ok': False, 'result': None, 'error': 'denied', 'tool_call_id': 82}]
+        with self.assertRaises(BusinessProcessingError) as context:
+            ai_suggestions_accept(1, _ANALYST)
+        self.assertEqual(2, self.execute.call_count)
+        self.assertEqual({'tool_call_id': 82, 'action_id': 2, 'done': [1]}, context.exception.get_data())
+        self.assertIn('Action 2', str(context.exception))
+        self.assertEqual([SUGGESTION_ACTION_DONE, SUGGESTION_ACTION_PENDING, SUGGESTION_ACTION_PENDING],
+                         self._statuses(suggestion))
+        self.assertEqual('denied', suggestion.proposed_actions[1]['error'])
+        self.assertEqual(SUGGESTION_OPEN, suggestion.status)
+        self.assertIsNone(suggestion.resolved_by_id)
+        # Results go to the analyst once the whole accept succeeded
+        self.assertIsNone(suggestion.result)
+        self.resume.assert_not_called()
+        self.hook.assert_not_called()
+        self.emit.assert_called()
+
+    def test_retry_should_only_offer_what_is_still_pending(self):
+        suggestion = self._bundled(SUGGESTION_ACTION_DONE, SUGGESTION_ACTION_PENDING, SUGGESTION_ACTION_PENDING)
+        with self.assertRaises(BusinessProcessingError) as context:
+            ai_suggestions_accept(1, _ANALYST, actions=[1])
+        self.assertIn('1', context.exception.get_data())
+        self.execute.assert_not_called()
+        ai_suggestions_accept(1, _ANALYST)
+        self.assertEqual(['tool_2', 'tool_3'], [c.args[1] for c in self.execute.call_args_list])
+        self.assertEqual([SUGGESTION_ACTION_DONE] * 3, self._statuses(suggestion))
+
+    def test_invalid_selection_should_be_refused_before_anything_runs(self):
+        suggestion = self._bundled()
+        for selection in ([], [9], 'all', [True], [None]):
+            with self.subTest(selection=selection), self.assertRaises(BusinessProcessingError):
+                ai_suggestions_accept(1, _ANALYST, actions=selection)
+        self.execute.assert_not_called()
+        self.assertEqual(SUGGESTION_OPEN, suggestion.status)
+
+    def test_an_action_outside_the_suggestion_should_block_the_whole_accept(self):
+        suggestion = self._add(_suggestion(proposed_action=None, proposed_actions=_bundle()))
+        suggestion.proposed_actions[2]['arguments'] = {'alert_id': 5}
+        with self.assertRaises(BusinessProcessingError):
+            ai_suggestions_accept(1, _ANALYST)
+        self.execute.assert_not_called()
+        self.assertEqual(SUGGESTION_OPEN, suggestion.status)
+
+    def test_selection_on_a_single_action_suggestion_should_be_refused(self):
+        self._add(_suggestion())
+        with self.assertRaises(BusinessProcessingError):
+            ai_suggestions_accept(1, _ANALYST, actions=[1])
+        self.execute.assert_not_called()
+
+    def test_dismiss_should_skip_the_pending_actions(self):
+        suggestion = self._bundled(SUGGESTION_ACTION_DONE, SUGGESTION_ACTION_PENDING, SUGGESTION_ACTION_PENDING)
+        ai_suggestions_dismiss(1, _ANALYST)
+        self.assertEqual([SUGGESTION_ACTION_DONE, SUGGESTION_ACTION_SKIPPED, SUGGESTION_ACTION_SKIPPED],
+                         self._statuses(suggestion))
+        self.assertEqual(SUGGESTION_DISMISSED, suggestion.status)
+        self.execute.assert_not_called()
 
 
 class TestsAnswer(_SuggestionsTestCase):

@@ -31,6 +31,9 @@ id its arguments name (case, alert, war room, cluster, customer) must be
 the suggestion's own entity or one of its related refs. The row is
 locked and flipped out of `open` before the tool runs, so two concurrent
 accepts can never both execute; a failing tool puts it back to `open`.
+A bundled suggestion (`proposed_actions`) runs the actions the analyst
+selected, in order, and stops at the first failure: the actions already
+run stay done and the suggestion is open again for the rest.
 
 What the analyst did (the action result, the answer) is shown to them
 only; the rest of the audience sees who resolved it. Resolving needs
@@ -72,6 +75,9 @@ from app.models.ai_workflows import ENTITY_TYPES
 from app.models.ai_workflows import ENTITY_WAR_ROOM
 from app.models.ai_workflows import EXEC_ACCEPTED_BY_USER
 from app.models.ai_workflows import SUGGESTION_ACCEPTED
+from app.models.ai_workflows import SUGGESTION_ACTION_DONE
+from app.models.ai_workflows import SUGGESTION_ACTION_PENDING
+from app.models.ai_workflows import SUGGESTION_ACTION_SKIPPED
 from app.models.ai_workflows import SUGGESTION_DISMISSED
 from app.models.ai_workflows import SUGGESTION_DRY_RUN
 from app.models.ai_workflows import SUGGESTION_EXPIRED
@@ -452,7 +458,40 @@ def ai_suggestions_get(suggestion_id, user_id, scope_mask=None) -> dict:
 
 # ---- Resolution ------------------------------------------------------------
 
-def ai_suggestions_accept(suggestion_id, user_id, note=None, scope_mask=None) -> dict:
+def _claim(suggestion, user_id, note):
+    """Flip the locked row out of `open` and commit, before any tool
+    runs: the tool execution commits on its own, which would release the
+    lock while still `open`."""
+    suggestion.status = SUGGESTION_ACCEPTED
+    suggestion.resolved_by_id = user_id
+    suggestion.resolved_at = ai_workflows_db_utcnow()
+    suggestion.resolution_note = note
+    ai_workflows_db_commit()
+
+
+def _unclaim(suggestion):
+    suggestion.status = SUGGESTION_OPEN
+    suggestion.resolved_by_id = None
+    suggestion.resolved_at = None
+    suggestion.resolution_note = None
+
+
+def _execute(suggestion, user_id, tool, arguments) -> dict:
+    try:
+        # Runs as the accepting analyst; the identity keeps the scope
+        # of the API key this request authenticated with
+        return ai_workflows_tools_execute(
+            user_id, tool, dict(arguments),
+            run=suggestion.run, suggestion=suggestion, execution_mode=EXEC_ACCEPTED_BY_USER,
+        )
+    except Exception as e:
+        logger.exception(f'Accepting AI suggestion #{suggestion.id} failed')
+        return {'ok': False, 'result': None, 'error': str(e) or e.__class__.__name__, 'tool_call_id': None}
+
+
+def ai_suggestions_accept(suggestion_id, user_id, note=None, scope_mask=None, actions=None) -> dict:
+    """Accept a suggestion. `actions`: the ids of the actions of a
+    bundled suggestion to run (default: every pending one)."""
     ai_workflows_require_enabled()
     note = _note(note)
     suggestion = _get_visible(suggestion_id, user_id, lock=True, scope_mask=scope_mask)
@@ -460,6 +499,12 @@ def ai_suggestions_accept(suggestion_id, user_id, note=None, scope_mask=None) ->
     if suggestion.kind == SUGGESTION_INFO_REQUEST:
         ai_workflows_db_rollback()
         raise BusinessProcessingError('An information request is answered, not accepted')
+    if _bundle(suggestion):
+        return _accept_bundle(suggestion, user_id, note, actions)
+    if actions is not None:
+        ai_workflows_db_rollback()
+        raise BusinessProcessingError('This suggestion has no actions to select',
+                                      data={'actions': ['Only a suggestion with several actions takes a selection']})
     action = suggestion.proposed_action if isinstance(suggestion.proposed_action, dict) else None
     tool = None
     arguments = None
@@ -470,31 +515,13 @@ def ai_suggestions_accept(suggestion_id, user_id, note=None, scope_mask=None) ->
             ai_workflows_db_rollback()
             raise
 
-    # Claim the row before anything else commits: the tool execution
-    # commits on its own, which would release the lock while still `open`
-    suggestion.status = SUGGESTION_ACCEPTED
-    suggestion.resolved_by_id = user_id
-    suggestion.resolved_at = ai_workflows_db_utcnow()
-    suggestion.resolution_note = note
-    ai_workflows_db_commit()
+    _claim(suggestion, user_id, note)
 
     if tool is not None:
-        try:
-            # Runs as the accepting analyst; the identity keeps the scope
-            # of the API key this request authenticated with
-            result = ai_workflows_tools_execute(
-                user_id, tool, dict(arguments),
-                run=suggestion.run, suggestion=suggestion, execution_mode=EXEC_ACCEPTED_BY_USER,
-            )
-        except Exception as e:
-            logger.exception(f'Accepting AI suggestion #{suggestion.id} failed')
-            result = {'ok': False, 'result': None, 'error': str(e) or e.__class__.__name__, 'tool_call_id': None}
+        result = _execute(suggestion, user_id, tool, arguments)
         if not result.get('ok'):
             ai_workflows_db_rollback()
-            suggestion.status = SUGGESTION_OPEN
-            suggestion.resolved_by_id = None
-            suggestion.resolved_at = None
-            suggestion.resolution_note = None
+            _unclaim(suggestion)
             suggestion.result_tool_call_id = result.get('tool_call_id')
             ai_workflows_db_commit()
             _track(suggestion, f'accepting failed: {tool}: {result.get("error")}', user_id)
@@ -506,19 +533,128 @@ def ai_suggestions_accept(suggestion_id, user_id, note=None, scope_mask=None) ->
 
     tool_text = f' ({tool}, tool call #{suggestion.result_tool_call_id})' if tool else ''
     _track(suggestion, f'Suggestion "{suggestion.title}" accepted{tool_text}', user_id)
+    return _accepted(suggestion, user_id, note, {'tool_call_id': suggestion.result_tool_call_id})
+
+
+def _accepted(suggestion, user_id, note, payload):
     users = ai_workflows_db_user_summary([user_id])
     # The action result stays with the analyst: the run (and so the
     # workflow owner) learns that it was accepted, not what it returned
     expired = _resume_wait(suggestion, {
         'accepted': True,
         'suggestion_id': suggestion.id,
-        'tool_call_id': suggestion.result_tool_call_id,
+        **payload,
         'accepted_by': users.get(user_id),
         'note': note,
     }, user_id, None)
     data = _publish(suggestion, 'on_postload_ai_suggestion_accept', user_id)
     _publish_expired(expired)
     return data
+
+
+# ---- Bundled actions -------------------------------------------------------
+
+def _bundle(suggestion) -> list:
+    """The actions of a bundled suggestion, [] for the others."""
+    actions = suggestion.proposed_actions if isinstance(suggestion.proposed_actions, list) else []
+    return [a for a in actions if isinstance(a, dict)]
+
+
+def _set_action(suggestion, action_id, **values):
+    """Update one action; a new list, so the JSONB column is saved."""
+    suggestion.proposed_actions = [{**a, **values} if a.get('id') == action_id else dict(a)
+                                   for a in _bundle(suggestion)]
+
+
+def _skip_pending(suggestion):
+    suggestion.proposed_actions = [
+        {**a, 'status': SUGGESTION_ACTION_SKIPPED} if a.get('status') == SUGGESTION_ACTION_PENDING else dict(a)
+        for a in _bundle(suggestion)
+    ]
+
+
+def _selected_actions(bundle, selected) -> list:
+    """The pending actions to run: `selected` (action ids) or all."""
+    pending = [a for a in bundle if a.get('status') == SUGGESTION_ACTION_PENDING]
+    if selected is None:
+        chosen = pending
+    else:
+        if not isinstance(selected, list) or any(_as_id(i) is None for i in selected):
+            raise BusinessProcessingError('Invalid actions', data={'actions': ['A list of action ids']})
+        ids = {_as_id(i) for i in selected}
+        by_id = {a.get('id'): a for a in bundle}
+        errors = {}
+        for action_id in sorted(ids):
+            if action_id not in by_id:
+                errors[str(action_id)] = ['Unknown action']
+            elif by_id[action_id].get('status') != SUGGESTION_ACTION_PENDING:
+                errors[str(action_id)] = [f'This action is already {by_id[action_id].get("status")}']
+        if errors:
+            raise BusinessProcessingError('Invalid actions', data=errors)
+        chosen = [a for a in pending if a.get('id') in ids]
+    if not chosen:
+        raise BusinessProcessingError('Select at least one action', data={'actions': ['Select at least one action']})
+    return chosen
+
+
+def _action_summary(action) -> dict:
+    return {key: action.get(key) for key in ('id', 'label', 'tool', 'status', 'tool_call_id')}
+
+
+def _accept_bundle(suggestion, user_id, note, selected) -> dict:
+    """Run the selected actions in order, each as the accepting analyst.
+    The first failure stops: the actions already run stay done, the
+    failing one keeps its error and the suggestion goes back to `open`.
+    When all succeed, the actions not selected are skipped."""
+    try:
+        chosen = _selected_actions(_bundle(suggestion), selected)
+        checked = [(action, *ai_suggestions_check_action(suggestion, action)) for action in chosen]
+    except BusinessProcessingError:
+        ai_workflows_db_rollback()
+        raise
+
+    _claim(suggestion, user_id, note)
+
+    # Kept for the analyst only once the whole accept succeeded:
+    # `result` is shown to the resolver, and a failure unsets it
+    results = {}
+    done = []
+    for action, tool, arguments in checked:
+        label = action.get('label') or tool
+        result = _execute(suggestion, user_id, tool, arguments)
+        if not result.get('ok'):
+            error = str(result.get('error'))
+            ai_workflows_db_rollback()
+            _unclaim(suggestion)
+            _set_action(suggestion, action['id'], error=error[:1000], tool_call_id=result.get('tool_call_id'))
+            suggestion.result_tool_call_id = result.get('tool_call_id')
+            ai_workflows_db_commit()
+            _track(suggestion, f'accepting failed: "{label}" ({tool}): {error}', user_id)
+            if done:
+                try:
+                    ai_workflows_suggestions_emit(_Redacted(suggestion), 'updated')
+                except Exception:
+                    logger.exception(f'Socket update failed for AI suggestion #{suggestion.id}')
+            raise BusinessProcessingError(f'"{label}" failed: {error}',
+                                          data={'tool_call_id': result.get('tool_call_id'),
+                                                'action_id': action['id'], 'done': done})
+        _set_action(suggestion, action['id'], status=SUGGESTION_ACTION_DONE, error=None,
+                    tool_call_id=result.get('tool_call_id'))
+        suggestion.result_tool_call_id = result.get('tool_call_id')
+        ai_workflows_db_commit()
+        results[str(action['id'])] = result.get('result')
+        done.append(action['id'])
+
+    _skip_pending(suggestion)
+    suggestion.result = {'actions': results}
+    ai_workflows_db_commit()
+    labels = ', '.join(f'"{a.get("label") or a.get("tool")}"' for a in chosen)
+    _track(suggestion, f'Suggestion "{suggestion.title}" accepted: {len(chosen)} of '
+                       f'{len(_bundle(suggestion))} actions run ({labels})', user_id)
+    return _accepted(suggestion, user_id, note, {
+        'tool_call_id': suggestion.result_tool_call_id,
+        'actions': [_action_summary(a) for a in _bundle(suggestion)],
+    })
 
 
 def ai_suggestions_dismiss(suggestion_id, user_id, note=None, scope_mask=None) -> dict:
@@ -528,6 +664,8 @@ def ai_suggestions_dismiss(suggestion_id, user_id, note=None, scope_mask=None) -
     if suggestion.status == SUGGESTION_DRY_RUN:
         return _dismiss_dry_run(suggestion, user_id, note)
     _require_open(suggestion)
+    if _bundle(suggestion):
+        _skip_pending(suggestion)
     suggestion.status = SUGGESTION_DISMISSED
     suggestion.resolved_by_id = user_id
     suggestion.resolved_at = ai_workflows_db_utcnow()

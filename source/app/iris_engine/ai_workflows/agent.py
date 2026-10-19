@@ -86,6 +86,7 @@ from app.models.ai_workflows import EXEC_ALLOWLISTED_WRITE
 from app.models.ai_workflows import EXEC_AUTO_READ
 from app.models.ai_workflows import EXEC_DENIED
 from app.models.ai_workflows import EXEC_SUGGESTED
+from app.models.ai_workflows import MAX_SUGGESTION_ACTIONS
 from app.models.ai_workflows import RUN_ACTIVE_STATUSES
 from app.models.ai_workflows import SUGGESTION_GENERIC_ACTION
 from app.models.ai_workflows import SUGGESTION_KINDS
@@ -489,6 +490,22 @@ def _suggestion_tool_schema() -> dict:
                 },
                 'required': ['tool'],
             },
+            'proposed_actions': {
+                'type': 'array',
+                'description': f'Instead of proposed_action: several tool calls (at most {MAX_SUGGESTION_ACTIONS}) '
+                               'the analyst accepts all at once or a few of them. Prefer one suggestion with '
+                               'several actions to several suggestions about the same thing.',
+                'maxItems': MAX_SUGGESTION_ACTIONS,
+                'items': {
+                    'type': 'object',
+                    'properties': {
+                        'label': {'type': 'string', 'description': 'What the action does, in a few words.'},
+                        'tool': {'type': 'string'},
+                        'arguments': {'type': 'object'},
+                    },
+                    'required': ['label', 'tool'],
+                },
+            },
         },
         'required': ['kind', 'title'],
     }
@@ -830,8 +847,9 @@ class _Agent:
 
     # ---- tools ---------------------------------------------------------------
 
-    def _suggest(self, fields, proposed_action=None):
-        suggestion = ai_workflows_suggestions_create(self.run, self.step, proposed_action=proposed_action, **fields)
+    def _suggest(self, fields, proposed_action=None, proposed_actions=None):
+        suggestion = ai_workflows_suggestions_create(self.run, self.step, proposed_action=proposed_action,
+                                                     proposed_actions=proposed_actions, **fields)
         self.suggestion_ids.append(suggestion.id)
         return suggestion
 
@@ -856,6 +874,25 @@ class _Agent:
             return f'proposed_action refused: {e}', None
         return None, {'tool': tool, 'arguments': arguments}
 
+    def _proposed_actions(self, actions):
+        """(error, bundle) of a model's `proposed_actions`, each action
+        checked like `proposed_action`."""
+        if actions in (None, []):
+            return None, None
+        if not isinstance(actions, list):
+            return 'proposed_actions must be a list', None
+        if len(actions) > MAX_SUGGESTION_ACTIONS:
+            return f'proposed_actions holds at most {MAX_SUGGESTION_ACTIONS} actions', None
+        bundle = []
+        for index, action in enumerate(actions):
+            if not isinstance(action, dict) or not action.get('tool'):
+                return f'proposed_actions[{index}] needs a tool', None
+            error, proposed = self._proposed_action(action)
+            if error:
+                return f'proposed_actions[{index}]: {error}', None
+            bundle.append({**proposed, 'label': str(action.get('label') or '')[:255]})
+        return None, bundle
+
     def _propose(self, arguments):
         fields = {
             'kind': arguments.get('kind') if arguments.get('kind') in SUGGESTION_KINDS else SUGGESTION_GENERIC_ACTION,
@@ -870,8 +907,13 @@ class _Agent:
         error, proposed = self._proposed_action(arguments.get('proposed_action'))
         if error:
             return True, error
+        error, bundle = self._proposed_actions(arguments.get('proposed_actions'))
+        if error:
+            return True, error
+        if bundle and proposed:
+            return True, 'Use proposed_action or proposed_actions, not both'
         try:
-            suggestion = self._suggest(fields, self.ctx.mask(proposed))
+            suggestion = self._suggest(fields, self.ctx.mask(proposed), self.ctx.mask(bundle))
         except AiWorkflowSuggestionLimitError as e:
             return True, f'{e}. Do not propose anything else.'
         return False, f'Suggestion #{suggestion.id} recorded for analyst review.'

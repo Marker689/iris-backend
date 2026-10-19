@@ -273,9 +273,9 @@ _CATALOGUE = (
     _node_spec(NODE_FIND_WAR_ROOM_TASKS, 'Find war room tasks', 'Lists the tasks of the war room created '
                'since the last run, or in the last minutes.', 'iris', (PORT_FOUND, PORT_NONE),
                {'since': 'last_run', 'minutes': 60}),
-    _node_spec(NODE_SUGGEST, 'Suggest', 'Proposes something to the analysts, optionally with an action they '
-               'accept in one click.', 'human', (PORT_OUT,),
-               {'kind': SUGGESTION_GENERIC_ACTION, 'title': '', 'body': '', 'proposed_action': None,
+    _node_spec(NODE_SUGGEST, 'Suggest', 'Proposes something to the analysts, optionally with actions they '
+               'accept in one click, all or a few of them.', 'human', (PORT_OUT,),
+               {'kind': SUGGESTION_GENERIC_ACTION, 'title': '', 'body': '', 'proposed_action': None, 'actions': [],
                 'confidence': None, 'severity': None, 'audience': AUDIENCE_ENTITY, 'user_ids': []}),
     _node_spec(NODE_ACTION, 'Action', 'Runs an IRIS tool. Write tools must be on the workflow allowlist.',
                'iris', (PORT_OUT, PORT_ERROR), {'tool': '', 'arguments': {}}),
@@ -951,16 +951,36 @@ def _proposed_action(ctx, action, template):
     return ctx.mask({'tool': tool, 'arguments': ai_workflows_agent_pin_arguments(ctx.run, tool, arguments)})
 
 
+def _proposed_actions(ctx, actions, template):
+    """The actions of a bundled suggestion whose `when` holds (no `when`:
+    always), each `{label, tool, arguments}`."""
+    bundle = []
+    for action in actions or []:
+        if not isinstance(action, dict) or not action.get('tool'):
+            continue
+        when = str(action.get('when') or '').strip()
+        if when and not ai_workflows_context_eval_expression(when, template):
+            continue
+        proposed = _proposed_action(ctx, action, template)
+        label = ai_workflows_context_render(action.get('label') or '', template, 'actions.label')
+        bundle.append({**proposed, 'label': ctx.mask(label).strip()})
+    return bundle
+
+
 def _suggest(ctx, config):
     template = ctx.template_context()
     fields = {
         'kind': config.get('kind') or SUGGESTION_GENERIC_ACTION,
         'title': ctx.mask(ai_workflows_context_render(config.get('title') or '', template, 'title')).strip(),
         'body': ctx.mask(ai_workflows_context_render(config.get('body') or '', template, 'body')).strip() or None,
-        'proposed_action': _proposed_action(ctx, config.get('proposed_action'), template),
         'confidence': config.get('confidence'),
         'severity': config.get('severity'),
     }
+    actions = _proposed_actions(ctx, config.get('actions'), template) if config.get('actions') else None
+    if actions is None:
+        fields['proposed_action'] = _proposed_action(ctx, config.get('proposed_action'), template)
+    else:
+        fields['proposed_actions'] = actions
     # A dry run only ever goes to whoever started it
     users, note = (None, None) if ctx.run.is_dry_run else _addressed_audience(ctx, config, 'suggestion')
     if users:
@@ -968,6 +988,8 @@ def _suggest(ctx, config):
     suggestion = ai_workflows_suggestions_create(ctx.run, ctx.step, **fields)
     # Who it was addressed to, so the run shows where it went
     output = {'suggestion_id': suggestion.id, 'audience': list(getattr(suggestion, 'audience_user_ids', None) or [])}
+    if actions is not None:
+        output['actions'] = [action['label'] or action['tool'] for action in actions]
     if note:
         output['note'] = note
     return NodeResult(output=output)
