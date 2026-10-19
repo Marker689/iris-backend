@@ -127,6 +127,13 @@ class CaseChatConversation(db.Model):
     queued_user_texts = Column(JSONB, nullable=False, default=list,
                                server_default=text("'[]'::jsonb"))
 
+    # The analyst's opt-in to run writes without the Approve/Deny card.
+    # Only honoured while the effective chatbot config allows it
+    # (`allow_auto_approve_write_tools`), so an admin turning that off
+    # puts every conversation back to asking.
+    auto_approve_write_tools = Column(Boolean, nullable=False, default=False,
+                                      server_default=text('false'))
+
     user = relationship('User')
     # No ORM `case` relationship — same reason `UserActivity.case`
     # was left off: `Cases` may not be mapper-ready at import time in

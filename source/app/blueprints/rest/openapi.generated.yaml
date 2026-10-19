@@ -3104,8 +3104,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
     patch:
-      operationId: rename_conversation_patch
-      summary: Rename a conversation
+      operationId: update_conversation_patch
+      summary: Rename a conversation or toggle its write auto-approve
       tags:
       - CaseChat
       security:
@@ -25185,6 +25185,8 @@ components:
           type: integer
         queued_user_texts:
           type: object
+        auto_approve_write_tools:
+          type: boolean
       description: Serialize a `CaseChatConversation` row.
     CaseChatEgressAudit:
       type: object
@@ -26205,7 +26207,7 @@ components:
           type: string
         auto_execute_read_tools:
           type: boolean
-        auto_approve_write_tools:
+        allow_auto_approve_write_tools:
           type: boolean
         max_turns_per_conversation:
           type: integer
@@ -27810,7 +27812,7 @@ components:
           type: integer
         chatbot_auto_execute_read_tools:
           type: boolean
-        chatbot_auto_approve_write_tools:
+        chatbot_allow_auto_approve_write_tools:
           type: boolean
         chatbot_daily_token_budget_per_user:
           type: integer
@@ -27995,7 +27997,7 @@ components:
           type: integer
         chatbot_auto_execute_read_tools:
           type: boolean
-        chatbot_auto_approve_write_tools:
+        chatbot_allow_auto_approve_write_tools:
           type: boolean
         chatbot_daily_token_budget_per_user:
           type: integer

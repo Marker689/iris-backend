@@ -19,7 +19,7 @@ def _config(**overrides):
         max_turns_per_conversation=20,
         max_tool_calls_per_turn=10,
         auto_execute_read_tools=True,
-        auto_approve_write_tools=False,
+        allow_auto_approve_write_tools=False,
         daily_token_budget_per_user=100_000,
         daily_token_budget_org=1_000_000,
         redact_ips=False,
@@ -58,8 +58,8 @@ class TestChatbotConfig(TestCase):
         self.assertTrue(_config(auto_execute_read_tools=True).auto_execute_read_tools)
         self.assertFalse(_config(auto_execute_read_tools=False).auto_execute_read_tools)
 
-    def test_auto_approve_write_tools_stored(self):
-        self.assertTrue(_config(auto_approve_write_tools=True).auto_approve_write_tools)
+    def test_allow_auto_approve_write_tools_stored(self):
+        self.assertTrue(_config(allow_auto_approve_write_tools=True).allow_auto_approve_write_tools)
 
     def test_daily_token_budget_per_user_stored(self):
         self.assertEqual(50_000, _config(daily_token_budget_per_user=50_000).daily_token_budget_per_user)

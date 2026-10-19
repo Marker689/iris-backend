@@ -169,7 +169,7 @@ def update_policy(policy_id: int):
     # without a fresh row; hand-patch is simpler and safer).
     _mutable_fields = {
         'name', 'description', 'restriction_level', 'provider', 'model',
-        'base_url', 'auto_execute_read_tools', 'auto_approve_write_tools',
+        'base_url', 'auto_execute_read_tools', 'allow_auto_approve_write_tools',
         'max_turns_per_conversation', 'max_tool_calls_per_turn',
         'daily_token_budget_per_user', 'daily_token_budget_org',
         'redact_ips', 'redact_emails', 'redact_hashes', 'retention_days',

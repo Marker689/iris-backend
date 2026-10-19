@@ -43,7 +43,7 @@ class ChatbotConfig:
     max_turns_per_conversation: int
     max_tool_calls_per_turn: int
     auto_execute_read_tools: bool
-    auto_approve_write_tools: bool
+    allow_auto_approve_write_tools: bool
     daily_token_budget_per_user: int
     daily_token_budget_org: int
     redact_ips: bool
@@ -119,9 +119,9 @@ def load_config(policy=None) -> ChatbotConfig:
         auto_execute_read_tools=_pick_bool(
             'auto_execute_read_tools',
             'chatbot_auto_execute_read_tools', True),
-        auto_approve_write_tools=_pick_bool(
-            'auto_approve_write_tools',
-            'chatbot_auto_approve_write_tools', False),
+        allow_auto_approve_write_tools=_pick_bool(
+            'allow_auto_approve_write_tools',
+            'chatbot_allow_auto_approve_write_tools', False),
         daily_token_budget_per_user=_pick(
             'daily_token_budget_per_user',
             'chatbot_daily_token_budget_per_user', int, 500_000),

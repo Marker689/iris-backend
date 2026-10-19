@@ -13,6 +13,8 @@ Covers:
   * Case ACL — user without access to the case gets 403 on
     `POST /conversations`.
   * Runtime-config surface — `chatbot.enabled` reflects the toggle.
+  * Write auto-approve — off on every new conversation, and the analyst
+    can only switch it on where the admin (or the policy) allows it.
   * Admin policies — customer bindings round-trip through the list
     response the settings page renders.
   * Policy enforcement — a bound customer's policy pins the model
@@ -45,7 +47,7 @@ class TestsRestCaseChat(TestCase):
                 'chatbot_base_url', 'chatbot_max_turns_per_conversation',
                 'chatbot_max_tool_calls_per_turn',
                 'chatbot_auto_execute_read_tools',
-                'chatbot_auto_approve_write_tools',
+                'chatbot_allow_auto_approve_write_tools',
                 'chatbot_daily_token_budget_per_user',
                 'chatbot_daily_token_budget_org',
                 'chatbot_redact_ips', 'chatbot_redact_emails',
@@ -199,6 +201,57 @@ class TestsRestCaseChat(TestCase):
             f'/api/v2/case-chat/cases/{case_id}/conversations'
         ).json()['conversations']
         self.assertFalse(any(c['id'] == conv['id'] for c in listed))
+
+    # ---- write auto-approve ----------------------------------------
+
+    def _set_auto_approve(self, conversation_id: int, enabled: bool):
+        return self._subject.patch(
+            f'/api/v2/case-chat/conversations/{conversation_id}',
+            {'auto_approve_write_tools': enabled},
+        )
+
+    def test_conversation_should_ask_before_writes_by_default(self):
+        self._enable_chatbot(chatbot_allow_auto_approve_write_tools=True)
+        conv = self._subject.create(
+            '/api/v2/case-chat/global/conversations', {}).json()
+        self.assertFalse(conv['auto_approve_write_tools'])
+        self.assertTrue(conv['auto_approve_write_tools_allowed'])
+
+    def test_auto_approve_should_be_switchable_when_the_admin_allows_it(self):
+        self._enable_chatbot(chatbot_allow_auto_approve_write_tools=True)
+        conv = self._subject.create(
+            '/api/v2/case-chat/global/conversations', {}).json()
+        response = self._set_auto_approve(conv['id'], True)
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(response.json()['auto_approve_write_tools'])
+        detail = self._subject.get(
+            f'/api/v2/case-chat/conversations/{conv["id"]}').json()
+        self.assertTrue(detail['auto_approve_write_tools'])
+
+    def test_auto_approve_should_be_refused_when_the_admin_disallows_it(self):
+        self._enable_chatbot(chatbot_allow_auto_approve_write_tools=False)
+        conv = self._subject.create(
+            '/api/v2/case-chat/global/conversations', {}).json()
+        self.assertFalse(conv['auto_approve_write_tools_allowed'])
+        response = self._set_auto_approve(conv['id'], True)
+        self.assertEqual(400, response.status_code)
+
+    def test_auto_approve_should_follow_the_conversation_policy(self):
+        self._enable_chatbot(chatbot_allow_auto_approve_write_tools=True)
+        customer_id = self._subject.create_dummy_customer()
+        policy_id = self._create_policy(allow_auto_approve_write_tools=False)
+        try:
+            self._bind(customer_id, policy_id)
+            case_id = self._subject.create_dummy_case(customer_id)
+            conv = self._subject.create(
+                f'/api/v2/case-chat/cases/{case_id}/conversations', {},
+            ).json()
+            self.assertFalse(conv['auto_approve_write_tools_allowed'])
+            response = self._set_auto_approve(conv['id'], True)
+            self.assertEqual(400, response.status_code)
+        finally:
+            self._subject.delete(
+                f'/api/v2/manage/case-chat/policies/{policy_id}')
 
     # ---- policies / customer binding -------------------------------
     #

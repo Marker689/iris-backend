@@ -911,7 +911,7 @@ def _finalise_turn(
 
     # Auto-execute reads if allowed. Loads config through the
     # conversation's stamped policy so per-customer overrides for
-    # `auto_execute_read_tools` / `auto_approve_write_tools` bind here
+    # `auto_execute_read_tools` / `allow_auto_approve_write_tools` bind here
     # too — otherwise a strict-local customer would silently fall back
     # to the global auto-approve toggle.
     from app.iris_engine.llm.client import load_config
@@ -953,17 +953,18 @@ def _finalise_turn(
             tool_use_id=tu['id'],
         )
 
-    # Full-throttle mode: admin opted to skip the Approve/Deny card
-    # for writes. Dispatch each write immediately through the same path
-    # reads use (scope override, emit start/result, audit-log). The
-    # `pending` flag on the event stays False so the SPA renders the
-    # write as a live tool card, not an Approve card.
+    # Full-throttle mode: the analyst switched off the Approve/Deny card
+    # for this conversation, and the admin allows it. Dispatch each
+    # write immediately through the same path reads use (scope override,
+    # emit start/result, audit-log). The `pending` flag on the event
+    # stays False so the SPA renders the write as a live tool card, not
+    # an Approve card.
     if run.check(force=True):
         for tu in writes_to_pend:
             _append_not_run(conversation, tu)
         return _TurnResult(interrupted=True)
 
-    if writes_to_pend and cfg.auto_approve_write_tools:
+    if writes_to_pend and _writes_auto_approved(conversation, cfg):
         for tu in writes_to_pend:
             if run.check(force=True):
                 _append_not_run(conversation, tu)
@@ -1021,6 +1022,16 @@ def _finalise_turn(
     # All-reads turn — the caller re-enters the loop with the
     # freshly-appended tool_result messages in history.
     return _TurnResult()
+
+
+def _writes_auto_approved(
+    conversation: CaseChatConversation,
+    cfg: ChatbotConfig,
+) -> bool:
+    """Writes skip the Approve/Deny card only when both the analyst
+    opted in on this conversation and the effective config allows it."""
+    return bool(cfg.allow_auto_approve_write_tools
+                and conversation.auto_approve_write_tools)
 
 
 def _dispatch_and_track(

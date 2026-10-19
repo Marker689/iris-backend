@@ -148,6 +148,17 @@ def rename_conversation(
     return conv
 
 
+def set_auto_approve_write_tools(
+    conv: CaseChatConversation, enabled: bool,
+) -> CaseChatConversation:
+    """Record the analyst's opt-in to run writes without the
+    Approve/Deny card. Whether the admin allows it is the caller's
+    check; the loop re-checks it on every turn."""
+    conv.auto_approve_write_tools = bool(enabled)
+    db.session.commit()
+    return conv
+
+
 # ---- Messages --------------------------------------------------------
 
 def list_messages(conversation_id: int) -> list[CaseChatMessage]:

@@ -65,8 +65,9 @@ class ChatbotPolicy(db.Model):
     # Behaviour toggles.
     auto_execute_read_tools = Column(Boolean, nullable=False, default=True,
                                      server_default=text('true'))
-    auto_approve_write_tools = Column(Boolean, nullable=False, default=False,
-                                      server_default=text('false'))
+    allow_auto_approve_write_tools = Column(Boolean, nullable=False,
+                                            default=False,
+                                            server_default=text('false'))
     max_turns_per_conversation = Column(Integer, nullable=False,
                                         default=25, server_default=text('25'))
     max_tool_calls_per_turn = Column(Integer, nullable=False,

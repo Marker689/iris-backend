@@ -1699,7 +1699,7 @@ class ServerSettingsSchema(ma.SQLAlchemyAutoSchema):
         required=False, validate=lambda v: 1 <= v <= 64)
     chatbot_auto_execute_read_tools: Optional[bool] = fields.Boolean(
         required=False)
-    chatbot_auto_approve_write_tools: Optional[bool] = fields.Boolean(
+    chatbot_allow_auto_approve_write_tools: Optional[bool] = fields.Boolean(
         required=False)
     chatbot_daily_token_budget_per_user: Optional[int] = fields.Integer(
         required=False, validate=lambda v: 0 <= v <= 100_000_000)
@@ -1745,8 +1745,8 @@ class ChatbotPolicySchema(ma.SQLAlchemyAutoSchema):
     base_url: str = auto_field('base_url', required=False)
     auto_execute_read_tools: bool = auto_field(
         'auto_execute_read_tools', required=False)
-    auto_approve_write_tools: bool = auto_field(
-        'auto_approve_write_tools', required=False)
+    allow_auto_approve_write_tools: bool = auto_field(
+        'allow_auto_approve_write_tools', required=False)
     max_turns_per_conversation: int = auto_field(
         'max_turns_per_conversation', required=False)
     max_tool_calls_per_turn: int = auto_field(
@@ -1793,6 +1793,9 @@ class CaseChatConversationSchema(ma.SQLAlchemyAutoSchema):
     # User turns sent while the assistant was still working, not yet
     # handed to it — the SPA shows them as queued after a reload.
     queued_user_texts = auto_field('queued_user_texts', dump_only=True)
+    # The analyst's opt-in to skip the Approve/Deny card for writes.
+    auto_approve_write_tools: bool = auto_field(
+        'auto_approve_write_tools', dump_only=True)
 
     class Meta:
         model = CaseChatConversation

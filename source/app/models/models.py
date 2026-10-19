@@ -607,7 +607,9 @@ class ServerSettings(db.Model):
         Integer, nullable=False, default=8, server_default=text('8'))
     chatbot_auto_execute_read_tools = Column(
         Boolean, nullable=False, default=True, server_default=text('true'))
-    chatbot_auto_approve_write_tools = Column(
+    # Lets analysts switch off the Approve/Deny card for writes in a
+    # conversation of theirs; never on for them by default.
+    chatbot_allow_auto_approve_write_tools = Column(
         Boolean, nullable=False, default=False, server_default=text('false'))
     # Budget caps — checked against `case_chat_egress_audit` sums for
     # today before every LLM call. 500k tokens/user/day ≈ $2/user on

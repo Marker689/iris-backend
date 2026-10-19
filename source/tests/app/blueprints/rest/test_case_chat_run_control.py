@@ -64,7 +64,7 @@ class _Run:
 
 def _conversation():
     return SimpleNamespace(id=7, user_id=3, case_id=None, war_room_id=None,
-                           resolved_policy_id=None)
+                           resolved_policy_id=None, auto_approve_write_tools=False)
 
 
 class TestInterruptibleEvents(TestCase):
@@ -132,7 +132,7 @@ class TestStoppedBetweenTools(TestCase):
 
     def _finalise(self, tool_uses, run):
         biz = MagicMock()
-        cfg = SimpleNamespace(auto_execute_read_tools=True, auto_approve_write_tools=False)
+        cfg = SimpleNamespace(auto_execute_read_tools=True, allow_auto_approve_write_tools=False)
         with patch(f'{_LOOP}.case_chat_biz', biz), \
                 patch('app.iris_engine.llm.client.load_config', return_value=cfg), \
                 patch(f'{_LOOP}.tool_classification.is_read_only', side_effect=lambda n: n.endswith('_list')), \

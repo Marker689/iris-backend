@@ -37,6 +37,7 @@ from app.blueprints.rest.endpoints import (
 )
 from app.blueprints.rest.v2.case_chat import case_chat_blueprint
 from app.business import case_chat as case_chat_biz
+from app.business.server_settings import get_srv_settings
 from app.iris_engine.demo_builder import demo_mode_over_upload_cap
 from app.iris_engine.demo_builder import demo_mode_upload_cap_message
 from app.iris_engine.llm.attachments import ATTACHMENT_KIND_IMAGE
@@ -93,14 +94,29 @@ def _policy_summary(policy: ChatbotPolicy | None) -> dict | None:
     }
 
 
+def _auto_approve_writes_allowed(policy: ChatbotPolicy | None) -> bool:
+    """Whether the admin lets the analyst skip the Approve/Deny card for
+    writes, through the conversation's policy or the global settings —
+    same precedence as `load_config`, without decrypting the API key."""
+    if policy is not None:
+        return bool(policy.allow_auto_approve_write_tools)
+    return bool(getattr(
+        get_srv_settings(), 'chatbot_allow_auto_approve_write_tools', False))
+
+
+def _load_policy(conv: CaseChatConversation) -> ChatbotPolicy | None:
+    if conv.resolved_policy_id is None:
+        return None
+    return ChatbotPolicy.query.filter_by(id=conv.resolved_policy_id).first()
+
+
 def _dump_conversation(conv: CaseChatConversation) -> dict:
     """Serialize one conversation with its enforced policy attached."""
     payload = _conv_schema.dump(conv)
-    policy = None
-    if conv.resolved_policy_id is not None:
-        policy = ChatbotPolicy.query.filter_by(
-            id=conv.resolved_policy_id).first()
+    policy = _load_policy(conv)
     payload['policy'] = _policy_summary(policy)
+    payload['auto_approve_write_tools_allowed'] = (
+        _auto_approve_writes_allowed(policy))
     return payload
 
 
@@ -109,15 +125,20 @@ def _dump_conversations(convs: list[CaseChatConversation]) -> list[dict]:
     dumped = _conv_schema.dump(convs, many=True)
     wanted = {c.resolved_policy_id for c in convs
               if c.resolved_policy_id is not None}
-    summaries: dict[int, dict] = {}
+    policies: dict[int, ChatbotPolicy] = {}
     if wanted:
-        summaries = {
-            p.id: _policy_summary(p)
+        policies = {
+            p.id: p
             for p in ChatbotPolicy.query.filter(
                 ChatbotPolicy.id.in_(wanted)).all()
         }
+    globally_allowed = _auto_approve_writes_allowed(None)
     for conv, entry in zip(convs, dumped):
-        entry['policy'] = summaries.get(conv.resolved_policy_id)
+        policy = policies.get(conv.resolved_policy_id)
+        entry['policy'] = _policy_summary(policy)
+        entry['auto_approve_write_tools_allowed'] = (
+            globally_allowed if policy is None
+            else _auto_approve_writes_allowed(policy))
     return dumped
 
 
@@ -361,19 +382,35 @@ def delete_conversation(conversation_id: int):
 @ac_api_requires(Permissions.standard_user)
 @api_doc(
     response=CaseChatConversationSchema, tags=['CaseChat'],
-    summary='Rename a conversation',
+    summary='Rename a conversation or toggle its write auto-approve',
 )
-def rename_conversation(conversation_id: int):
+def update_conversation(conversation_id: int):
     conv, err = _require_own_conversation(conversation_id)
     if err is not None:
         return err
     body = request.get_json(silent=True) or {}
-    if 'title' not in body:
-        return response_api_error('title is required')
-    title = body['title']
-    if not isinstance(title, str):
+    if 'title' not in body and 'auto_approve_write_tools' not in body:
+        return response_api_error(
+            'title or auto_approve_write_tools is required')
+    title = body.get('title')
+    if 'title' in body and not isinstance(title, str):
         return response_api_error('title must be a string')
-    conv = case_chat_biz.rename_conversation(conv, title)
+    auto_approve = body.get('auto_approve_write_tools')
+    if 'auto_approve_write_tools' in body:
+        if not isinstance(auto_approve, bool):
+            return response_api_error(
+                'auto_approve_write_tools must be a boolean')
+        # Switching it off is always fine; switching it on needs the
+        # admin's leave for this conversation's scope.
+        if auto_approve and not _auto_approve_writes_allowed(
+                _load_policy(conv)):
+            return response_api_error(
+                'Running writes without approval is disabled by your '
+                'administrator.')
+    if 'title' in body:
+        conv = case_chat_biz.rename_conversation(conv, title)
+    if 'auto_approve_write_tools' in body:
+        conv = case_chat_biz.set_auto_approve_write_tools(conv, auto_approve)
     return response_api_success(_dump_conversation(conv))
 
 
