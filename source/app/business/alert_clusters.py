@@ -262,6 +262,78 @@ def alert_clusters_update(cluster: AlertCluster, changes: dict) -> AlertCluster:
     return cluster
 
 
+_ACTIVE_CLUSTER_STATUSES = (CLUSTER_STATUS_OPEN, CLUSTER_STATUS_INVESTIGATING)
+
+# Alert statuses after which an alert needs no more triage: closed, or
+# carried on by a case. Same set the correlation graph renders as closed.
+_DONE_ALERT_STATUSES = ('Closed', 'Merged', 'Escalated')
+
+
+def alert_clusters_close(clusters: Iterable[AlertCluster]) -> list[AlertCluster]:
+    """Close (`Dismissed`) every cluster still Open or Investigating, which
+    closes their alerts too (see `_CLUSTER_TO_ALERT_STATUS`). Clusters
+    already dismissed or escalated are left alone: re-dismissing an
+    escalated one would flip its escalated/merged alerts to `Closed`.
+    Returns the clusters that were closed."""
+    dismissed_id = _status_id(CLUSTER_STATUS_DISMISSED)
+    closed = []
+    for cluster in clusters:
+        if cluster.status is None or cluster.status.status_name not in _ACTIVE_CLUSTER_STATUSES:
+            continue
+        closed.append(alert_clusters_update(cluster, {'cluster_status_id': dismissed_id}))
+    return closed
+
+
+def alert_clusters_close_resolved(alert_ids: Iterable[int]) -> list[int]:
+    """Close the Open/Investigating clusters containing any of `alert_ids`
+    whose alerts are now all done (`_DONE_ALERT_STATUSES`). Called after
+    alert statuses change. The alerts are already in their final status,
+    so nothing is propagated back to them. Commits; returns the ids of
+    the clusters closed."""
+    ids = {alert_id for alert_id in alert_ids if alert_id is not None}
+    if not ids:
+        return []
+    active_ids = [
+        row.status_id for row in AlertClusterStatus.query.filter(
+            AlertClusterStatus.status_name.in_(_ACTIVE_CLUSTER_STATUSES)
+        ).all()
+    ]
+    dismissed = AlertClusterStatus.query.filter_by(status_name=CLUSTER_STATUS_DISMISSED).first()
+    if not active_ids or dismissed is None:
+        return []
+    done_ids = {
+        row.status_id for row in AlertStatus.query.filter(
+            AlertStatus.status_name.in_(_DONE_ALERT_STATUSES)
+        ).all()
+    }
+    clusters = (
+        AlertCluster.query
+        .join(AlertClusterAssociation, AlertClusterAssociation.cluster_id == AlertCluster.cluster_id)
+        .filter(
+            AlertClusterAssociation.alert_id.in_(ids),
+            AlertCluster.cluster_status_id.in_(active_ids),
+        )
+        .distinct()
+        .all()
+    )
+    closed = []
+    for cluster in clusters:
+        if not cluster.alerts or any(a.alert_status_id not in done_ids for a in cluster.alerts):
+            continue
+        cluster.cluster_status_id = dismissed.status_id
+        add_obj_history_entry(cluster, f'closed automatically ({CLUSTER_STATUS_DISMISSED!r}): all its alerts are closed')
+        closed.append(cluster)
+    if not closed:
+        return []
+    db.session.commit()
+    for cluster in closed:
+        track_activity(f'alert cluster #{cluster.cluster_id} closed automatically: all its alerts are closed',
+                       ctx_less=True)
+        _enqueue_flow_evaluation(cluster.cluster_id)
+        call_modules_hook('on_postload_alert_cluster_update', cluster)
+    return [cluster.cluster_id for cluster in closed]
+
+
 def alert_clusters_delete(cluster: AlertCluster) -> None:
     identifier = cluster.cluster_id
     db.session.delete(cluster)

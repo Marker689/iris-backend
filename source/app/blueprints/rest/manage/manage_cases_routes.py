@@ -59,6 +59,7 @@ from app.blueprints.access_controls import ac_api_return_access_denied
 from app.blueprints.responses import response_error
 from app.blueprints.responses import response_success
 from app.blueprints.rest.parsing import parse_pagination_parameters
+from app.business.alert_clusters import alert_clusters_close_resolved
 from app.business.cases import cases_delete
 from app.business.cases import cases_update
 from app.business.cases import cases_create
@@ -242,6 +243,7 @@ def api_case_close(identifier):
 
     add_obj_history_entry(case, 'case closed')
     track_activity(f'closed case ID {identifier}', caseid=identifier, ctx_less=False)
+    alert_clusters_close_resolved([alert.alert_id for alert in case.alerts])
     case_schema = CaseSchema()
 
     return response_success('Case closed successfully', data=case_schema.dump(res))

@@ -23,6 +23,9 @@ from iris import IRIS_PERMISSION_ALERT_CLUSTERS_WRITE
 
 _IDENTIFIER_FOR_NONEXISTENT_OBJECT = 123456789
 _OPEN_STATUS_ID = 1  # seeded first by create_safe_alert_cluster_status
+_DISMISSED_STATUS_ID = 3
+_ESCALATED_STATUS_ID = 4
+_ALERT_CLOSED_STATUS_ID = 6  # seeded by create_safe_alert_status
 
 
 def _alert_body():
@@ -217,3 +220,70 @@ class TestsRestAlertClusters(TestCase):
 
         response = self._subject.get(f'/api/v2/alert-clusters/{cluster["cluster_id"]}').json()
         self.assertIsNone(response['cluster_owner_id'])
+
+    def _new_cluster_with_alerts(self, count):
+        """Open a cluster holding `count` new alerts. Returns (cluster identifier, alert identifiers)."""
+        alert_identifiers = [
+            self._subject.create('/api/v2/alerts', _alert_body()).json()['alert_id'] for _ in range(count)
+        ]
+        cluster = self._subject.create('/api/v2/alert-clusters', _cluster_body()).json()
+        self._subject.create(
+            f'/api/v2/alert-clusters/{cluster["cluster_id"]}/alerts',
+            {'alert_ids': alert_identifiers}
+        )
+        return cluster['cluster_id'], alert_identifiers
+
+    def _get_cluster_status(self, cluster_identifier):
+        return self._subject.get(f'/api/v2/alert-clusters/{cluster_identifier}').json()['cluster_status_id']
+
+    def test_batch_close_should_return_200(self):
+        cluster_identifier, _ = self._new_cluster_with_alerts(1)
+        response = self._subject.create('/api/v2/alert-clusters/batch/close',
+                                        {'cluster_ids': [cluster_identifier]})
+        self.assertEqual(200, response.status_code)
+
+    def test_batch_close_should_dismiss_the_clusters(self):
+        first, _ = self._new_cluster_with_alerts(1)
+        second, _ = self._new_cluster_with_alerts(1)
+        self._subject.create('/api/v2/alert-clusters/batch/close', {'cluster_ids': [first, second]})
+        self.assertEqual(_DISMISSED_STATUS_ID, self._get_cluster_status(first))
+        self.assertEqual(_DISMISSED_STATUS_ID, self._get_cluster_status(second))
+
+    def test_batch_close_should_close_the_alerts_of_the_clusters(self):
+        cluster_identifier, alert_identifiers = self._new_cluster_with_alerts(1)
+        self._subject.create('/api/v2/alert-clusters/batch/close', {'cluster_ids': [cluster_identifier]})
+        alert = self._subject.get(f'/api/v2/alerts/{alert_identifiers[0]}').json()
+        self.assertEqual(_ALERT_CLOSED_STATUS_ID, alert['alert_status_id'])
+
+    def test_batch_close_should_report_unknown_clusters_as_not_found(self):
+        response = self._subject.create('/api/v2/alert-clusters/batch/close',
+                                        {'cluster_ids': [_IDENTIFIER_FOR_NONEXISTENT_OBJECT]}).json()
+        self.assertEqual([_IDENTIFIER_FOR_NONEXISTENT_OBJECT], response['not_found'])
+
+    def test_batch_close_should_skip_escalated_clusters(self):
+        cluster_identifier, _ = self._escalate_new_cluster()
+        response = self._subject.create('/api/v2/alert-clusters/batch/close',
+                                        {'cluster_ids': [cluster_identifier]}).json()
+        self.assertEqual([cluster_identifier], response['skipped'])
+        self.assertEqual(_ESCALATED_STATUS_ID, self._get_cluster_status(cluster_identifier))
+
+    def test_batch_close_should_return_400_when_cluster_ids_is_missing(self):
+        response = self._subject.create('/api/v2/alert-clusters/batch/close', {})
+        self.assertEqual(400, response.status_code)
+
+    def test_batch_close_without_permission_should_return_403(self):
+        cluster_identifier, _ = self._new_cluster_with_alerts(1)
+        user = self._subject.create_dummy_user()
+        response = user.create('/api/v2/alert-clusters/batch/close', {'cluster_ids': [cluster_identifier]})
+        self.assertEqual(403, response.status_code)
+
+    def test_closing_every_alert_should_close_the_cluster(self):
+        cluster_identifier, alert_identifiers = self._new_cluster_with_alerts(2)
+        for alert_identifier in alert_identifiers:
+            self._subject.update(f'/api/v2/alerts/{alert_identifier}', {'alert_status_id': _ALERT_CLOSED_STATUS_ID})
+        self.assertEqual(_DISMISSED_STATUS_ID, self._get_cluster_status(cluster_identifier))
+
+    def test_closing_some_alerts_should_leave_the_cluster_open(self):
+        cluster_identifier, alert_identifiers = self._new_cluster_with_alerts(2)
+        self._subject.update(f'/api/v2/alerts/{alert_identifiers[0]}', {'alert_status_id': _ALERT_CLOSED_STATUS_ID})
+        self.assertEqual(_OPEN_STATUS_ID, self._get_cluster_status(cluster_identifier))

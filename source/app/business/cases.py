@@ -24,6 +24,7 @@ from app.logger import logger
 from app.util import add_obj_history_entry
 from app.models.errors import BusinessProcessingError
 from app.models.errors import ObjectNotFoundError
+from app.business.alert_clusters import alert_clusters_close_resolved
 from app.business.iocs import iocs_exports_to_json
 from app.business.vulnerability_findings import vulnerability_findings_case_case_deleted
 from app.business.vulnerability_findings import vulnerability_findings_case_list_for_case
@@ -377,6 +378,7 @@ def cases_update(case: Cases, updated_case, protagonists, tags,
         if previous_owner_id is None:
             previous_owner_id = case.owner_id
         case_previous_reviewer_id = previous_reviewer_id
+        closed_alert_ids = []
         db.session.commit()
 
         if previous_case_state != updated_case.state_id:
@@ -390,6 +392,7 @@ def cases_update(case: Cases, updated_case, protagonists, tags,
                 if updated_case.alerts:
                     close_status = get_alert_status_by_name('Closed')
                     case_status_id_mapped = map_alert_resolution_to_case_status(updated_case.status_id)
+                    closed_alert_ids = [alert.alert_id for alert in updated_case.alerts]
 
                     for alert in updated_case.alerts:
                         if alert.alert_status_id != close_status.status_id:
@@ -428,6 +431,7 @@ def cases_update(case: Cases, updated_case, protagonists, tags,
 
         add_obj_history_entry(case, 'case info updated')
         track_activity(f'case updated "{updated_case.name}"', caseid=case.case_id)
+        alert_clusters_close_resolved(closed_alert_ids)
 
         return updated_case
 
@@ -483,6 +487,7 @@ def cases_close(case_identifier) -> Cases:
 
     add_obj_history_entry(res, 'case closed')
     track_activity(f'closed case ID {case_identifier}', caseid=case_identifier, ctx_less=False)
+    alert_clusters_close_resolved([alert.alert_id for alert in case.alerts])
     return res
 
 

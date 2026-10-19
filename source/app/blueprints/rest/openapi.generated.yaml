@@ -1729,6 +1729,25 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/v2/alert-clusters/batch/close:
+    post:
+      operationId: batch_close_clusters_post
+      summary: Close a batch of alert clusters
+      tags:
+      - AlertClusters
+      security:
+      - ApiKey: []
+      description: "Sets them to `Dismissed`, which closes their alerts too \u2014 the same as\nsetting\
+        \ each one's status by hand. Each cluster goes through the same access check as the single-cluster\n\
+        routes; the ones the caller can't reach are reported in `not_found`,\nand those already dismissed\
+        \ or escalated in `skipped`."
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/v2/alerts:
     get:
       operationId: alerts_list_route_get

@@ -21,6 +21,7 @@ from datetime import datetime
 from typing import Optional
 
 from app.business.access_controls import access_controls_user_has_customer_access
+from app.business.alert_clusters import alert_clusters_close_resolved
 from app.business.managed_assets import managed_assets_observe_alert
 from app.business.managed_assets import managed_assets_observe_case
 from app.db import db
@@ -491,6 +492,8 @@ def alerts_update(alert: Alert, updated_alert: Alert, activity_data) -> Alert:
     # changed. A no-op when no module is registered.
     db.session.commit()
     _enqueue_rule_evaluation(alert_identifier)
+    if do_status_hook:
+        alert_clusters_close_resolved([alert_identifier])
     return updated_alert
 
 
@@ -636,6 +639,7 @@ def alerts_escalate(alert: Alert, iocs_import_list: Optional[list] = None,
     # it flips an alert-only asset's `case_id` in place. Only the case's
     # own asset set is guaranteed to contain all of them.
     managed_assets_observe_case(case.case_id)
+    alert_clusters_close_resolved([alert.alert_id])
 
     return case
 
@@ -670,6 +674,7 @@ def alerts_merge(alert: Alert, target_case_id: int,
     add_obj_history_entry(alert, f'Alert merged into existing case #{target_case_id}')
 
     managed_assets_observe_case(case.case_id)
+    alert_clusters_close_resolved([alert.alert_id])
 
     return case
 
@@ -744,6 +749,7 @@ def alerts_batch_merge(alert_ids: list, target_case_id: int,
     # Once for the batch: the statement is set-based over the case's whole
     # asset set, so running it per alert would repeat identical work.
     managed_assets_observe_case(case.case_id)
+    alert_clusters_close_resolved(alert_ids)
 
     return case
 
@@ -795,5 +801,6 @@ def alerts_batch_escalate(alert_ids: list,
         add_obj_history_entry(alert, f'Alert escalated into new case #{case.case_id}')
 
     managed_assets_observe_case(case.case_id)
+    alert_clusters_close_resolved([alert.alert_id for alert in alerts_list])
 
     return case

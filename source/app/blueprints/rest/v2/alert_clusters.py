@@ -48,6 +48,7 @@ from app.business.alert_clusters import alert_cluster_escalate_to_case
 from app.business.alert_clusters import alert_cluster_merge_to_case
 from app.business.alert_clusters import alert_cluster_remove_alert
 from app.models.authorization import CaseAccessLevel
+from app.business.alert_clusters import alert_clusters_close
 from app.business.alert_clusters import alert_clusters_create
 from app.business.alert_clusters import alert_clusters_delete
 from app.business.alert_clusters import alert_clusters_get
@@ -127,6 +128,44 @@ def create_cluster():
     if alert_ids:
         alert_cluster_add_alerts(result, alert_ids)
     return response_api_created(_schema.dump(result))
+
+
+@alert_clusters_blueprint.post('/batch/close')
+@ac_api_requires(Permissions.alert_clusters_write)
+@api_doc(tags=['AlertClusters'], summary='Close a batch of alert clusters')
+def batch_close_clusters():
+    """Close the clusters listed in `cluster_ids`.
+
+    Sets them to `Dismissed`, which closes their alerts too — the same as
+    setting each one's status by hand. Each cluster goes through the same access check as the single-cluster
+    routes; the ones the caller can't reach are reported in `not_found`,
+    and those already dismissed or escalated in `skipped`.
+    """
+    payload = request.get_json() or {}
+    cluster_ids = payload.get('cluster_ids')
+    if (not isinstance(cluster_ids, list) or not cluster_ids
+            or not all(isinstance(i, int) and not isinstance(i, bool) for i in cluster_ids)):
+        return response_api_error('cluster_ids must be a non-empty list of integers')
+
+    clusters = []
+    not_found = []
+    for identifier in dict.fromkeys(cluster_ids):
+        try:
+            clusters.append(alert_clusters_get(
+                iris_current_user,
+                session.get('permissions') or 0,
+                identifier,
+                fallback_customer_access=ac_current_user_has_customer_access,
+            ))
+        except ObjectNotFoundError:
+            not_found.append(identifier)
+
+    closed_ids = [cluster.cluster_id for cluster in alert_clusters_close(clusters)]
+    return response_api_success({
+        'closed': closed_ids,
+        'skipped': [c.cluster_id for c in clusters if c.cluster_id not in closed_ids],
+        'not_found': not_found,
+    })
 
 
 @alert_clusters_blueprint.get('/<int:identifier>')
