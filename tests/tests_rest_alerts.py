@@ -437,6 +437,44 @@ class TestsRestAlerts(TestCase):
         response = self._subject.update(f'/api/v2/alerts/{identifier}', {'alert_title': alert_title}).json()
         self.assertEqual(alert_title, response['alert_title'])
 
+    def test_update_alert_should_unassign_owner_when_alert_owner_id_is_null(self):
+        body = {
+            'alert_title': 'title',
+            'alert_severity_id': 4,
+            'alert_status_id': 3,
+            'alert_customer_id': 1,
+            'alert_owner_id': ADMINISTRATOR_USER_IDENTIFIER
+        }
+        response = self._subject.create('api/v2/alerts', body).json()
+        identifier = response['alert_id']
+        response = self._subject.update(f'/api/v2/alerts/{identifier}', {'alert_owner_id': None}).json()
+        self.assertIsNone(response['alert_owner_id'])
+
+    def test_update_alert_should_unassign_owner_when_alert_owner_id_is_minus_one(self):
+        body = {
+            'alert_title': 'title',
+            'alert_severity_id': 4,
+            'alert_status_id': 3,
+            'alert_customer_id': 1,
+            'alert_owner_id': ADMINISTRATOR_USER_IDENTIFIER
+        }
+        response = self._subject.create('api/v2/alerts', body).json()
+        identifier = response['alert_id']
+        response = self._subject.update(f'/api/v2/alerts/{identifier}', {'alert_owner_id': -1}).json()
+        self.assertIsNone(response['alert_owner_id'])
+
+    def test_update_alert_should_assign_caller_when_alert_is_unowned_and_owner_is_omitted(self):
+        body = {
+            'alert_title': 'title',
+            'alert_severity_id': 4,
+            'alert_status_id': 3,
+            'alert_customer_id': 1
+        }
+        response = self._subject.create('api/v2/alerts', body).json()
+        identifier = response['alert_id']
+        response = self._subject.update(f'/api/v2/alerts/{identifier}', {'alert_title': 'new_title'}).json()
+        self.assertEqual(ADMINISTRATOR_USER_IDENTIFIER, response['alert_owner_id'])
+
     def test_update_alert_should_return_alert_description(self):
         body = {
             'alert_title': 'title',

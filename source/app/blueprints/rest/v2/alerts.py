@@ -407,7 +407,10 @@ class AlertsOperations:
             activity_data = _alert_update_activity(pristine_alert, request_data)
             updated_alert = self._schema.load(request_data, instance=alert, partial=True)
 
-            if request_data.get('alert_owner_id') is None and updated_alert.alert_owner_id is None:
+            # Touching an unowned alert claims it — but only when the
+            # caller left the owner out. An explicit `null` (or the legacy
+            # `-1`) is a request to unassign and must be honoured as such.
+            if 'alert_owner_id' not in request_data and updated_alert.alert_owner_id is None:
                 updated_alert.alert_owner_id = iris_current_user.id
 
             if request_data.get('alert_owner_id') == "-1" or request_data.get('alert_owner_id') == -1:
