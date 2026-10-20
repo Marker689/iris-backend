@@ -33,7 +33,9 @@ from sqlalchemy import asc
 from sqlalchemy import exists
 from sqlalchemy import func
 from sqlalchemy import literal
+from sqlalchemy import select
 from sqlalchemy import tuple_
+from sqlalchemy import union_all
 from sqlalchemy import or_
 from sqlalchemy import not_
 from sqlalchemy import and_
@@ -357,14 +359,31 @@ def _alert_sort_expression(order_by: str | None):
 
 def _alert_list_options():
     """Eager loads shared by every alert-list response. Without these the
-    marshalling step fires one query per alert per relationship."""
+    marshalling step fires one query per alert per relationship.
+
+    This has to cover everything `AlertSchema` reads, nested schemas
+    included — `include_relationships` makes it dump `comments` and
+    `clusters`, and each asset and IOC brings its own relationships. A
+    relationship left out here costs a query per row of the page, which
+    on a full queue is over a thousand round-trips.
+    """
     return (
         selectinload(Alert.severity),
         selectinload(Alert.status),
         selectinload(Alert.customer),
+        selectinload(Alert.classification),
+        selectinload(Alert.owner),
+        selectinload(Alert.resolution_status),
+        selectinload(Alert.investigation_flow),
         selectinload(Alert.cases),
-        selectinload(Alert.iocs),
-        selectinload(Alert.assets)
+        selectinload(Alert.clusters),
+        selectinload(Alert.comments),
+        selectinload(Alert.iocs).selectinload(Ioc.ioc_type),
+        selectinload(Alert.iocs).selectinload(Ioc.tlp),
+        selectinload(Alert.assets).selectinload(CaseAssets.asset_type),
+        selectinload(Alert.assets).selectinload(CaseAssets.analysis_status),
+        selectinload(Alert.assets).selectinload(CaseAssets.iocs),
+        selectinload(Alert.assets).selectinload(CaseAssets.flags)
     )
 
 
@@ -493,6 +512,77 @@ def group_alert_units(unit_rows, member_pairs, member_limit=ALERT_GROUP_MEMBER_L
     return units, unique
 
 
+def page_alert_group_units(session, matches, association, ascending, page, per_page):
+    """One page of queue units for `matches`, without sorting all of them.
+
+    `matches` is a subquery of `(alert_id, sort_value)` and `association` the
+    alert↔cluster link. Returns `(unit_rows, total_units, total_alerts)`,
+    `unit_rows` being `(kind, unit_id)` pairs in display order.
+
+    Clustered and orphan units are ranked separately, each cut down to the
+    `page * per_page` rows that could possibly reach this page, and only
+    those few rows are merged and sorted. Sorting the union of every unit
+    instead read the whole alerts table and sorted it, once per count and
+    once for the page, however few clusters there were — the orphan half is
+    what lets Postgres walk the sort column's index and stop early.
+
+    The unit total is likewise derived (clusters + matches - clustered
+    matches) rather than counted over that union.
+    """
+    order_func = asc if ascending else desc
+    # Which end of a cluster represents it: the page reads from the
+    # leading edge, so ascending order wants the smallest member value
+    # and descending the largest.
+    cluster_value = func.min if ascending else func.max
+    window = page * per_page
+
+    cluster_units = session.query(
+        association.cluster_id.label('unit_id'),
+        cluster_value(matches.c.sort_value).label('sort_value')
+    ).join(
+        matches, matches.c.alert_id == association.alert_id
+    ).group_by(association.cluster_id)
+
+    top_clusters = cluster_units.order_by(
+        order_func(cluster_value(matches.c.sort_value)), order_func(association.cluster_id)
+    ).limit(window).subquery()
+
+    top_orphans = session.query(
+        matches.c.alert_id.label('unit_id'),
+        matches.c.sort_value.label('sort_value')
+    ).filter(
+        ~exists().where(association.alert_id == matches.c.alert_id)
+    ).order_by(
+        order_func(matches.c.sort_value), order_func(matches.c.alert_id)
+    ).limit(window).subquery()
+
+    units = union_all(
+        select(literal('cluster').label('kind'), top_clusters.c.unit_id, top_clusters.c.sort_value),
+        select(literal('alert').label('kind'), top_orphans.c.unit_id, top_orphans.c.sort_value)
+    ).subquery()
+
+    # `unit_id` is only a tiebreaker; without it Postgres is free to
+    # reorder units sharing a sort value between pages, which would let
+    # the same row appear twice or not at all while paging.
+    rows = session.query(
+        units.c.kind, units.c.unit_id
+    ).order_by(
+        order_func(units.c.sort_value), order_func(units.c.unit_id)
+    ).limit(per_page).offset((page - 1) * per_page).all()
+
+    # Units drive pagination, but callers still want to say "N alerts
+    # match" in a heading — a number the unit count can't give them.
+    total_alerts = session.query(func.count()).select_from(matches).scalar() or 0
+    cluster_count = session.query(func.count()).select_from(cluster_units.subquery()).scalar() or 0
+    clustered_matches = session.query(func.count()).select_from(matches).filter(
+        matches.c.alert_id.in_(select(association.alert_id))
+    ).scalar() or 0
+
+    total_units = cluster_count + total_alerts - clustered_matches
+
+    return [(kind, unit_id) for kind, unit_id in rows], total_units, total_alerts
+
+
 def get_filtered_alert_groups(
         start_date: str,
         end_date: str,
@@ -563,10 +653,6 @@ def get_filtered_alert_groups(
 
     ascending = sort != 'desc'
     order_func = asc if ascending else desc
-    # Which end of a cluster represents it: the page reads from the
-    # leading edge, so ascending order wants the smallest member value
-    # and descending the largest.
-    cluster_value = func.min if ascending else func.max
     page = max(page or 1, 1)
     per_page = max(per_page or 1, 1)
 
@@ -574,37 +660,9 @@ def get_filtered_alert_groups(
         matches = matching.subquery()
         association = AlertClusterAssociation
 
-        cluster_units = db.session.query(
-            literal('cluster').label('kind'),
-            association.cluster_id.label('unit_id'),
-            cluster_value(matches.c.sort_value).label('sort_value')
-        ).join(
-            matches, matches.c.alert_id == association.alert_id
-        ).group_by(association.cluster_id)
-
-        orphan_units = db.session.query(
-            literal('alert').label('kind'),
-            matches.c.alert_id.label('unit_id'),
-            matches.c.sort_value.label('sort_value')
-        ).filter(
-            ~exists().where(association.alert_id == matches.c.alert_id)
+        rows, total, total_alerts = page_alert_group_units(
+            db.session, matches, association, ascending, page, per_page
         )
-
-        units = cluster_units.union_all(orphan_units).subquery()
-
-        total = db.session.query(func.count()).select_from(units).scalar() or 0
-        # Units drive pagination, but callers still want to say "N alerts
-        # match" in a heading — a number the unit count can't give them.
-        total_alerts = db.session.query(func.count()).select_from(matches).scalar() or 0
-
-        # `unit_id` is only a tiebreaker; without it Postgres is free to
-        # reorder units sharing a sort value between pages, which would let
-        # the same row appear twice or not at all while paging.
-        rows = db.session.query(
-            units.c.kind, units.c.unit_id
-        ).order_by(
-            order_func(units.c.sort_value), order_func(units.c.unit_id)
-        ).limit(per_page).offset((page - 1) * per_page).all()
 
         cluster_ids = [unit_id for kind, unit_id in rows if kind == 'cluster']
 
@@ -640,9 +698,15 @@ def get_filtered_alert_groups(
                     selectinload(AlertCluster.severity),
                     selectinload(AlertCluster.customer),
                     selectinload(AlertCluster.owner),
+                    selectinload(AlertCluster.case),
+                    selectinload(AlertCluster.source_rule),
+                    selectinload(AlertCluster.investigation_flow),
                     # `AlertClusterSchema.alert_ids` walks this relationship;
                     # eager-loading turns a query-per-cluster into one query.
-                    selectinload(AlertCluster.alerts)
+                    # Only the ids are read, and a cluster can hold
+                    # thousands of alerts, so their payload columns stay
+                    # behind.
+                    selectinload(AlertCluster.alerts).load_only(Alert.alert_id)
                 ).filter(AlertCluster.cluster_id.in_(cluster_ids)).all()
             }
 
