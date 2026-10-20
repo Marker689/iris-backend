@@ -26,6 +26,7 @@ from sqlalchemy import JSON
 from sqlalchemy import Boolean
 from sqlalchemy import Column
 from sqlalchemy import ForeignKey
+from sqlalchemy import Index
 from sqlalchemy import Integer
 from sqlalchemy import LargeBinary
 from sqlalchemy import String
@@ -204,6 +205,12 @@ class UserCaseAccess(db.Model):
 
 class UserCaseEffectiveAccess(db.Model):
     __tablename__ = "user_case_effective_access"
+    # Not unique, although each (user, case) pair should appear once:
+    # existing databases hold duplicates, and the writers are
+    # check-then-insert. See migration c3e8f1a4d726.
+    __table_args__ = (
+        Index('ix_user_case_effective_access_user_id_case_id', 'user_id', 'case_id'),
+    )
 
     id = Column(BigInteger, primary_key=True, nullable=False)
     user_id = Column(BigInteger, ForeignKey('user.id'), nullable=False)
@@ -212,8 +219,6 @@ class UserCaseEffectiveAccess(db.Model):
 
     user = relationship('User')
     case = relationship('Cases')
-
-    UniqueConstraint('case_id', 'user_id')
 
 
 class UserOrganisation(db.Model):

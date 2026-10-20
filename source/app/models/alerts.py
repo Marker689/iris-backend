@@ -25,6 +25,7 @@ from sqlalchemy import String
 from sqlalchemy import Column
 from sqlalchemy import DateTime
 from sqlalchemy import ForeignKey
+from sqlalchemy import Index
 from sqlalchemy import Integer
 from sqlalchemy import Text
 from sqlalchemy import text
@@ -122,6 +123,13 @@ class AlertResolutionStatus(db.Model):
 
 class SimilarAlertsCache(db.Model):
     __tablename__ = 'similar_alerts_cache'
+    # Hash rather than btree on the value columns: they are unbounded text
+    # and a btree entry is capped at ~2.7 kB. See migration c3e8f1a4d726.
+    __table_args__ = (
+        Index('ix_similar_alerts_cache_alert_id', 'alert_id'),
+        Index('ix_similar_alerts_cache_asset_name', 'asset_name', postgresql_using='hash'),
+        Index('ix_similar_alerts_cache_ioc_value', 'ioc_value', postgresql_using='hash'),
+    )
 
     id = Column(BigInteger, primary_key=True)
     customer_id = Column(BigInteger, ForeignKey('client.client_id'), nullable=False)
