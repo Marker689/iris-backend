@@ -16,6 +16,7 @@
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
+import copy
 import json
 import logging as logger
 from sqlalchemy.orm.attributes import flag_modified
@@ -167,8 +168,85 @@ def add_tab_attribute_field(obj, tab_name, field_name, field_type, field_value, 
     return True
 
 
-def merge_custom_attributes(data, obj_id, object_type, overwrite=False):
+def _is_stored_attribute(value):
+    """Whether `value` has the {type, value, mandatory} shape objects persist."""
+    return isinstance(value, dict) and 'type' in value
 
+
+def _submitted_value(value):
+    """The bare value of a submitted attribute.
+
+    Clients are expected to send bare values, but a client that echoes back
+    what the API returned sends the stored {type, value, mandatory} shape;
+    storing that as the value would nest it one level deeper on every save.
+    """
+    if _is_stored_attribute(value) and 'value' in value:
+        return value['value']
+    return value
+
+
+def _schema_defaults(object_type):
+    """A private copy of the admin schema for `object_type` ({} when there is none).
+
+    The schema row's JSON is shared with the session; handing it out as-is
+    lets callers mutate the schema through the object they attach it to.
+    """
+    row = CustomAttribute.query.filter(CustomAttribute.attribute_for == object_type).first()
+    content = row.attribute_content if row is not None else None
+    return copy.deepcopy(content) if isinstance(content, dict) else {}
+
+
+def normalize_object_attributes(stored, defaults):
+    """Return a copy of an object's custom attributes in the canonical shape.
+
+    * `None` / non-dict columns become `{}` (objects created without attributes).
+    * Every schema field is present; missing ones take the schema definition.
+    * Bare legacy values ({"tab": {"field": "x"}}, as written by the v2 case
+      update before the merge was applied) are rebuilt from the schema
+      definition, keeping the value; outside the schema they become strings.
+    * Well-formed entries, including module-written tabs, are kept as they are.
+    """
+    result = copy.deepcopy(stored) if isinstance(stored, dict) else {}
+
+    for tab, fields in (defaults or {}).items():
+        if not isinstance(fields, dict):
+            continue
+        stored_tab = result.get(tab)
+        if not isinstance(stored_tab, dict):
+            stored_tab = result[tab] = {}
+        for field, definition in fields.items():
+            if not _is_stored_attribute(definition):
+                continue
+            current = stored_tab.get(field)
+            if _is_stored_attribute(current):
+                current.setdefault('value', None)
+                continue
+            rebuilt = copy.deepcopy(definition)
+            if current is not None:
+                rebuilt['value'] = current
+            stored_tab[field] = rebuilt
+
+    for tab, fields in list(result.items()):
+        if not isinstance(fields, dict):
+            del result[tab]
+            continue
+        for field, current in fields.items():
+            if _is_stored_attribute(current):
+                current.setdefault('value', None)
+            else:
+                fields[field] = {'type': 'input_string', 'mandatory': False, 'value': current}
+
+    return result
+
+
+def merge_custom_attributes(data, obj_id, object_type, overwrite=False):
+    """Merge submitted attribute values into an object's custom attributes.
+
+    `data` maps tab -> field -> bare value. Only values change: field types,
+    `html` fields (module or admin content) and tabs the client did not send
+    are preserved. Returns the object's resulting attributes, or the schema
+    defaults filled with `data` when no object is given (creation).
+    """
     obj = None
     if obj_id:
         if object_type == 'ioc':
@@ -197,41 +275,43 @@ def merge_custom_attributes(data, obj_id, object_type, overwrite=False):
             log.warning(f'Overwriting all {object_type}')
             return get_default_custom_attributes(object_type)
 
-        for tab in data:
-            if obj.custom_attributes.get(tab) is None:
-                log.error(f'Missing tab {tab} in {object_type}')
-                continue
+        # Fill gaps from the schema instead of skipping (values silently lost) or
+        # crashing (NULL column, bare legacy values) on objects that predate it.
+        merged = normalize_object_attributes(obj.custom_attributes, _schema_defaults(object_type))
+        _apply_submitted_values(merged, data, object_type)
 
-            for field in data[tab]:
-                if field not in obj.custom_attributes[tab]:
-                    log.error(f'Missing field {field} in {object_type}')
-
-                else:
-                    if obj.custom_attributes[tab][field]['type'] == 'html':
-                        continue
-
-                    if obj.custom_attributes[tab][field]['value'] != data[tab][field]:
-                        flag_modified(obj, "custom_attributes")
-                        obj.custom_attributes[tab][field]['value'] = data[tab][field]
+        if merged != obj.custom_attributes:
+            obj.custom_attributes = merged
+            flag_modified(obj, "custom_attributes")
 
         # Commit will only be effective if we flagged a modification, reducing load on the DB
         db.session.commit()
         return obj.custom_attributes
 
-    default_attr = get_default_custom_attributes(object_type)
-    for tab in data:
-        if default_attr.get(tab) is None:
-            app.logger.info(f'Missing tab {tab} in {object_type} default attribute')
-            continue
-
-        for field in data[tab]:
-            if field not in default_attr[tab]:
-                app.logger.info(f'Missing field {field} in {object_type} default attribute')
-
-            else:
-                default_attr[tab][field]['value'] = data[tab][field]
-
+    default_attr = normalize_object_attributes({}, _schema_defaults(object_type))
+    _apply_submitted_values(default_attr, data, object_type)
     return default_attr
+
+
+def _apply_submitted_values(attributes, data, object_type):
+    """Write the submitted bare values into normalized `attributes`, in place."""
+    if not isinstance(data, dict):
+        return
+    for tab, fields in data.items():
+        if attributes.get(tab) is None:
+            log.warning(f'Ignoring custom attribute tab {tab!r}: unknown for this {object_type}')
+            continue
+        if not isinstance(fields, dict):
+            continue
+        for field, value in fields.items():
+            stored = attributes[tab].get(field)
+            if stored is None:
+                log.warning(f'Ignoring custom attribute field {tab!r}/{field!r}: unknown for this {object_type}')
+                continue
+            if stored.get('type') == 'html':
+                # html content comes from the schema or a module, never from a client
+                continue
+            stored['value'] = _submitted_value(value)
 
 
 def validate_attribute(attribute):
