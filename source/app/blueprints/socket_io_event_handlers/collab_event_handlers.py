@@ -245,17 +245,24 @@ def _maybe_flush_if_empty(doc_name):
     _doc_client_identities.pop(doc_name, None)
 
 
+# The document shape the client edits. Tabs still running the TipTap
+# editor (opened before the upgrade) join without it: they bind the
+# legacy ProseMirror tree, so their edits would never show anywhere.
+_JOIN_FORMAT = 'markdown'
+
+
 @socket_io.on('join', namespace=NAMESPACE)
 def on_join(data):
     """Client asks to join a doc's room.
 
-    Payload: `{doc: '<kind>:<id>'}`. On success we join the room and
+    Payload: `{doc: '<kind>:<id>', format: 'markdown'}`. On success we join the room and
     immediately emit `sync-init` back to the caller only, carrying the
     authoritative `y_state` bytes (base64) and the caller's write permission.
 
     Emits `permission-denied` if the caller lacks read access, or
     `resolution-error` if the doc-name shape is wrong / the target
-    doesn't exist.
+    doesn't exist, or if the client is an editor that predates the
+    markdown document (see `_JOIN_FORMAT`).
     """
     user_id = _current_user_id()
     if not user_id or not isinstance(data, dict):
@@ -263,6 +270,10 @@ def on_join(data):
     doc_name = data.get('doc')
     if not isinstance(doc_name, str):
         emit('resolution-error', {'reason': 'doc must be a string'})
+        return
+    if data.get('format') != _JOIN_FORMAT:
+        emit('resolution-error',
+             {'doc': doc_name, 'reason': 'outdated editor: reload the page'})
         return
 
     # Cap the number of docs a single connection can be attached to.

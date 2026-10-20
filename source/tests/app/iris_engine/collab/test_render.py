@@ -23,7 +23,7 @@ All functions under test are pure Python — no DB, no Flask context, no mocks.
 
 from unittest import TestCase
 
-from pycrdt import Doc, XmlElement, XmlFragment, XmlText
+from pycrdt import Doc, Text, XmlElement, XmlFragment, XmlText
 
 from app.iris_engine.collab.mentions import build_mention_span
 from app.iris_engine.collab.render import (
@@ -37,6 +37,8 @@ from app.iris_engine.collab.render import (
     append_markdown_to_ydoc_update,
     markdown_to_ydoc_update,
     replace_markdown_in_ydoc_update,
+    normalize_markdown,
+    ydoc_update_is_legacy_tree,
     ydoc_update_to_markdown,
 )
 
@@ -218,14 +220,15 @@ class TestUnflattenPipeTables(TestCase):
     def test_empty_input_returns_empty(self):
         self.assertEqual('', _unflatten_pipe_tables(''))
 
-    def test_output_can_be_reparsed_by_markdownit(self):
-        """After unflattening, markdown-it should recognise the table."""
-        from markdown_it import MarkdownIt
+    def test_output_is_a_gfm_table(self):
+        """After unflattening: header, separator and row, one per line."""
         flat = '| Col1 | Col2 || --- | --- || val1 | val2 |'
         result = _unflatten_pipe_tables(flat)
-        tokens = MarkdownIt('commonmark').enable('table').parse(result)
-        types = [t.type for t in tokens]
-        self.assertIn('table_open', types)
+        lines = [line.strip() for line in result.split('\n') if line.strip()]
+        self.assertEqual(3, len(lines))
+        self.assertIn('Col1', lines[0])
+        self.assertRegex(lines[1], r'^\|(\s*:?-+:?\s*\|)+$')
+        self.assertIn('val1', lines[2])
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +350,7 @@ class TestRewriteDatastoreUrls(TestCase):
 
 
 class TestLegacyImagesSeed(TestCase):
-    """A v2 image with a size suffix must seed as an image node, not text."""
+    """A v2 image with a size suffix must seed as a valid markdown image."""
 
     def test_sized_legacy_image_seeds_as_image(self):
         md = '![NYeQ5](/datastore/file/view/6768?cid=3465 =100%x40%)\n'
@@ -361,7 +364,7 @@ class TestLegacyImagesSeed(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Marks as Yjs formatting — the shape y-prosemirror reads and writes
+# Legacy documents — the ProseMirror tree TipTap's y-prosemirror wrote
 # ---------------------------------------------------------------------------
 
 def _client_paragraph(*runs) -> bytes:
@@ -377,12 +380,22 @@ def _client_paragraph(*runs) -> bytes:
     return doc.get_update()
 
 
-def _seeded_runs(md: str) -> list:
+def _legacy_doc(build) -> bytes:
+    """A legacy doc whose fragment `build(frag)` fills."""
     doc = Doc()
     frag = XmlFragment()
     doc['prosemirror'] = frag
-    doc.apply_update(markdown_to_ydoc_update(md))
-    return [run for child in frag.children[0].children for run in child.diff()]
+    build(frag)
+    return doc.get_update()
+
+
+def _legacy_heading_and_chip(frag):
+    heading = frag.children.append(XmlElement('heading', {'level': 2}))
+    heading.children.append(XmlText('Findings'))
+    paragraph = frag.children.append(XmlElement('paragraph'))
+    paragraph.children.append(XmlText('see '))
+    paragraph.children.append(XmlElement('caseMention',
+                                         {'kind': 'alert', 'id': '7', 'label': 'Alert #7'}))
 
 
 _CHIP_LINK = {
@@ -394,20 +407,9 @@ _CHIP_LINK = {
 }
 
 
-class TestMarksAsFormatting(TestCase):
-
-    def test_seeded_bold_is_formatting(self):
-        self.assertIn(('bold', {'bold': {}}), _seeded_runs('a **bold** b'))
-
-    def test_seeded_link_is_formatting(self):
-        self.assertIn(('f', {'link': {'href': 'u', 'title': None}}), _seeded_runs('[f](u)'))
-
-    def test_seeded_text_carries_no_node_attributes(self):
-        doc = Doc()
-        frag = XmlFragment()
-        doc['prosemirror'] = frag
-        doc.apply_update(markdown_to_ydoc_update('**bold**'))
-        self.assertEqual({}, dict(frag.children[0].children[0].attributes))
+class TestLegacyTreeRender(TestCase):
+    """`ydoc_update_to_markdown` still reads documents seeded as a tree:
+    it is how their unflushed edits are carried over to the text."""
 
     def test_client_link_renders_as_markdown_link(self):
         update = _client_paragraph(('see ', None), ('f.png', {'link': _CHIP_LINK}))
@@ -449,9 +451,35 @@ class TestMarksAsFormatting(TestCase):
         update = _client_paragraph(('u', {'underline': {}}))
         self.assertEqual('u\n', ydoc_update_to_markdown(update))
 
-    def test_seeded_marks_round_trip(self):
-        md = 'a **b** *c* `d` ~~e~~ [f](u "t")\n'
-        self.assertEqual(md, _roundtrip(md))
+    def test_headings_and_chips_render(self):
+        update = _legacy_doc(_legacy_heading_and_chip)
+        chip = build_mention_span('alert', '7', 'Alert #7')
+        self.assertEqual(f'## Findings\n\nsee {chip}\n', ydoc_update_to_markdown(update))
+
+    def test_legacy_tree_is_detected(self):
+        self.assertTrue(ydoc_update_is_legacy_tree(_legacy_doc(_legacy_heading_and_chip)))
+
+    def test_text_document_is_not_a_legacy_tree(self):
+        self.assertFalse(ydoc_update_is_legacy_tree(markdown_to_ydoc_update('# T\n')))
+        self.assertFalse(ydoc_update_is_legacy_tree(markdown_to_ydoc_update('')))
+        self.assertFalse(ydoc_update_is_legacy_tree(None))
+
+    def test_append_converts_the_tree_to_text_first(self):
+        """Text written next to an untouched tree would hide it: the
+        render reads the text whenever there is some."""
+        state = append_markdown_to_ydoc_update(_legacy_doc(_legacy_heading_and_chip), 'Added.')
+        chip = build_mention_span('alert', '7', 'Alert #7')
+        self.assertEqual(f'## Findings\n\nsee {chip}\n\nAdded.', ydoc_update_to_markdown(state))
+        self.assertFalse(ydoc_update_is_legacy_tree(state))
+
+    def test_replace_converts_the_tree_to_text_first(self):
+        state = replace_markdown_in_ydoc_update(_legacy_doc(_legacy_heading_and_chip), '# New\n')
+        self.assertEqual('# New\n', ydoc_update_to_markdown(state))
+        doc = Doc()
+        frag = XmlFragment()
+        doc['prosemirror'] = frag
+        doc.apply_update(state)
+        self.assertEqual(0, len(frag.children))
 
 
 class TestRepairFlushedMarkMarkup(TestCase):
@@ -497,19 +525,16 @@ class TestRepairFlushedMarkMarkup(TestCase):
     def test_reseed_recovers_a_link(self):
         md = 'see \\<link href="https://x/u" title="null">f\\</link>\n'
         self.assertEqual('see [f](https://x/u)\n', _roundtrip(md))
-        self.assertIn(('f', {'link': {'href': 'https://x/u', 'title': None}}), _seeded_runs(md))
 
 
 # ---------------------------------------------------------------------------
-# markdown_to_ydoc_update / ydoc_update_to_markdown round-trips
+# markdown_to_ydoc_update / ydoc_update_to_markdown — the doc IS the markdown
 # ---------------------------------------------------------------------------
 
 class TestRoundTripEmpty(TestCase):
 
     def test_empty_string_produces_empty_string(self):
-        update = markdown_to_ydoc_update('')
-        result = ydoc_update_to_markdown(update)
-        self.assertEqual('', result)
+        self.assertEqual('', _roundtrip(''))
 
     def test_none_update_produces_empty_string(self):
         self.assertEqual('', ydoc_update_to_markdown(None))
@@ -518,322 +543,51 @@ class TestRoundTripEmpty(TestCase):
         self.assertEqual('', ydoc_update_to_markdown(b''))
 
     def test_markdown_to_ydoc_returns_bytes(self):
-        self.assertIsInstance(markdown_to_ydoc_update('hello'), bytes)
+        self.assertIsInstance(markdown_to_ydoc_update('# T\n'), bytes)
 
     def test_markdown_to_ydoc_with_none_does_not_crash(self):
-        # None is coerced to '' inside the function
-        result = markdown_to_ydoc_update(None)
-        self.assertIsInstance(result, bytes)
+        self.assertEqual('', ydoc_update_to_markdown(markdown_to_ydoc_update(None)))
 
 
-class TestRoundTripHeadings(TestCase):
+class TestRoundTripIsTheIdentity(TestCase):
+    """The editor edits the markdown source: what is seeded is what the
+    user sees and what flushes back, formatting included."""
 
-    def test_h1_round_trips(self):
-        md = '# Hello\n'
-        self.assertEqual(md, _roundtrip(md))
+    def test_markdown_is_kept_verbatim(self):
+        for md in (
+            '# Title\n\nParagraph.\n',
+            '* star bullets\n* stay stars\n',
+            'no terminal newline',
+            'line one\nline two\n',
+            'a_b and 2*3 are not escaped\n',
+            '```python\ndef f():\n    return "**not bold**"\n```\n',
+            '> quote\n>\n> - list in quote\n',
+            '1. one\n1. one again\n',
+            '| A | B |\n|---|:-:|\n| 1 | 2 |\n',
+            '<details><summary>raw html</summary>stays text</details>\n',
+            'emoji 😀 and accents éà\n',
+        ):
+            with self.subTest(md=md):
+                self.assertEqual(md, _roundtrip(md))
 
-    def test_h2_round_trips(self):
-        md = '## Section\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_h3_round_trips(self):
-        md = '### Sub-section\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_h4_round_trips(self):
-        md = '#### Deep\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_h5_round_trips(self):
-        md = '##### Deeper\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_h6_round_trips(self):
-        md = '###### Deepest\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_heading_followed_by_paragraph(self):
-        md = '# Title\n\nSome text.\n'
-        self.assertEqual(md, _roundtrip(md))
-
-
-class TestRoundTripParagraphs(TestCase):
-
-    def test_simple_paragraph_round_trips(self):
-        md = 'Hello, world.\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_multiple_paragraphs(self):
-        md = 'First.\n\nSecond.\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_paragraph_with_escaped_asterisk(self):
-        # An asterisk in normal prose should survive unchanged
-        result = _roundtrip('The * symbol.\n')
-        self.assertIn('*', result)
-
-
-class TestRoundTripBoldItalic(TestCase):
-
-    def test_bold_round_trips(self):
-        md = 'This is **bold** text.\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_italic_round_trips(self):
-        md = 'This is *italic* text.\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_bold_and_italic_combined(self):
-        md = '**bold** and *italic*.\n'
-        result = _roundtrip(md)
-        self.assertIn('**bold**', result)
-        self.assertIn('*italic*', result)
-
-
-class TestRoundTripInlineCode(TestCase):
-
-    def test_inline_code_round_trips(self):
-        md = 'Use `printf()` here.\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_inline_code_with_special_chars_preserved(self):
-        md = 'Run `ls -la | grep foo`.\n'
-        result = _roundtrip(md)
-        self.assertIn('`ls -la | grep foo`', result)
-
-
-class TestRoundTripFencedCodeBlock(TestCase):
-
-    def test_fenced_code_block_no_lang_round_trips(self):
-        md = '```\nsome code\n```\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_fenced_code_block_with_language_round_trips(self):
-        md = '```python\nprint("hi")\n```\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_fenced_code_block_multiline_round_trips(self):
-        md = '```bash\necho hello\necho world\n```\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_empty_code_block_round_trips(self):
-        md = '```\n```\n'
-        self.assertEqual(md, _roundtrip(md))
-
-
-class TestRoundTripUnorderedList(TestCase):
-
-    def test_single_item_unordered_list(self):
-        md = '- item\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_multi_item_unordered_list(self):
-        md = '- alpha\n- beta\n- gamma\n'
-        self.assertEqual(md, _roundtrip(md))
-
-
-class TestRoundTripOrderedList(TestCase):
-
-    def test_single_item_ordered_list(self):
-        md = '1. first\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_multi_item_ordered_list(self):
-        md = '1. one\n2. two\n3. three\n'
-        self.assertEqual(md, _roundtrip(md))
-
-
-class TestRoundTripBlockquote(TestCase):
-
-    def test_simple_blockquote_round_trips(self):
-        md = '> quoted text\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_multi_line_blockquote_content_preserved(self):
-        # Two `> …` lines are parsed as a single paragraph with a softbreak,
-        # which the renderer maps to a hardBreak (`  \n`). The exact whitespace
-        # differs from the original input, but both lines of text survive.
-        md = '> line one\n> line two\n'
-        result = _roundtrip(md)
-        self.assertIn('line one', result)
-        self.assertIn('line two', result)
-        self.assertTrue(result.startswith('>'))
-
-    def test_blockquote_with_paragraph_inside(self):
-        md = '> A paragraph inside a quote.\n'
-        self.assertEqual(md, _roundtrip(md))
-
-
-class TestRoundTripMixed(TestCase):
-
-    def test_heading_then_list_then_paragraph(self):
-        md = '# Heading\n\n- item one\n- item two\n\nSome text.\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_code_block_after_paragraph(self):
-        md = 'Here is some code:\n\n```python\nx = 1\n```\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_update_is_content_stable(self):
-        """Same markdown round-trips to the same markdown content.
-
-        Y.Doc update bytes embed random client IDs so raw bytes differ
-        per call. What must be stable is the decoded content — that
-        the round-trip reproduces the same markdown string.
-        """
-        md = '# Title\n\nParagraph.\n'
-        self.assertEqual(
-            ydoc_update_to_markdown(markdown_to_ydoc_update(md)),
-            ydoc_update_to_markdown(markdown_to_ydoc_update(md)),
-        )
-
-
-# ---------------------------------------------------------------------------
-# Mention chips
-# ---------------------------------------------------------------------------
-
-class TestRoundTripMentions(TestCase):
-    """Mention spans must survive the markdown → Y.Doc → markdown trip.
-
-    Before mention support existed, the span was parsed as literal text
-    on the way in (`html: False`) and the `caseMention` / `userMention`
-    XmlElement the TipTap binding writes was dropped on the way out —
-    silent data loss on every flush.
-    """
-
-    def test_alert_chip_alone_round_trips(self):
+    def test_chips_are_kept_verbatim(self):
         chip = build_mention_span('alert', 106, 'Alert #106')
-        md = f'{chip}\n'
+        md = f'## {chip}\n\n- see {chip} and **{chip}**\n'
         self.assertEqual(md, _roundtrip(md))
 
-    def test_alert_chip_in_a_paragraph_round_trips(self):
-        chip = build_mention_span('alert', 106, 'Alert #106')
-        md = f'Escalated from {chip} this morning.\n'
-        self.assertEqual(md, _roundtrip(md))
+    def test_crlf_line_endings_become_lf(self):
+        self.assertEqual('a\n\nb\n', _roundtrip('a\r\n\r\nb\r\n'))
 
-    def test_note_chip_round_trips(self):
-        """The latent data-loss regression: existing kinds were destroyed too."""
-        chip = build_mention_span('note', 7, 'Runbook')
-        md = f'See {chip} for details.\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_user_chip_round_trips_with_at_sign(self):
-        chip = build_mention_span('user', 3, 'alice')
-        self.assertIn('>@alice<', chip)
-        md = f'Assigned to {chip}.\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_asset_chip_round_trips(self):
-        chip = build_mention_span('asset', 12, 'WKS-042')
-        md = f'{chip} was compromised.\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_two_chips_in_one_paragraph_round_trip(self):
-        first = build_mention_span('alert', 1, 'Alert #1')
-        second = build_mention_span('alert', 2, 'Alert #2')
-        md = f'Merged {first} {second} into this case.\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_chip_mid_sentence_keeps_surrounding_text(self):
-        chip = build_mention_span('alert', 42, 'Alert #42')
-        result = _roundtrip(f'before {chip} after\n')
-        self.assertTrue(result.startswith('before '))
-        self.assertTrue(result.rstrip('\n').endswith(' after'))
-        self.assertIn(chip, result)
-
-    def test_chip_in_heading_round_trips(self):
-        chip = build_mention_span('alert', 9, 'Alert #9')
-        md = f'## Escalated {chip}\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_chip_in_list_item_round_trips(self):
-        chip = build_mention_span('ioc', 5, 'evil.com')
-        md = f'- seen in {chip}\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_chip_inside_bold_survives(self):
-        """The chip is a node, not text, so the bold mark around it is not
-        re-emitted — but the chip itself and the surrounding words must
-        survive rather than being dropped."""
-        chip = build_mention_span('alert', 106, 'Alert #106')
-        result = _roundtrip(f'**urgent {chip}** now\n')
-        self.assertIn(chip, result)
-        self.assertIn('urgent', result)
-        self.assertIn('now', result)
-
-    def test_chip_inside_link_survives(self):
-        chip = build_mention_span('note', 7, 'Runbook')
-        result = _roundtrip(f'[see {chip} here](/case/1/notes/7)\n')
-        self.assertIn(chip, result)
-        self.assertIn('see', result)
-        self.assertIn('here', result)
-
-    def test_chip_label_with_html_special_chars_round_trips(self):
-        # The label is HTML-escaped inside the attribute; parsing must
-        # unescape it so re-emitting doesn't double-escape.
-        chip = build_mention_span('asset', 4, 'R&D "box" <1>')
-        self.assertIn('&amp;', chip)
-        md = f'{chip}\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_chip_id_cannot_break_out_of_its_attribute(self):
-        # Escalation passes an int, but the flush path re-emits whatever a
-        # connected client put in the Y.Doc's `id` attribute, so the id is
-        # escaped exactly like the label — and unescaped on the way back
-        # in, or the round trip would drift on every flush.
-        chip = build_mention_span('asset', '4" onload="x', 'WKS')
-        self.assertNotIn('onload="x', chip)
-        self.assertIn('&quot;', chip)
-        md = f'{chip}\n'
-        self.assertEqual(md, _roundtrip(md))
-
-    def test_chip_is_stable_across_two_round_trips(self):
-        chip = build_mention_span('alert', 106, 'Alert #106')
-        once = _roundtrip(f'Alert: {chip}\n')
-        self.assertEqual(once, _roundtrip(once))
-
-    def test_chip_survives_a_legacy_case_url_rewrite_in_the_same_text(self):
-        chip = build_mention_span('alert', 3, 'Alert #3')
-        md = f'{chip} and [case](/case?cid=8)\n'
-        result = _roundtrip(md)
-        self.assertIn(chip, result)
-        self.assertIn('/case/8', result)
-
-    # --- degradation ---
-
-    def test_span_without_data_id_degrades_to_text(self):
-        # No `data-id` → not a mention. It must not raise and must not
-        # silently swallow the body.
-        md = '<span data-mention data-kind="alert">no id</span>\n'
-        result = _roundtrip(md)
-        self.assertIn('no id', result)
-
-    def test_unknown_kind_does_not_raise_and_is_not_a_user_mention(self):
-        md = '<span data-mention data-kind="wibble" data-id="3" data-label="X">#X</span>\n'
-        result = _roundtrip(md)
-        self.assertIn('data-id="3"', result)
-        self.assertIn('X', result)
-        self.assertNotIn('data-kind="user"', result)
-
-    def test_unclosed_span_degrades_to_text(self):
-        md = '<span data-mention data-kind="alert" data-id="1" data-label="A">#A\n'
-        result = _roundtrip(md)
-        self.assertIn('#A', result)
-
-    def test_lone_less_than_is_untouched(self):
-        result = _roundtrip('a < b\n')
-        self.assertIn('<', result)
-
-    # --- legacy FontAwesome cleanup in the full pipeline ---
-
-    def test_legacy_fontawesome_alert_link_is_stripped_not_shown_as_text(self):
-        md = "### IRIS alert link\n\n[<i class='fa-solid fa-bell'></i> #106](/alerts?alert_ids=106)\n"
+    def test_legacy_shapes_are_cleaned(self):
+        md = "[<i class='fa-solid fa-bell'></i> #106](/case/iocs?cid=8&ioc_id=3)\n"
         result = _roundtrip(md)
         self.assertNotIn('fa-solid', result)
-        self.assertNotIn('<i ', result)
-        self.assertNotIn(r'\<i', result)
-        self.assertIn('106', result)
-        self.assertIn('/alerts?alert_ids=106', result)
+        self.assertNotIn('cid=8', result)
+
+    def test_normalize_markdown_is_the_seeded_content(self):
+        md = 'a\r\nb [x](/case?cid=8)'
+        self.assertEqual(_roundtrip(md), normalize_markdown(md))
+        self.assertEqual('', normalize_markdown(None))
 
 
 # ---------------------------------------------------------------------------
@@ -899,8 +653,12 @@ class TestAppendMarkdownToYdocUpdate(TestCase):
     def test_append_result_equals_the_concatenated_markdown(self):
         base = '# Title\n\nFirst.\n'
         added = 'Second.'
-        self.assertEqual(_roundtrip(base + '\n' + added + '\n'),
-                         _append(base, added))
+        self.assertEqual(base + '\n' + added, _append(base, added))
+
+    def test_append_starts_a_block_of_its_own(self):
+        self.assertEqual('a\n\nb', _append('a', 'b'))
+        self.assertEqual('a\n\nb', _append('a\n', 'b'))
+        self.assertEqual('a\n\nb', _append('a\n\n', 'b'))
 
     def test_multi_block_append_keeps_its_internal_order(self):
         result = _append('Intro.\n', '## Section\n\n- a\n- b\n')
@@ -959,7 +717,7 @@ class TestAppendMarkdownToYdocUpdate(TestCase):
         state = append_markdown_to_ydoc_update(state, 'One.')
         state = append_markdown_to_ydoc_update(state, 'Two.')
         result = ydoc_update_to_markdown(state)
-        self.assertEqual('Base.\n\nOne.\n\nTwo.\n', result)
+        self.assertEqual('Base.\n\nOne.\n\nTwo.', result)
         # Re-seeding from the rendered markdown yields the same document.
         self.assertEqual(result, _roundtrip(result))
 
@@ -967,7 +725,7 @@ class TestAppendMarkdownToYdocUpdate(TestCase):
         state = markdown_to_ydoc_update('')
         for _ in range(3):
             state = append_markdown_to_ydoc_update(state, 'line')
-        self.assertEqual('line\n\nline\n\nline\n', ydoc_update_to_markdown(state))
+        self.assertEqual('line\n\nline\n\nline', ydoc_update_to_markdown(state))
 
     # --- returned value shape ---
 
@@ -1036,16 +794,14 @@ class TestReplaceMarkdownInYdocUpdate(TestCase):
         self.assertNotIn('Old.', result)
 
     def test_a_client_holding_the_old_state_converges_on_the_new_content(self):
-        """The reason the old blocks are deleted in the CRDT rather than
+        """The reason the old text is deleted in the CRDT rather than
         rebuilt from scratch: an editor still holding the old document
         must end up with the new content only, not old + new."""
-        from pycrdt import Doc, XmlFragment
-
         old = markdown_to_ydoc_update('# Draft\n\nMessy notes.\n')
         new = replace_markdown_in_ydoc_update(old, '# Clean\n\nTidy notes.\n')
 
         client = Doc()
-        client['prosemirror'] = XmlFragment()
+        client['markdown'] = Text()
         client.apply_update(old)
         client.apply_update(new)
         result = ydoc_update_to_markdown(client.get_update())
@@ -1054,3 +810,45 @@ class TestReplaceMarkdownInYdocUpdate(TestCase):
     def test_replace_runs_the_cleaning_pre_passes(self):
         result = _replace('Base.\n', 'see [the case](/case?cid=8)')
         self.assertIn('/case/8', result)
+
+    def test_only_the_changed_span_is_replaced(self):
+        """What an editor typed concurrently outside the rewritten span
+        survives the merge."""
+        old = markdown_to_ydoc_update('# Title\n\nBody one.\n\nFooter.\n')
+
+        client = Doc()
+        text = Text()
+        client['markdown'] = text
+        client.apply_update(old)
+        text.insert(len(text), 'Typed meanwhile.\n')
+        typed = client.get_update()
+
+        new = replace_markdown_in_ydoc_update(old, '# Title\n\nBody two.\n\nFooter.\n')
+        client.apply_update(new)
+        self.assertEqual('# Title\n\nBody two.\n\nFooter.\nTyped meanwhile.\n',
+                         ydoc_update_to_markdown(client.get_update()))
+
+        server = Doc()
+        server['markdown'] = Text()
+        server.apply_update(new)
+        server.apply_update(typed)
+        self.assertEqual(str(text), str(server['markdown']))
+
+    def test_identical_markdown_changes_nothing(self):
+        old = markdown_to_ydoc_update('Same.\n')
+        self.assertEqual('Same.\n', ydoc_update_to_markdown(replace_markdown_in_ydoc_update(old, 'Same.\n')))
+
+    def test_multi_byte_characters_around_the_change(self):
+        """pycrdt indexes text in UTF-8 bytes: offsets computed in
+        characters would cut a character in two."""
+        cases = [
+            ('a😀é b', 'a😀Xé b'),
+            ('😀😀😀', '😀😁😀'),
+            ('é', ''),
+            ('', 'ü'),
+            ('日本語のノート', '日本のノート'),
+            ('chip 🎉 end', 'chip 🎉🎉 end'),
+        ]
+        for before, after in cases:
+            with self.subTest(before=before, after=after):
+                self.assertEqual(after, _replace(before, after))

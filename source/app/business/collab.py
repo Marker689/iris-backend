@@ -41,6 +41,7 @@ from app.datamgmt.collab_db import collab_lock_doc
 from app.db import db
 from app.iris_engine.collab.render import markdown_to_ydoc_update
 from app.iris_engine.collab.render import normalize_markdown
+from app.iris_engine.collab.render import ydoc_update_is_legacy_tree
 from app.iris_engine.collab.render import ydoc_update_to_markdown
 from app.iris_engine.utils.tracker import track_activity
 from app.models.authorization import CaseAccessLevel
@@ -257,11 +258,47 @@ def resolve_doc(doc_name, user_id):
 #       which the v3 re-seed then froze into the doc as literal text.
 #       Marks are now Yjs formatting both ways, and the pre-parse pass
 #       turns the pseudo-XML back into markdown.
-_CURRENT_SEEDER_VERSION = 4
+#   5 — Markdown source (Oct 2026). The editor moved from TipTap to
+#       CodeMirror, which edits the markdown itself in a `Y.Text`
+#       instead of a ProseMirror tree. Version 4 rows are converted
+#       from their tree (see `_seed_markdown`), so edits not flushed
+#       yet survive; older ones re-seed from the source column.
+_CURRENT_SEEDER_VERSION = 5
+
+# The last version whose Y.Doc holds a ProseMirror tree that
+# `ydoc_update_to_markdown` still renders faithfully.
+_LAST_TREE_SEEDER_VERSION = 4
 
 
 def _is_seeded(row):
     return row is not None and bool(row.y_state) and row.seeder_version == _CURRENT_SEEDER_VERSION
+
+
+def _seed_markdown(row, current_content):
+    """The markdown to seed `doc_name` with: its source column, unless
+    the row holds version-4 content with edits not flushed to it yet.
+
+    A tree whose render is the row's `content_md` (what the last flush
+    or seed left there) has nothing the source column lacks: seeding
+    from the column keeps its exact formatting, where the tree render
+    would be rewritten to the column on the next flush as an edit
+    nobody made.
+
+    A version-4 row that holds text already went through a server
+    write (`collab/sync.py`), which converted its tree in place: the
+    text is the whole document, unflushed edits included.
+    """
+    if row is None or not row.y_state or row.seeder_version != _LAST_TREE_SEEDER_VERSION:
+        return current_content or ''
+    state = bytes(row.y_state)
+    try:
+        stored_md = ydoc_update_to_markdown(state)
+        is_tree = ydoc_update_is_legacy_tree(state)
+    except Exception:
+        return current_content or ''
+    if not stored_md or (is_tree and stored_md == (row.content_md or '')):
+        return current_content or ''
+    return stored_md
 
 
 def ensure_snapshot(doc_name, current_content):
@@ -281,7 +318,8 @@ def ensure_snapshot(doc_name, current_content):
         once per document, atomically — UNLESS the row's `seeder_version`
         is below `_CURRENT_SEEDER_VERSION`, in which case we re-seed
         from `current_content` so the doc picks up whatever the newer
-        parser can now express.
+        parser can now express (or, for a version-4 tree holding
+        unflushed edits, from that tree, see `_seed_markdown`).
 
     The returned bytes are what we ship in `sync-init`. Every client
     hydrates from these bytes and only these bytes — there's no
@@ -300,8 +338,9 @@ def ensure_snapshot(doc_name, current_content):
     # the source column, because the old y_state was produced by a
     # parser that couldn't represent the new block types — keeping
     # it would leave users unable to see content they know is in
-    # `note.note_content` / `case.description` / etc.
-    seed_md = current_content or ''
+    # `note.note_content` / `case.description` / etc. Version-4 trees
+    # are the exception: they render faithfully, see `_seed_markdown`.
+    seed_md = _seed_markdown(row, current_content)
     seed_bytes = markdown_to_ydoc_update(seed_md)
 
     # Seeded under the row lock, and only if no concurrent join did it

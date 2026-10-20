@@ -25,10 +25,19 @@ from unittest import TestCase
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+from pycrdt import Doc
+from pycrdt import XmlElement
+from pycrdt import XmlFragment
+from pycrdt import XmlText
+
 from app.business import collab
+from app.iris_engine.collab.render import append_markdown_to_ydoc_update
+from app.iris_engine.collab.render import ydoc_update_is_legacy_tree
+from app.iris_engine.collab.render import ydoc_update_to_markdown
 
 
 _CURRENT = collab._CURRENT_SEEDER_VERSION
+_LAST_TREE = collab._LAST_TREE_SEEDER_VERSION
 
 
 def _row(y_state=b'stored', seeder_version=_CURRENT):
@@ -85,3 +94,67 @@ class TestEnsureSnapshot(TestCase):
         self.assertEqual(b'theirs', seeded_meanwhile.y_state)
         mocks.db.session.commit.assert_not_called()
         mocks.db.session.rollback.assert_called_once()
+
+
+def _legacy_tree(*paragraphs):
+    """A version-4 document: a ProseMirror tree, no text."""
+    doc = Doc()
+    frag = XmlFragment()
+    doc['prosemirror'] = frag
+    for paragraph in paragraphs:
+        frag.children.append(XmlElement('paragraph')).children.append(XmlText(paragraph))
+    return doc.get_update()
+
+
+class TestLegacyTreeMigration(TestCase):
+    """Version-4 rows hold a tree the CodeMirror editor can't bind to:
+    the re-seed carries over the edits it holds that were not flushed."""
+
+    def test_tree_with_unflushed_edits_seeds_from_the_tree(self):
+        row = _row(_legacy_tree('flushed', 'typed since'), _LAST_TREE)
+        row.content_md = 'flushed\n'
+        self.assertEqual('flushed\n\ntyped since\n', collab._seed_markdown(row, 'flushed'))
+
+    def test_tree_already_flushed_seeds_from_the_column(self):
+        # The column keeps its own formatting: the tree render would be
+        # flushed back over it as an edit nobody made.
+        row = _row(_legacy_tree('same'), _LAST_TREE)
+        row.content_md = 'same\n'
+        self.assertEqual('* raw column', collab._seed_markdown(row, '* raw column'))
+
+    def test_tree_converted_by_a_server_write_seeds_from_its_text(self):
+        state = append_markdown_to_ydoc_update(_legacy_tree('typed'), 'appended')
+        row = _row(state, _LAST_TREE)
+        row.content_md = ydoc_update_to_markdown(state)
+        self.assertEqual('typed\n\nappended', collab._seed_markdown(row, 'column'))
+
+    def test_empty_tree_seeds_from_the_column(self):
+        row = _row(_legacy_tree(), _LAST_TREE)
+        row.content_md = 'stale'
+        self.assertEqual('column', collab._seed_markdown(row, 'column'))
+
+    def test_unreadable_state_seeds_from_the_column(self):
+        self.assertEqual('column', collab._seed_markdown(_row(b'garbage', _LAST_TREE), 'column'))
+
+    def test_older_versions_seed_from_the_column(self):
+        row = _row(_legacy_tree('typed since'), _LAST_TREE - 1)
+        self.assertEqual('column', collab._seed_markdown(row, 'column'))
+
+    def test_first_open_seeds_from_the_column(self):
+        self.assertEqual('column', collab._seed_markdown(None, 'column'))
+        self.assertEqual('', collab._seed_markdown(None, None))
+
+    def test_ensure_snapshot_reseeds_the_tree_as_text_with_a_new_epoch(self):
+        row = _row(_legacy_tree('typed since'), _LAST_TREE)
+        row.content_md = ''
+        doc_model = MagicMock()
+        doc_model.query.filter_by.return_value.first.return_value = row
+        with patch.object(collab, 'CollabDoc', doc_model), \
+                patch.object(collab, 'db', MagicMock()), \
+                patch.object(collab, 'collab_create_doc_if_missing'), \
+                patch.object(collab, 'collab_lock_doc', return_value=row):
+            state, epoch = collab.ensure_snapshot('note:1', 'column')
+        self.assertEqual(_CURRENT, epoch)
+        self.assertFalse(ydoc_update_is_legacy_tree(state))
+        self.assertEqual('typed since\n', ydoc_update_to_markdown(state))
+        self.assertEqual('typed since\n', row.content_md)

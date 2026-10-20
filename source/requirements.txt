@@ -40,12 +40,6 @@ psycogreen==1.0.2
 # wire-format change in a future major release doesn't silently break
 # the on-disk `collab_doc.y_state` blobs.
 pycrdt>=0.14,<0.15
-# `markdown-it-py` is the Python port of the same markdown-it parser
-# the frontend runs (via `tiptap-markdown`). Same token semantics on
-# both sides means the round-trip (client markdown → server Y.Doc →
-# server markdown → source column) doesn't lose information at the
-# parser boundary.
-markdown-it-py>=3.0,<4
 alembic==1.7.5
 setuptools~=70.3.0
 python-dateutil==2.8.2

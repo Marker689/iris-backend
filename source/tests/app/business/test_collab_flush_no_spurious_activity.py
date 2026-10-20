@@ -19,9 +19,9 @@
 """Merely opening a collaborative doc must not log an update.
 
 Every visit to a case summary logged "updated case summary" for the
-visitor. The Y.Doc is seeded from the raw source column, and the
-parse/render round trip is not the identity (terminal newline, `*` → `-`
-bullets, soft → hard breaks, escaping…). The flush on disconnect compared
+visitor. The Y.Doc is seeded from the raw source column, and seeding is
+not the identity (CRLF line endings, v2 URLs and other legacy shapes are
+cleaned). The flush on disconnect compared
 the render byte-for-byte against the column, saw a difference, rewrote the
 column and logged it — with no editor recorded, `track_activity` fell back
 to the visitor.
@@ -39,11 +39,11 @@ from app.iris_engine.collab.render import normalize_markdown
 
 
 # Raw markdown as alert merges, case templates and the v1 API write it:
-# none of it survives the round trip byte-for-byte.
+# it does not survive seeding byte-for-byte.
 _RAW_SUMMARY = (
-    '# Summary\n'
-    '* first finding\n'
-    '* second finding\n'
+    '# Summary\r\n'
+    '* first finding\r\n'
+    '* second finding, see [the case](/case?cid=8)\r\n'
     '\n'
     'line one\nline two   \n'
     '\n'
