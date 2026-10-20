@@ -67,7 +67,10 @@ def list_manual_hook_options(hook_type: str) -> List[dict]:
 
 
 _TARGET_LOADERS = {
-    'ioc': lambda target, _caseid: Ioc.query.filter(Ioc.ioc_id == target).first(),
+    'ioc': lambda target, caseid: Ioc.query.filter(
+        Ioc.ioc_id == target,
+        Ioc.case_id == caseid,
+    ).first(),
     'case': lambda _target, caseid: Cases.query.filter(Cases.case_id == caseid).first(),
     'asset': lambda target, caseid: CaseAssets.query.filter(
         CaseAssets.asset_id == target,

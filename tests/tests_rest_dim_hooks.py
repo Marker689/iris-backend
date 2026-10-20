@@ -179,6 +179,22 @@ class TestsRestDimHooks(TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual(0, response.json()['queued'])
 
+    def test_invoke_skips_ioc_of_another_case(self):
+        case_identifier = self._subject.create_dummy_case()
+        other_case_identifier = self._subject.create_dummy_case()
+        body = {'ioc_type_id': 1, 'ioc_tlp_id': 2, 'ioc_value': '8.8.8.8', 'ioc_description': '', 'ioc_tags': ''}
+        ioc = self._subject.create(f'/api/v2/cases/{other_case_identifier}/iocs', body).json()
+        response = self._invoke(
+            case_identifier,
+            {
+                'hook_name': 'on_manual_trigger_ioc',
+                'type': 'ioc',
+                'targets': [ioc['ioc_id']],
+            },
+        )
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(0, response.json()['queued'])
+
     def test_invoke_returns_403_when_user_has_no_case_access(self):
         case_identifier = self._subject.create_dummy_case()
         user = self._subject.create_dummy_user()
