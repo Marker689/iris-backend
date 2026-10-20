@@ -46,6 +46,7 @@ from app.business.alerts import alerts_search_grouped
 from app.business.alerts import alerts_search_vocabulary
 from app.business.alerts import alerts_create
 from app.business.alerts import alerts_get
+from app.business.alerts import alerts_load_for_display
 from app.business.alerts import alerts_update
 from app.business.alerts import alerts_delete
 from app.business.alerts import alerts_get_related
@@ -316,7 +317,7 @@ class AlertsOperations:
 
             if not ac_current_user_has_customer_access(result.alert_customer_id):
                 return response_api_error('User not entitled to create alerts for the client')
-            return response_api_created(self._schema.dump(result))
+            return response_api_created(self._schema.dump(alerts_load_for_display(result)))
 
         except ValidationError as e:
             return response_api_error('Data error', data=e.messages)
@@ -333,7 +334,7 @@ class AlertsOperations:
                 identifier,
                 fallback_customer_access=ac_current_user_has_customer_access
             )
-            return response_api_success(self._schema.dump(alert))
+            return response_api_success(self._schema.dump(alerts_load_for_display(alert)))
 
         except ObjectNotFoundError:
             return response_api_not_found()
@@ -416,7 +417,7 @@ class AlertsOperations:
             if request_data.get('alert_owner_id') == "-1" or request_data.get('alert_owner_id') == -1:
                 updated_alert.alert_owner_id = None
             result = alerts_update(pristine_alert, updated_alert, activity_data)
-            return response_api_success(self._schema.dump(result))
+            return response_api_success(self._schema.dump(alerts_load_for_display(result)))
 
         except ValidationError as e:
             return response_api_error('Data error', data=e.messages)

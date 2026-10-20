@@ -802,6 +802,24 @@ def get_alert_by_id(alert_id: int) -> Optional[Alert]:
     )
 
 
+def get_alert_for_display(alert_id: int) -> Optional[Alert]:
+    """The alert `alert_id` with everything `AlertSchema` dumps loaded.
+
+    `get_alert_by_id` stops at the alert's own IOCs and assets, which is
+    all most callers need; dumping the alert from there reads each asset's
+    IOC links one query at a time, so an alert carrying 500 assets costs
+    500 round-trips to display. Also usable on an alert already in the
+    session — whatever is not loaded yet, or was expired by a commit, is
+    loaded in batches.
+    """
+    return (
+        db.session.query(Alert)
+        .options(*_alert_list_options())
+        .filter(Alert.alert_id == alert_id)
+        .first()
+    )
+
+
 def get_unspecified_event_category():
     """
     Get the id of the 'Unspecified' event category

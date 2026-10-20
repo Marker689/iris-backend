@@ -37,6 +37,7 @@ from app.datamgmt.alerts.alerts_db import cache_similar_alert
 from app.datamgmt.alerts.alerts_db import delete_similar_alert_cache
 from app.datamgmt.alerts.alerts_db import delete_related_alerts_cache
 from app.datamgmt.alerts.alerts_db import get_alert_by_id
+from app.datamgmt.alerts.alerts_db import get_alert_for_display
 from app.datamgmt.alerts.alerts_db import delete_alert
 from app.datamgmt.alerts.alerts_db import get_filtered_alerts
 from app.datamgmt.alerts.alerts_db import get_filtered_alert_groups
@@ -230,6 +231,21 @@ def alerts_get(user, permissions, identifier, fallback_customer_access=None) -> 
     if not alert:
         raise ObjectNotFoundError()
     return alert
+
+
+def alerts_load_for_display(alert: Optional[Alert]) -> Optional[Alert]:
+    """`alert`, with everything its full serialization reads loaded in
+    batches. For the endpoints that answer with the whole alert: without
+    it, an alert with hundreds of assets costs a query per asset to dump.
+    Access is not checked again — `alert` is one the caller already got
+    through `alerts_get` or created."""
+    # A module hook may hand back something other than an alert; it is
+    # dumped as it was before.
+    alert_identifier = getattr(alert, 'alert_id', None)
+    if alert_identifier is None:
+        return alert
+    # Gone between the caller's load and this one: dump what we hold.
+    return get_alert_for_display(alert_identifier) or alert
 
 
 # TODO this is presentation code, should be in the presentation layer (frontend) rather than in the persistence layer!
