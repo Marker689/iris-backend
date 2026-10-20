@@ -177,9 +177,22 @@ def _object_name(subject, object_id):
     return ''
 
 
+def _is_batch(data, action) -> bool:
+    """A manual trigger on several objects: one event, `data` the list."""
+    return action == MANUAL_ACTION and isinstance(data, list) and len(data) > 1
+
+
+def _plural(label) -> str:
+    return label if label.lower().endswith('evidence') else f'{label}s'
+
+
 def webhooks_case_id(data, object_type, caseid=None):
     if caseid:
         return caseid
+    if isinstance(data, list) and len(data) > 1 and all(isinstance(item, dict) for item in data):
+        # Several objects belong to a case only if they all share it
+        case_ids = {webhooks_case_id(item, object_type) for item in data}
+        return case_ids.pop() if len(case_ids) == 1 else None
     subject = _subject(data, object_type)
     if object_type == 'case':
         object_id = _object_id(data, subject, 'case')
@@ -192,6 +205,27 @@ def webhooks_case_id(data, object_type, caseid=None):
     if isinstance(nested, dict):
         return nested.get('case_id') or nested.get('id')
     return None
+
+
+_CASE_LIST_PATHS = {
+    'asset': 'assets',
+    'ioc': 'iocs',
+    'note': 'notes',
+    'task': 'tasks',
+    'evidence': 'evidence',
+    'event': 'timeline',
+}
+
+
+def _batch_ui_path(object_type, case_id):
+    """The list the objects of a batch were picked from."""
+    if object_type == 'alert':
+        return '/alerts'
+    if not case_id:
+        return None
+    if object_type in _CASE_LIST_PATHS:
+        return f'/case/{case_id}/{_CASE_LIST_PATHS[object_type]}'
+    return f'/case/{case_id}'
 
 
 def _ui_path(object_type, action, subject, object_id, case_id):
@@ -233,24 +267,67 @@ def webhooks_make_event(hook_name, data, case=None, actor=None, instance_url='',
     `case` is `{id, name}` or None, `actor` is `{id, login, name}` or None
     (hooks fired from a Celery task have no user). Per-delivery fields
     (`delivery_id`, `webhook`) are added at send time.
+
+    Manual triggers also carry `object_ids`. Several objects make one
+    event about all of them: `object_id` is None and the title, summary
+    and link describe the batch.
     """
     object_type, action = webhooks_split_event(hook_name)
     event_label = webhooks_event_label(hook_name)
-    subject = _subject(data, object_type)
-    object_id = _object_id(data, subject, object_type)
-    object_name = _object_name(subject, object_id)
     case_id = case.get('id') if case else None
-
-    path = _ui_path(object_type, action, subject, object_id, case_id)
     base = (instance_url or '').rstrip('/')
+    who = (actor.get('name') or actor.get('login')) if actor else 'IRIS'
+
+    if _is_batch(data, action):
+        object_ids = [_object_id(item, item if isinstance(item, dict) else {}, object_type) for item in data]
+        object_id = None
+        plural = _plural(webhooks_object_label(object_type))
+        path = _batch_ui_path(object_type, case_id)
+        title = f'{event_label}: {len(data)} {plural}'
+        summary = f'{who} sent {len(data)} {plural.lower()}'
+        if case and object_type != 'case':
+            summary = f'{summary} in case #{case_id} {case.get("name") or ""}'.rstrip()
+    else:
+        subject = _subject(data, object_type)
+        object_id = _object_id(data, subject, object_type)
+        object_ids = [] if object_id is None else [object_id]
+        object_name = _object_name(subject, object_id)
+        path = _ui_path(object_type, action, subject, object_id, case_id)
+        title, summary = _describe(object_type, action, event_label, data, subject, object_name, who, case)
+
     url = f'{base}{path}' if path and base else None
 
+    stamp = timestamp or datetime.datetime.now(datetime.timezone.utc)
+    event = {
+        'event': hook_name,
+        'event_label': event_label,
+        'object_type': object_type,
+        'action': action,
+        'object_id': object_id,
+    }
+    if action == MANUAL_ACTION:
+        event['object_ids'] = object_ids
+    event.update({
+        'timestamp': stamp.isoformat(),
+        'title': title,
+        'summary': summary,
+        'url': url,
+        'case': case,
+        'actor': actor,
+        'data': data,
+        'iris': {'url': base or None, 'version': version},
+    })
+    return event
+
+
+def _describe(object_type, action, event_label, data, subject, object_name, who, case):
+    """(title, summary) of an event about a single object."""
+    case_id = case.get('id') if case else None
     if object_type == 'notification':
         title = subject.get('title') or event_label
         summary = subject.get('body') or title
     else:
         title = f'{event_label}: {object_name}' if object_name else event_label
-        who = (actor.get('name') or actor.get('login')) if actor else 'IRIS'
         if action == MANUAL_ACTION:
             what = 'sent'
         else:
@@ -265,20 +342,4 @@ def webhooks_make_event(hook_name, data, case=None, actor=None, instance_url='',
                 summary = f'{summary}: {text[:280]}'
         if case and object_type != 'case':
             summary = f'{summary} in case #{case_id} {case.get("name") or ""}'.rstrip()
-
-    stamp = timestamp or datetime.datetime.now(datetime.timezone.utc)
-    return {
-        'event': hook_name,
-        'event_label': event_label,
-        'object_type': object_type,
-        'action': action,
-        'object_id': object_id,
-        'timestamp': stamp.isoformat(),
-        'title': title,
-        'summary': summary,
-        'url': url,
-        'case': case,
-        'actor': actor,
-        'data': data,
-        'iris': {'url': base or None, 'version': version},
-    }
+    return title, summary

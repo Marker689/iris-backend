@@ -290,11 +290,18 @@ class TestWebhooksManualTriggers(TestCase):
         self.assertTrue(all(o['hook_name'] == 'on_manual_trigger_ioc' for o in options))
         self.assertEqual([], webhooks_manual_options('case'))
 
-    def test_invoke_should_queue_one_manual_delivery_per_target(self):
+    def test_invoke_should_queue_one_manual_delivery_for_all_targets(self):
         self.assertEqual(2, webhooks_invoke_manual(1, 'on_manual_trigger_ioc', ['a', 'b'], caseid=3))
-        calls = self.dispatch.delay.call_args_list
-        self.assertEqual(2, len(calls))
-        self.assertEqual(({'event': 'on_manual_trigger_ioc', 'data': 'a'}, [1], 'manual'), calls[0].args)
+        self.dispatch.delay.assert_called_once_with({'event': 'on_manual_trigger_ioc', 'data': ['a', 'b']}, [1],
+                                                    'manual')
+
+    def test_invoke_on_a_single_target_should_send_the_object_itself(self):
+        self.assertEqual(1, webhooks_invoke_manual(1, 'on_manual_trigger_ioc', ['a'], caseid=3))
+        self.dispatch.delay.assert_called_once_with({'event': 'on_manual_trigger_ioc', 'data': 'a'}, [1], 'manual')
+
+    def test_invoke_without_targets_should_queue_nothing(self):
+        self.assertEqual(0, webhooks_invoke_manual(1, 'on_manual_trigger_ioc', []))
+        self.dispatch.delay.assert_not_called()
 
     def test_invoke_should_refuse_a_hook_the_webhook_is_not_subscribed_to(self):
         for webhook_id, hook in ((3, 'on_manual_trigger_ioc'), (1, 'on_manual_trigger_case'),

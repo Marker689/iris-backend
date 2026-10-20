@@ -681,10 +681,13 @@ def webhooks_manual_options(hook_type) -> list:
 
 
 def webhooks_invoke_manual(webhook_id, hook_name, targets, caseid=None) -> int:
-    """Queue one delivery per target object (already loaded and access-checked).
+    """Queue a single delivery carrying every target object (already loaded
+    and access-checked).
 
-    One event per object keeps `data` shaped like the object's other
-    events, so a template works for both. The condition still applies.
+    One object keeps `data` shaped like the object's other events, so a
+    template works for both; several make `data` the list of them. Either
+    way `items` is the list, so a template looping over it handles both.
+    The condition still applies, once, to the whole batch.
     """
     try:
         webhook = webhooks_db_get(int(webhook_id))
@@ -695,10 +698,12 @@ def webhooks_invoke_manual(webhook_id, hook_name, targets, caseid=None) -> int:
         raise BusinessProcessingError('This webhook cannot be triggered on these objects')
 
     from app.iris_engine.webhooks.tasks import webhooks_dispatch_task
-    actor = webhooks_current_actor()
-    for target in targets:
-        event = webhooks_build_event(hook_name, target, caseid=caseid, actor=actor)
-        webhooks_dispatch_task.delay(event, [webhook.id], TRIGGER_MANUAL)
+    targets = list(targets)
+    if not targets:
+        return 0
+    data = targets[0] if len(targets) == 1 else targets
+    event = webhooks_build_event(hook_name, data, caseid=caseid, actor=webhooks_current_actor())
+    webhooks_dispatch_task.delay(event, [webhook.id], TRIGGER_MANUAL)
     return len(targets)
 
 

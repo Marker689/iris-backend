@@ -176,6 +176,32 @@ class TestsRestWebhooks(TestCase):
         self.assertEqual(['manual'], [d['trigger'] for d in deliveries])
         self.assertEqual('on_manual_trigger_case', deliveries[0]['event'])
 
+    def test_invoke_manual_trigger_on_several_objects_should_record_a_single_delivery(self):
+        webhook = self._create(events=['on_manual_trigger_ioc'])
+        case_identifier = self._subject.create_dummy_case()
+        ioc_identifiers = []
+        for value in ('8.8.8.8', '9.9.9.9'):
+            body = {'ioc_type_id': 1, 'ioc_tlp_id': 2, 'ioc_value': value, 'ioc_description': '', 'ioc_tags': ''}
+            ioc_identifiers.append(
+                self._subject.create(f'/api/v2/cases/{case_identifier}/iocs', body).json()['ioc_id'])
+        response = self._subject.create(f'/api/v2/cases/{case_identifier}/dim-hooks/invoke', {
+            'hook_name': 'on_manual_trigger_ioc', 'module_name': 'IRIS webhooks', 'hook_ui_name': 'Receiver',
+            'type': 'ioc', 'targets': ioc_identifiers, 'webhook_id': webhook['id'],
+        })
+        self.assertEqual(2, response.json()['queued'])
+        deliveries = []
+        for _ in range(40):
+            deliveries = self._subject.get(f'{_WEBHOOKS}/{webhook["id"]}/deliveries').json()['data']
+            if deliveries:
+                break
+            time.sleep(0.5)
+        time.sleep(1)
+        deliveries = self._subject.get(f'{_WEBHOOKS}/{webhook["id"]}/deliveries').json()['data']
+        self.assertEqual(1, len(deliveries))
+        delivery = self._subject.get(f'{_WEBHOOKS}/deliveries/{deliveries[0]["id"]}').json()
+        self.assertEqual(ioc_identifiers, delivery['payload']['object_ids'])
+        self.assertEqual(['8.8.8.8', '9.9.9.9'], [ioc['ioc_value'] for ioc in delivery['payload']['data']])
+
     def test_invoke_manual_trigger_should_return_400_for_another_object_type(self):
         webhook = self._create(events=['on_manual_trigger_ioc'])
         case_identifier = self._subject.create_dummy_case()

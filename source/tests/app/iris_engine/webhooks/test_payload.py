@@ -113,8 +113,51 @@ class TestWebhooksMakeEvent(TestCase):
         event = _make('on_postload_alert_cluster_create', {'cluster_id': 5, 'cluster_title': 'Wave'})
         self.assertEqual(f'{_BASE}/alert-clusters/5', event['url'])
 
+    def test_manual_event_on_one_object_should_describe_it_and_list_its_id(self):
+        event = _make('on_manual_trigger_ioc', {'ioc_id': 3, 'ioc_value': '1.2.3.4'}, case=_CASE)
+        self.assertEqual(3, event['object_id'])
+        self.assertEqual([3], event['object_ids'])
+        self.assertEqual('IOC manual trigger: 1.2.3.4', event['title'])
+        self.assertEqual('Jane Doe sent ioc 1.2.3.4 in case #4 #4 - Phishing', event['summary'])
+        self.assertEqual(f'{_BASE}/case/4/iocs/3', event['url'])
+
+    def test_manual_event_on_several_objects_should_describe_the_batch(self):
+        data = [{'ioc_id': 3, 'ioc_value': '1.2.3.4'}, {'ioc_id': 5, 'ioc_value': 'evil.com'}]
+        event = _make('on_manual_trigger_ioc', data, case=_CASE)
+        self.assertIsNone(event['object_id'])
+        self.assertEqual([3, 5], event['object_ids'])
+        self.assertEqual('IOC manual trigger: 2 IOCs', event['title'])
+        self.assertEqual('Jane Doe sent 2 iocs in case #4 #4 - Phishing', event['summary'])
+        self.assertEqual(f'{_BASE}/case/4/iocs', event['url'])
+        self.assertEqual(data, event['data'])
+
+    def test_manual_batch_of_timeline_events_should_link_to_the_timeline(self):
+        event = _make('on_manual_trigger_event', [{'event_id': 1}, {'event_id': 2}], case=_CASE)
+        self.assertEqual('Timeline event manual trigger: 2 Timeline events', event['title'])
+        self.assertEqual(f'{_BASE}/case/4/timeline', event['url'])
+
+    def test_manual_batch_of_evidence_should_not_pluralize_it(self):
+        event = _make('on_manual_trigger_evidence', [{'id': 1}, {'id': 2}], case=_CASE)
+        self.assertEqual('Evidence manual trigger: 2 Evidence', event['title'])
+
+    def test_manual_batch_of_alerts_should_link_to_the_alerts(self):
+        event = _make('on_manual_trigger_alert', [{'alert_id': 1}, {'alert_id': 2}])
+        self.assertEqual([1, 2], event['object_ids'])
+        self.assertEqual(f'{_BASE}/alerts', event['url'])
+        self.assertEqual('Jane Doe sent 2 alerts', event['summary'])
+
+    def test_automatic_event_should_not_carry_object_ids(self):
+        event = _make('on_postload_asset_update', [{'asset_id': 1}, {'asset_id': 2}], case=_CASE)
+        self.assertNotIn('object_ids', event)
+
 
 class TestWebhooksCaseId(TestCase):
+
+    def test_objects_sharing_a_case_should_give_it(self):
+        self.assertEqual(4, webhooks_case_id([{'case_id': 4}, {'case_id': 4}], 'ioc'))
+
+    def test_objects_of_different_cases_should_give_none(self):
+        self.assertIsNone(webhooks_case_id([{'case_id': 4}, {'case_id': 5}], 'alert'))
 
     def test_explicit_caseid_should_win(self):
         self.assertEqual(7, webhooks_case_id({'case_id': 1}, 'ioc', caseid=7))
