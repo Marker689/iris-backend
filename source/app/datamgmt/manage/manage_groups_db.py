@@ -71,7 +71,8 @@ def get_users_by_group_identifiers():
         UserGroup.group_id,
         User.user,
         User.id,
-        User.name
+        User.name,
+        User.email
     ).join(UserGroup.user).all()
 
     result = {}
@@ -80,12 +81,14 @@ def get_users_by_group_identifiers():
             result[member.group_id] = [{
                 'user': member.user,
                 'name': member.name,
+                'email': member.email,
                 'id': member.id
             }]
         else:
             result[member.group_id].append({
                 'user': member.user,
                 'name': member.name,
+                'email': member.email,
                 'id': member.id
             })
     return result
@@ -164,7 +167,8 @@ def get_group_with_members(group_id):
         UserGroup.group_id,
         User.user,
         User.id,
-        User.name
+        User.name,
+        User.email
     ).join(
         UserGroup.user
     ).filter(
@@ -178,12 +182,14 @@ def get_group_with_members(group_id):
             membership_list[member.group_id] = [{
                 'user': member.user,
                 'name': member.name,
+                'email': member.email,
                 'id': member.id
             }]
         else:
             membership_list[member.group_id].append({
                 'user': member.user,
                 'name': member.name,
+                'email': member.email,
                 'id': member.id
             })
 

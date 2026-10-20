@@ -191,3 +191,19 @@ class TestsRestGroups(TestCase):
         administrator_group_identifier = user_groups[0]['group_id']
         response = self._subject.delete(f'/api/v2/manage/groups/{administrator_group_identifier}')
         self.assertEqual(400, response.status_code)
+
+    def test_list_group_members_should_return_the_email_of_each_member(self):
+        user = self._subject.create_dummy_user()
+        response = self._subject.create('/api/v2/manage/groups', {'group_name': 'name', 'group_description': 'description'}).json()
+        identifier = response['group_id']
+        self._subject.update(f'/api/v2/manage/groups/{identifier}/members', {'members': [user.get_identifier()]})
+        response = self._subject.get(f'/api/v2/manage/groups/{identifier}/members').json()
+        self.assertEqual(f'{user.get_login()}@aa.eu', response['data'][0]['email'])
+
+    def test_get_group_should_return_the_email_of_each_member(self):
+        user = self._subject.create_dummy_user()
+        response = self._subject.create('/api/v2/manage/groups', {'group_name': 'name', 'group_description': 'description'}).json()
+        identifier = response['group_id']
+        self._subject.update(f'/api/v2/manage/groups/{identifier}/members', {'members': [user.get_identifier()]})
+        response = self._subject.get(f'/api/v2/manage/groups/{identifier}').json()
+        self.assertEqual(f'{user.get_login()}@aa.eu', response['group_members'][0]['email'])
