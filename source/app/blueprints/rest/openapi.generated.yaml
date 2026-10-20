@@ -1794,6 +1794,13 @@ paths:
           \ (or `-`), parentheses, quoted phrases, ranges `[a TO b]` / `{a TO b}` and `*` / `?` wildcards.\
           \ A bare term searches title, description, source, reference, tags and note. GET /alerts/search-schema\
           \ lists every alias. A malformed expression returns 400 with the character offset in `data.position`."
+      - name: observables
+        in: query
+        required: false
+        schema:
+          type: string
+        description: '''full'' (default) lists every asset and IOC of each alert; ''summary'' only the
+          first ten of each, with their totals in `assets_count` and `iocs_count`'
       responses:
         '200':
           description: Success
@@ -2525,6 +2532,13 @@ paths:
           \ (or `-`), parentheses, quoted phrases, ranges `[a TO b]` / `{a TO b}` and `*` / `?` wildcards.\
           \ A bare term searches title, description, source, reference, tags and note. GET /alerts/search-schema\
           \ lists every alias. A malformed expression returns 400 with the character offset in `data.position`."
+      - name: observables
+        in: query
+        required: false
+        schema:
+          type: string
+        description: '''full'' (default) lists every asset and IOC of each alert; ''summary'' only the
+          first ten of each, with their totals in `assets_count` and `iocs_count`'
       responses:
         '200':
           description: Success

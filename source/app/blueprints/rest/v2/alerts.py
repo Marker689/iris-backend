@@ -47,6 +47,7 @@ from app.business.alerts import alerts_search_vocabulary
 from app.business.alerts import alerts_create
 from app.business.alerts import alerts_get
 from app.business.alerts import alerts_load_for_display
+from app.business.alerts import alerts_observables_summary
 from app.business.alerts import alerts_update
 from app.business.alerts import alerts_delete
 from app.business.alerts import alerts_get_related
@@ -135,6 +136,50 @@ def _alert_update_activity(pristine_alert, request_data):
     return activity_data
 
 
+_ALERT_OBSERVABLE_FIELDS = ('assets', 'iocs')
+
+
+class _AlertsObservablesSummaryDump:
+    """Dumps alerts as `AlertSchema` does, except that `assets` and `iocs`
+    hold only the first few of each, next to `assets_count` and
+    `iocs_count`. Stands in for the schema of a listing searched with
+    `include_observables=False`, the alerts' own observables being left
+    unloaded.
+
+    `fields` restricts the dump as it does `AlertSchema(only=...)`; the
+    observables and their counts are only added when it names them.
+    """
+
+    def __init__(self, fields):
+        self._observables = _ALERT_OBSERVABLE_FIELDS
+        self._schema = AlertSchema(exclude=_ALERT_OBSERVABLE_FIELDS)
+        if fields:
+            try:
+                self._schema = AlertSchema(only=[field for field in fields if field not in _ALERT_OBSERVABLE_FIELDS])
+                self._observables = tuple(field for field in _ALERT_OBSERVABLE_FIELDS if field in fields)
+            except Exception:
+                pass
+        self._assets_schema = CaseAssetsSchema(exclude=['alerts'], many=True)
+        self._iocs_schema = IocSchema(many=True)
+
+    def dump(self, alerts, many=False):
+        listed = list(alerts) if many else [alerts]
+        dumped = self._schema.dump(listed, many=True)
+
+        if self._observables:
+            summary = alerts_observables_summary([alert.alert_id for alert in listed])
+            for alert, data in zip(listed, dumped):
+                observables = summary[alert.alert_id]
+                if 'assets' in self._observables:
+                    data['assets'] = self._assets_schema.dump(observables['assets'])
+                    data['assets_count'] = observables['assets_count']
+                if 'iocs' in self._observables:
+                    data['iocs'] = self._iocs_schema.dump(observables['iocs'])
+                    data['iocs_count'] = observables['iocs_count']
+
+        return dumped if many else dumped[0]
+
+
 class AlertsOperations:
 
     def __init__(self):
@@ -176,6 +221,10 @@ class AlertsOperations:
 
             except ValueError:
                 raise ValueError('Invalid alert ioc')
+
+        observables = request.args.get('observables', 'full')
+        if observables not in ('full', 'summary'):
+            raise ValueError('Invalid observables mode, expected full or summary')
 
         fields_str = request.args.get('fields')
         if fields_str:
@@ -222,11 +271,16 @@ class AlertsOperations:
             # The caller, for `owner:me`. Not `user_identifier_filter`,
             # which a server administrator has none of.
             'query_user_identifier': iris_current_user.id,
+            # `summary` leaves the alerts' assets and IOCs unloaded, the
+            # listing then carries the first few of each and their counts.
+            'include_observables': observables == 'full',
         }
 
         return arguments, fields
 
-    def _alert_schema_for(self, fields):
+    def _alert_schema_for(self, fields, include_observables=True):
+        if not include_observables:
+            return _AlertsObservablesSummaryDump(fields)
         if not fields:
             return self._schema
         try:
@@ -248,7 +302,9 @@ class AlertsOperations:
         if filtered_alerts is None:
             return response_api_error('Filtering error')
 
-        return response_api_paginated(self._alert_schema_for(fields), filtered_alerts)
+        return response_api_paginated(
+            self._alert_schema_for(fields, arguments['include_observables']), filtered_alerts
+        )
 
     def search_grouped(self):
         """Alert list where each alert cluster collapses to a single row.
@@ -273,8 +329,18 @@ class AlertsOperations:
         if grouped is None:
             return response_api_error('Filtering error')
 
-        alert_schema = self._alert_schema_for(fields)
+        alert_schema = self._alert_schema_for(fields, arguments['include_observables'])
         cluster_schema = AlertClusterSchema()
+
+        # Every alert of the page dumped at once, so that a summary
+        # listing gathers their observables in one go rather than per row.
+        page_alerts = []
+        for item in grouped['items']:
+            if item['kind'] == 'cluster':
+                page_alerts.extend(item['alerts'])
+            else:
+                page_alerts.append(item['alert'])
+        dumped_alerts = iter(alert_schema.dump(page_alerts, many=True))
 
         data = []
         for item in grouped['items']:
@@ -282,14 +348,14 @@ class AlertsOperations:
                 data.append({
                     'kind': 'cluster',
                     'cluster': cluster_schema.dump(item['cluster']),
-                    'alerts': alert_schema.dump(item['alerts'], many=True),
+                    'alerts': [next(dumped_alerts) for _alert in item['alerts']],
                     'alerts_total': item['alerts_total'],
                     'alerts_truncated': item['alerts_truncated'],
                 })
             else:
                 data.append({
                     'kind': 'alert',
-                    'alert': alert_schema.dump(item['alert']),
+                    'alert': next(dumped_alerts),
                 })
 
         return response_api_success({
@@ -471,6 +537,10 @@ _ALERT_LIST_SORT_PARAMS = [
      'Column to sort by: ' + ', '.join(ALERT_SORT_COLUMNS) + " (default 'event_time')"),
     ('sort', 'string', "Sort direction: 'asc' or 'desc' (default 'asc')"),
     ('query', 'string', _ALERT_QUERY_PARAM_DESCRIPTION),
+    ('observables', 'string',
+     "'full' (default) lists every asset and IOC of each alert; 'summary' "
+     'only the first ten of each, with their totals in `assets_count` and '
+     '`iocs_count`'),
 ]
 
 

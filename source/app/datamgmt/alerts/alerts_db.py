@@ -357,7 +357,21 @@ def _alert_sort_expression(order_by: str | None):
     return Alert.alert_source_event_time
 
 
-def _alert_list_options():
+# What `CaseAssetsSchema` and `IocSchema` read off an asset or an IOC
+# besides its own columns, as nested in `AlertSchema`.
+_ASSET_DISPLAY_RELATIONSHIPS = (
+    CaseAssets.asset_type,
+    CaseAssets.analysis_status,
+    CaseAssets.iocs,
+    CaseAssets.flags
+)
+_IOC_DISPLAY_RELATIONSHIPS = (
+    Ioc.ioc_type,
+    Ioc.tlp
+)
+
+
+def _alert_list_options(include_observables: bool = True):
     """Eager loads shared by every alert-list response. Without these the
     marshalling step fires one query per alert per relationship.
 
@@ -366,8 +380,11 @@ def _alert_list_options():
     `clusters`, and each asset and IOC brings its own relationships. A
     relationship left out here costs a query per row of the page, which
     on a full queue is over a thousand round-trips.
+
+    `include_observables=False` leaves the assets and IOCs out, for the
+    callers that do not dump them (see `get_alerts_observables_summary`).
     """
-    return (
+    options = [
         selectinload(Alert.severity),
         selectinload(Alert.status),
         selectinload(Alert.customer),
@@ -377,14 +394,98 @@ def _alert_list_options():
         selectinload(Alert.investigation_flow),
         selectinload(Alert.cases),
         selectinload(Alert.clusters),
-        selectinload(Alert.comments),
-        selectinload(Alert.iocs).selectinload(Ioc.ioc_type),
-        selectinload(Alert.iocs).selectinload(Ioc.tlp),
-        selectinload(Alert.assets).selectinload(CaseAssets.asset_type),
-        selectinload(Alert.assets).selectinload(CaseAssets.analysis_status),
-        selectinload(Alert.assets).selectinload(CaseAssets.iocs),
-        selectinload(Alert.assets).selectinload(CaseAssets.flags)
-    )
+        selectinload(Alert.comments)
+    ]
+    if include_observables:
+        options.extend(selectinload(Alert.iocs).selectinload(attribute)
+                       for attribute in _IOC_DISPLAY_RELATIONSHIPS)
+        options.extend(selectinload(Alert.assets).selectinload(attribute)
+                       for attribute in _ASSET_DISPLAY_RELATIONSHIPS)
+    return tuple(options)
+
+
+# How many assets and IOCs of each alert a summary listing carries.
+ALERT_OBSERVABLES_PREVIEW_LIMIT = 10
+
+
+def _first_observables(association, observable_column, alert_ids, limit):
+    """`{alert_id: ([observable ids], total)}`, the first `limit` ids by
+    value. One query, served by the association's primary key."""
+    ranked = select(
+        association.c.alert_id,
+        observable_column,
+        func.row_number().over(
+            partition_by=association.c.alert_id, order_by=observable_column
+        ).label('rank'),
+        func.count().over(partition_by=association.c.alert_id).label('total')
+    ).where(association.c.alert_id.in_(alert_ids)).subquery()
+
+    rows = db.session.execute(
+        select(ranked.c.alert_id, ranked.c[observable_column.name], ranked.c.total)
+        .where(ranked.c.rank <= limit)
+        .order_by(ranked.c.alert_id, ranked.c.rank)
+    ).all()
+
+    first = {}
+    for alert_identifier, observable_identifier, total in rows:
+        identifiers, _total = first.get(alert_identifier, ([], total))
+        identifiers.append(observable_identifier)
+        first[alert_identifier] = (identifiers, total)
+    return first
+
+
+def get_alerts_observables_summary(alert_ids: List[int],
+                                   limit: int = ALERT_OBSERVABLES_PREVIEW_LIMIT) -> dict:
+    """The first `limit` assets and IOCs of each alert, and how many it has.
+
+    Returns `{alert_id: {'assets', 'assets_count', 'iocs', 'iocs_count'}}`,
+    with an entry for every id in `alert_ids`. An alert can carry hundreds
+    of assets; listing a queue page with all of them loaded and dumped
+    weighs megabytes, when a row only shows a handful.
+
+    The previews are plain lists, never assigned to `Alert.assets` or
+    `Alert.iocs` — on a session object that would unlink the rest.
+    """
+    alert_ids = list(dict.fromkeys(alert_ids))
+    summary = {alert_identifier: {'assets': [], 'assets_count': 0, 'iocs': [], 'iocs_count': 0}
+               for alert_identifier in alert_ids}
+    if not alert_ids:
+        return summary
+
+    first_assets = _first_observables(alert_assets_association, alert_assets_association.c.asset_id,
+                                      alert_ids, limit)
+    first_iocs = _first_observables(alert_iocs_association, alert_iocs_association.c.ioc_id,
+                                    alert_ids, limit)
+
+    asset_ids = {i for identifiers, _total in first_assets.values() for i in identifiers}
+    ioc_ids = {i for identifiers, _total in first_iocs.values() for i in identifiers}
+
+    assets_by_id = {}
+    if asset_ids:
+        assets_by_id = {
+            asset.asset_id: asset
+            for asset in db.session.query(CaseAssets).options(
+                *(selectinload(attribute) for attribute in _ASSET_DISPLAY_RELATIONSHIPS)
+            ).filter(CaseAssets.asset_id.in_(asset_ids)).all()
+        }
+
+    iocs_by_id = {}
+    if ioc_ids:
+        iocs_by_id = {
+            ioc.ioc_id: ioc
+            for ioc in db.session.query(Ioc).options(
+                *(selectinload(attribute) for attribute in _IOC_DISPLAY_RELATIONSHIPS)
+            ).filter(Ioc.ioc_id.in_(ioc_ids)).all()
+        }
+
+    for alert_identifier, (identifiers, total) in first_assets.items():
+        summary[alert_identifier]['assets'] = [assets_by_id[i] for i in identifiers if i in assets_by_id]
+        summary[alert_identifier]['assets_count'] = total
+    for alert_identifier, (identifiers, total) in first_iocs.items():
+        summary[alert_identifier]['iocs'] = [iocs_by_id[i] for i in identifiers if i in iocs_by_id]
+        summary[alert_identifier]['iocs_count'] = total
+
+    return summary
 
 
 def get_filtered_alerts(
@@ -416,6 +517,7 @@ def get_filtered_alerts(
         order_by: str | None = None,
         query: str | None = None,
         query_user_identifier: int | None = None,
+        include_observables: bool = True,
     ) -> Pagination:
     conditions = _alert_filter_conditions(
         start_date, end_date, source_start_date, source_end_date, title, description,
@@ -424,7 +526,7 @@ def get_filtered_alerts(
         cluster_id, query, query_user_identifier
     )
 
-    query = db.session.query(Alert).options(*_alert_list_options())
+    query = db.session.query(Alert).options(*_alert_list_options(include_observables))
 
     applied = _apply_alert_custom_conditions(query, conditions, custom_conditions)
     if applied is None:
@@ -612,6 +714,7 @@ def get_filtered_alert_groups(
         order_by: str | None = None,
         query: str | None = None,
         query_user_identifier: int | None = None,
+        include_observables: bool = True,
     ) -> Optional[dict]:
     """List alerts as *queue units* instead of as a flat page of alerts.
 
@@ -629,6 +732,8 @@ def get_filtered_alert_groups(
     would have been.
 
     Returns None on the same filtering errors `get_filtered_alerts` does.
+    `include_observables=False` leaves the alerts' assets and IOCs unloaded,
+    as `get_filtered_alerts` does.
     """
     conditions = _alert_filter_conditions(
         start_date, end_date, source_start_date, source_end_date, title, description,
@@ -685,7 +790,7 @@ def get_filtered_alert_groups(
             alerts_by_id = {
                 alert.alert_id: alert
                 for alert in db.session.query(Alert).options(
-                    *_alert_list_options()
+                    *_alert_list_options(include_observables)
                 ).filter(Alert.alert_id.in_(hydrate_ids)).all()
             }
 
