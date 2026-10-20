@@ -482,6 +482,9 @@ def create_safe_hooks():
     create_safe(db.session, IrisHook, hook_name='on_postload_datastore_file_delete',
                 hook_description='Triggered on case datastore file deletion, after commit in DB')
 
+    create_safe(db.session, IrisHook, hook_name='on_manual_trigger_datastore_file',
+                hook_description='Triggered upon user action')
+
     # --- tasks
     create_safe(db.session, IrisHook, hook_name='on_preload_task_create',
                 hook_description='Triggered on task creation, before commit in DB')

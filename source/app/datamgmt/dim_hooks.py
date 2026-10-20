@@ -33,6 +33,7 @@ from app.models.cases import CasesEvent
 from app.models.evidences import CaseReceivedFile
 from app.models.iocs import Ioc
 from app.models.models import CaseTasks
+from app.models.models import DataStoreFile
 from app.models.models import GlobalTasks
 from app.models.models import IrisHook
 from app.models.models import IrisModule
@@ -87,6 +88,10 @@ _TARGET_LOADERS = {
     'evidence': lambda target, caseid: CaseReceivedFile.query.filter(
         CaseReceivedFile.id == target,
         CaseReceivedFile.case_id == caseid,
+    ).first(),
+    'datastore_file': lambda target, caseid: DataStoreFile.query.filter(
+        DataStoreFile.file_id == target,
+        DataStoreFile.file_case_id == caseid,
     ).first(),
     'global_task': lambda target, _caseid: GlobalTasks.query.filter(
         GlobalTasks.id == target,

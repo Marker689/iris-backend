@@ -16,6 +16,7 @@
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
+import io
 from unittest import TestCase
 
 from iris import Iris
@@ -134,6 +135,49 @@ class TestsRestDimHooks(TestCase):
         self.assertEqual(1, body['queued'])
         self.assertIn('logs', body)
         self.assertTrue(any('999999999' in log for log in body['logs']))
+
+    def test_invoke_returns_queued_1_and_logs_when_datastore_file_target_missing(self):
+        case_identifier = self._subject.create_dummy_case()
+        tree = self._subject.get(f'/api/v2/cases/{case_identifier}/datastore/tree').json()
+        root_identifier = int(next(iter(tree)).split('-')[1])
+        datastore_file = self._subject.post_multipart_encoded_files(
+            f'/api/v2/cases/{case_identifier}/datastore/folders/{root_identifier}/files',
+            {'file_original_name': 'triage.txt'},
+            {'file_content': ('triage.txt', io.BytesIO(b'triage output'), 'text/plain')}
+        ).json()
+        response = self._invoke(
+            case_identifier,
+            {
+                'hook_name': 'on_manual_trigger_datastore_file',
+                'type': 'datastore_file',
+                'targets': [datastore_file['file_id'], 999999999],
+            },
+        )
+        self.assertEqual(200, response.status_code)
+        body = response.json()
+        self.assertEqual(1, body['queued'])
+        self.assertTrue(any('999999999' in log for log in body['logs']))
+
+    def test_invoke_skips_datastore_file_of_another_case(self):
+        case_identifier = self._subject.create_dummy_case()
+        other_case_identifier = self._subject.create_dummy_case()
+        tree = self._subject.get(f'/api/v2/cases/{other_case_identifier}/datastore/tree').json()
+        root_identifier = int(next(iter(tree)).split('-')[1])
+        datastore_file = self._subject.post_multipart_encoded_files(
+            f'/api/v2/cases/{other_case_identifier}/datastore/folders/{root_identifier}/files',
+            {'file_original_name': 'triage.txt'},
+            {'file_content': ('triage.txt', io.BytesIO(b'triage output'), 'text/plain')}
+        ).json()
+        response = self._invoke(
+            case_identifier,
+            {
+                'hook_name': 'on_manual_trigger_datastore_file',
+                'type': 'datastore_file',
+                'targets': [datastore_file['file_id']],
+            },
+        )
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(0, response.json()['queued'])
 
     def test_invoke_returns_403_when_user_has_no_case_access(self):
         case_identifier = self._subject.create_dummy_case()

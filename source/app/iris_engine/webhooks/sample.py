@@ -38,6 +38,7 @@ _MODELS = {
     'note': 'Notes',
     'event': 'CasesEvent',
     'evidence': 'CaseReceivedFile',
+    'datastore_file': 'DataStoreFile',
     'task': 'CaseTasks',
     'global_task': 'GlobalTasks',
     'notification': 'Notification',
