@@ -306,16 +306,15 @@ def alert_clusters_close_resolved(alert_ids: Iterable[int]) -> list[int]:
             AlertStatus.status_name.in_(_DONE_ALERT_STATUSES)
         ).all()
     }
-    clusters = (
-        AlertCluster.query
-        .join(AlertClusterAssociation, AlertClusterAssociation.cluster_id == AlertCluster.cluster_id)
-        .filter(
-            AlertClusterAssociation.alert_id.in_(ids),
-            AlertCluster.cluster_status_id.in_(active_ids),
-        )
-        .distinct()
-        .all()
-    )
+    # No SELECT DISTINCT on AlertCluster: modification_history is a json
+    # column, which has no equality operator in Postgres.
+    linked_cluster_ids = AlertClusterAssociation.query.with_entities(
+        AlertClusterAssociation.cluster_id
+    ).filter(AlertClusterAssociation.alert_id.in_(ids))
+    clusters = AlertCluster.query.filter(
+        AlertCluster.cluster_id.in_(linked_cluster_ids),
+        AlertCluster.cluster_status_id.in_(active_ids),
+    ).all()
     closed = []
     for cluster in clusters:
         if not cluster.alerts or any(a.alert_status_id not in done_ids for a in cluster.alerts):
