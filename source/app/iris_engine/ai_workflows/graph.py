@@ -71,6 +71,7 @@ from app.models.ai_workflows import AUDIENCE_OWNER
 from app.models.ai_workflows import ENTITY_TYPES
 from app.models.ai_workflows import MENU_ENTITY_TYPES
 from app.models.ai_workflows import MAX_SUGGESTION_ACTIONS
+from app.models.ai_workflows import MENU_BATCH_TYPES
 from app.models.ai_workflows import MENU_LABEL_MAX_LENGTH
 from app.models.ai_workflows import RUN_FAILED
 from app.models.ai_workflows import RUN_SUCCEEDED
@@ -291,7 +292,8 @@ def _cron_config_errors(config) -> list:
 
 def _menu_config_errors(config, entity_types) -> list:
     """`menus`: the object menus the workflow shows in; each runs on an
-    entity type the trigger must accept. `menu_label`: the entry text."""
+    entity type the trigger must accept. `menu_label`: the entry text.
+    `batch`: one run for all the selected objects, case objects only."""
     errors = []
     menus = config.get('menus')
     if menus is not None:
@@ -308,6 +310,15 @@ def _menu_config_errors(config, entity_types) -> list:
     if label is not None and (not isinstance(label, str) or len(label) > MENU_LABEL_MAX_LENGTH):
         errors.append(_error(None, 'trigger_config.menu_label',
                              f'Must be a string of at most {MENU_LABEL_MAX_LENGTH} characters'))
+    batch = config.get('batch')
+    if batch is not None and not isinstance(batch, bool):
+        errors.append(_error(None, 'trigger_config.batch', 'Must be true or false'))
+    elif batch and isinstance(menus, list):
+        single = [m for m in menus if m not in MENU_BATCH_TYPES]
+        if single:
+            errors.append(_error(None, 'trigger_config.batch',
+                                 f'One run for the whole selection is for objects of a case, not the '
+                                 f'{", ".join(single)} menu'))
     return errors
 
 

@@ -27,6 +27,7 @@ from unittest.mock import patch
 
 from app.iris_engine.ai_workflows.triggers import ai_workflows_triggers_cron_tick
 from app.iris_engine.ai_workflows.triggers import ai_workflows_triggers_entity
+from app.iris_engine.ai_workflows.triggers import ai_workflows_triggers_menu_batch
 from app.iris_engine.ai_workflows.triggers import ai_workflows_triggers_process_event
 from app.iris_engine.ai_workflows.triggers import ai_workflows_triggers_start_from_menu
 from tests.app.iris_engine.ai_workflows.harness import OWNER_ID
@@ -81,6 +82,12 @@ class TestsTriggerEntity(EngineTestCase):
     def test_case_object_goes_to_its_case(self):
         event = _event(object_type='ioc', object_id=77, case={'id': 4, 'name': 'c'})
         self.assertEqual(('case', 4, {'type': 'ioc', 'id': 77}), ai_workflows_triggers_entity(event))
+
+    def test_batch_menu_event_is_about_all_its_objects(self):
+        event = _event(hook='on_manual_trigger_asset', object_type='asset', action='manual_trigger', object_id=None,
+                       object_ids=[3, 8], case={'id': 4, 'name': 'c'}, data=[{'asset_id': 3}, {'asset_id': 8}])
+        self.assertEqual(('case', 4, {'type': 'asset', 'id': None, 'ids': [3, 8]}),
+                         ai_workflows_triggers_entity(event))
 
     def test_datastore_upload_is_about_its_case_or_war_room(self):
         event = _event(hook='on_postload_datastore_file_create', object_type='datastore_file', object_id=12,
@@ -338,6 +345,18 @@ class TestsMenuTrigger(EngineTestCase):
             run, _reason = ai_workflows_triggers_start_from_menu(self.wf.id, ioc, self.ANALYST_ID,
                                                                  trigger_node_id=node_id)
             self.assertEqual(expected, run.context['trigger']['node_id'], node_id)
+
+    def test_batch_should_be_read_from_the_trigger_of_the_entry(self):
+        self.wf.graph = _typed_graph(first=('manual', {'entity_types': ['case'], 'menus': ['asset', 'ioc']}),
+                                     second=('manual', {'entity_types': ['case'], 'menus': ['asset'],
+                                                        'batch': True}))
+        self.assertTrue(ai_workflows_triggers_menu_batch(self.wf.id, 'asset', 'second'))
+        self.assertFalse(ai_workflows_triggers_menu_batch(self.wf.id, 'asset', 'first'))
+        self.assertFalse(ai_workflows_triggers_menu_batch(self.wf.id, 'ioc', 'second'))
+        # The alert and case menus are one run per object
+        self.wf.graph = _typed_graph(first=('manual', {'entity_types': ['alert'], 'menus': ['alert'],
+                                                       'batch': True}))
+        self.assertFalse(ai_workflows_triggers_menu_batch(self.wf.id, 'alert', 'first'))
 
 
 class TestsCronTrigger(EngineTestCase):

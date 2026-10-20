@@ -74,3 +74,43 @@ class TestsMenuOptions(TestCase):
     def test_run_should_refuse_a_malformed_trigger_id(self):
         with self.assertRaises(BusinessProcessingError):
             ai_workflow_menus_run(1, 'on_manual_trigger_ioc', [], 5, trigger_node_id=['quick'])
+
+
+class TestsMenuRun(TestCase):
+
+    def setUp(self):
+        self.batch = False
+        self.started = []
+        for target, replacement in (
+                (f'{_MENUS}.webhooks_current_actor', lambda: {'id': 5}),
+                (f'{_MENUS}.webhooks_build_event', self._event),
+                (f'{_MENUS}.ai_workflows_triggers_menu_batch', lambda *_args: self.batch),
+                (f'{_MENUS}.ai_workflows_triggers_start_from_menu', self._start),
+                (f'{_MENUS}.track_activity', lambda *_args, **_kwargs: None)):
+            patcher = patch(target, replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _event(_hook, data, **_kwargs):
+        if isinstance(data, list):
+            return {'object_type': 'asset', 'data': data, 'object_id': None, 'object_ids': data}
+        return {'object_type': 'asset', 'data': data, 'object_id': data, 'object_ids': [data]}
+
+    def _start(self, _workflow_id, event, _user_id, _scope_mask, trigger_node_id=None):
+        self.started.append(event['data'])
+        return SimpleNamespace(status='running', workflow_name='Thor', uuid='u'), None
+
+    def test_each_object_should_get_its_run(self):
+        self.assertEqual((2, []), ai_workflow_menus_run(1, 'on_manual_trigger_asset', [3, 8], 5, caseid=4))
+        self.assertEqual([3, 8], self.started)
+
+    def test_batch_should_start_one_run_on_all_the_objects(self):
+        self.batch = True
+        self.assertEqual((1, []), ai_workflow_menus_run(1, 'on_manual_trigger_asset', [3, 8], 5, caseid=4))
+        self.assertEqual([[3, 8]], self.started)
+
+    def test_batch_needs_the_case_of_the_objects(self):
+        self.batch = True
+        ai_workflow_menus_run(1, 'on_manual_trigger_alert', [3, 8], 5)
+        self.assertEqual([3, 8], self.started)

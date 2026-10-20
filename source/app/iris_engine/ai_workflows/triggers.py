@@ -72,6 +72,7 @@ from app.models.ai_workflows import ENTITY_ALERT_CLUSTER
 from app.models.ai_workflows import ENTITY_CASE
 from app.models.ai_workflows import ENTITY_TYPES
 from app.models.ai_workflows import ENTITY_WAR_ROOM
+from app.models.ai_workflows import MENU_BATCH_TYPES
 from app.models.ai_workflows import MENU_ENTITY_TYPES
 from app.models.ai_workflows import TRIGGER_CRON
 from app.models.ai_workflows import TRIGGER_EVENT
@@ -199,7 +200,11 @@ def ai_workflows_triggers_entity(event) -> tuple:
     case = event.get('case') if isinstance(event.get('case'), dict) else None
     case_id = _int(case.get('id')) if case else None
     if case_id is not None:
-        return ENTITY_CASE, case_id, {'type': object_type, 'id': object_id}
+        sub_entity = {'type': object_type, 'id': object_id}
+        if isinstance(event.get('data'), list):
+            # A batch menu run: about all the objects selected
+            sub_entity['ids'] = [_int(i) for i in event.get('object_ids') or []]
+        return ENTITY_CASE, case_id, sub_entity
     return None, None, None
 
 
@@ -465,6 +470,15 @@ def _menu_trigger(workflow, menu_type, trigger_node_id):
     `trigger_node_id`, else the first offered in that menu."""
     triggers = ai_workflows_triggers_menu_triggers(workflow, menu_type)
     return next((t for t in triggers if t['node_id'] == trigger_node_id), triggers[0] if triggers else None)
+
+
+def ai_workflows_triggers_menu_batch(workflow_id, menu_type, trigger_node_id=None) -> bool:
+    """Whether the menu entry starts one run for all the selected objects
+    (`batch` of its manual trigger) rather than one run per object."""
+    if menu_type not in MENU_BATCH_TYPES or not _enabled():
+        return False
+    trigger = _menu_trigger(ai_workflows_db_get(workflow_id), menu_type, trigger_node_id)
+    return trigger is not None and trigger['config'].get('batch') is True
 
 
 def ai_workflows_triggers_start_from_menu(workflow_id, event, user_id, scope_mask=None,

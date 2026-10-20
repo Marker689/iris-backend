@@ -338,6 +338,18 @@ class TestsTriggerConfig(TestCase):
             errors = ai_workflows_graph_validate_trigger_config('manual', {'menu_label': label})
             self.assertEqual(['trigger_config.menu_label'], [e['field'] for e in errors])
 
+    def test_manual_batch_should_be_a_boolean_on_case_object_menus(self):
+        self.assertEqual([], ai_workflows_graph_validate_trigger_config(
+            'manual', {'entity_types': ['case'], 'menus': ['asset', 'ioc'], 'batch': True}))
+        errors = ai_workflows_graph_validate_trigger_config('manual', {'entity_types': ['case'], 'menus': ['asset'],
+                                                                       'batch': 'yes'})
+        self.assertEqual(['trigger_config.batch'], [e['field'] for e in errors])
+        errors = ai_workflows_graph_validate_trigger_config('manual', {'entity_types': ['case', 'alert'],
+                                                                       'menus': ['alert', 'case', 'ioc'],
+                                                                       'batch': True})
+        self.assertEqual(['One run for the whole selection is for objects of a case, not the alert, case menu'],
+                         [e['message'] for e in errors])
+
     def test_unknown_trigger_type(self):
         self.assertEqual(['trigger_type'],
                          [e['field'] for e in ai_workflows_graph_validate_trigger_config('telepathy', {})])

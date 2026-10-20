@@ -22,7 +22,7 @@
 Each manual trigger of a workflow lists the object menus it shows in
 (`menus` of its config: alert, case, ioc, asset…), with its own entry
 next to the module and webhook entries of `on_manual_trigger_<type>`. A click starts one run
-per object, acting as the analyst who clicked: their permissions, their
+per object (one run for all of them when the trigger is a `batch`), acting as the analyst who clicked: their permissions, their
 personal keys (plus the shared ones) and their daily LLM budget, so an
 entry never lets an analyst do more than they could themselves. Case
 objects run on their case, with the object as the trigger payload.
@@ -30,6 +30,7 @@ objects run on their case, with the object as the trigger payload.
 
 from app import app
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_list_active
+from app.iris_engine.ai_workflows.triggers import ai_workflows_triggers_menu_batch
 from app.iris_engine.ai_workflows.triggers import ai_workflows_triggers_menu_triggers
 from app.iris_engine.ai_workflows.triggers import ai_workflows_triggers_start_from_menu
 from app.iris_engine.utils.tracker import track_activity
@@ -74,12 +75,20 @@ def ai_workflow_menus_options(hook_type) -> list:
     ]
 
 
+def _target_label(event) -> str:
+    ids = event.get('object_ids') or []
+    if event.get('object_id') is None and len(ids) > 1:
+        return f'{event.get("object_type")} #{", #".join(str(i) for i in ids)}'
+    return f'{event.get("object_type")} #{event.get("object_id")}'
+
+
 def ai_workflow_menus_run(workflow_id, hook_name, targets, user_id, scope_mask=None, caseid=None,
                           trigger_node_id=None) -> tuple:
     """Start one run per target object (already loaded and access-checked
     by the route) at the trigger node `trigger_node_id`, acting as
-    `user_id`. Returns (started, logs), a log line per target that did
-    not start."""
+    `user_id`. A `batch` trigger on objects of case `caseid` starts one
+    run instead, the list of the objects in its payload `data`. Returns
+    (started, logs), a log line per target that did not start."""
     try:
         workflow_id = int(workflow_id)
     except (TypeError, ValueError):
@@ -90,11 +99,13 @@ def ai_workflow_menus_run(workflow_id, hook_name, targets, user_id, scope_mask=N
         raise BusinessProcessingError('Invalid workflow trigger')
 
     actor = webhooks_current_actor()
+    batch = caseid is not None and bool(targets) and ai_workflows_triggers_menu_batch(
+        workflow_id, hook_name[len(MANUAL_PREFIX):], trigger_node_id)
     started = 0
     logs = []
-    for target in targets:
+    for target in [list(targets)] if batch else targets:
         event = webhooks_build_event(hook_name, target, caseid=caseid, actor=actor)
-        label = f'{event.get("object_type")} #{event.get("object_id")}'
+        label = _target_label(event)
         run, reason = ai_workflows_triggers_start_from_menu(workflow_id, event, user_id, scope_mask,
                                                             trigger_node_id=trigger_node_id)
         if run is None or run.status == RUN_SKIPPED:

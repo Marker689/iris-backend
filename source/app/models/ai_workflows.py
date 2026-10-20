@@ -125,6 +125,8 @@ MENU_ENTITY_TYPES = {
     'task': ENTITY_CASE,
 }
 MENU_LABEL_MAX_LENGTH = 64
+# Menus whose selection can make one run (`batch`): objects of one case
+MENU_BATCH_TYPES = ('asset', 'ioc', 'note', 'event', 'evidence', 'datastore_file', 'task')
 
 SUGGESTION_CREATE_CASE = 'create_case'
 SUGGESTION_MERGE_INTO_CASE = 'merge_into_case'
@@ -228,7 +230,7 @@ class AiWorkflow(db.Model):
     # and the keys below), kept here to find the workflows of a type.
     # event: {hooks: [...], condition, dedup_minutes, skip_if_active}
     # cron: {cron, target: none|war_rooms|cases, max_targets}
-    # manual: {entity_types, menus, menu_label}
+    # manual: {entity_types, menus, menu_label, batch}
     # webhook: {require_signature, entity_type, entity_id_path}
     # workflow: {} (other workflows may call it with a run_workflow node)
     triggers = Column(JSONB, nullable=False, default=list, server_default='[]')
