@@ -16395,6 +16395,12 @@ paths:
         schema:
           type: integer
         description: Only the assets of this attached case
+      - name: customer_id
+        in: query
+        required: false
+        schema:
+          type: integer
+        description: Only the assets of the attached cases of this customer
       - name: compromised
         in: query
         required: false
@@ -16514,6 +16520,29 @@ paths:
     post:
       operationId: bulk_status_scope_assets_post
       summary: Set the compromise and / or analysis status of several assets of the attached cases
+      tags:
+      - WarRoomScope
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/war-rooms/{war_room_id}/scope/customers:
+    get:
+      operationId: list_scope_customers_get
+      summary: List the customers of the attached cases the caller can read, with their cases and totals
       tags:
       - WarRoomScope
       security:

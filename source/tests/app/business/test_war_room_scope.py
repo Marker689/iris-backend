@@ -597,6 +597,52 @@ class TestListing(_DbPatches):
             scope.war_room_scope_list_assets([1, 2], case_id='3')
         self.assertEqual(query.call_args.args[0], [])
 
+    def test_customer_filter_keeps_the_cases_of_that_customer(self):
+        self.mocks['cases'].side_effect = lambda ids: [_case_row(cid, customer_id=cid % 2 + 1) for cid in ids]
+        with patch(f'{_BIZ}.war_room_scope_db_assets', return_value=[]) as query:
+            scope.war_room_scope_list_assets([1, 2, 3, 4], customer_id='2')
+        self.assertEqual(query.call_args.args[0], [1, 3])
+
+    def test_customer_filter_combines_with_the_case_filter(self):
+        self.mocks['cases'].side_effect = lambda ids: [_case_row(cid, customer_id=cid % 2 + 1) for cid in ids]
+        with patch(f'{_BIZ}.war_room_scope_db_assets', return_value=[]) as query:
+            scope.war_room_scope_list_assets([1, 2, 3], case_id='2', customer_id='2')
+        self.assertEqual(query.call_args.args[0], [])
+
+    def test_customer_filter_must_be_a_positive_integer(self):
+        for raw in ('abc', '0', '-1'):
+            with self.assertRaises(BusinessProcessingError, msg=raw):
+                scope.war_room_scope_list_assets([1], customer_id=raw)
+
+    def test_customers_groups_the_cases_and_sums_their_totals(self):
+        self.mocks['cases'].side_effect = None
+        self.mocks['cases'].return_value = [
+            _case_row(1, 5, 'Zeta'), _case_row(2, 4, 'Acme'), _case_row(3, 5, 'Zeta'), _case_row(4, None, None)]
+        breakdown = [SimpleNamespace(case_id=1, assets=3, done=1, vuln_open=2, vuln_exploited_open=1),
+                     SimpleNamespace(case_id=3, assets=4, done=0, vuln_open=1, vuln_exploited_open=0)]
+        compromised = [SimpleNamespace(case_id=3, assets=2)]
+
+        def _breakdown(case_ids, **kwargs):
+            return compromised if kwargs.get('compromised') else breakdown
+
+        with patch(f'{_BIZ}.war_room_scope_db_assets_breakdown', side_effect=_breakdown), \
+                patch(f'{_BIZ}.war_room_scope_db_ioc_case_counts',
+                      return_value=[SimpleNamespace(case_id=2, iocs=6), SimpleNamespace(case_id=1, iocs=1)]):
+            data = scope.war_room_scope_list_customers([1, 2, 3, 4])['data']
+        self.assertEqual([entry['customer_name'] for entry in data], ['Acme', 'Zeta', None])
+        zeta = data[1]
+        self.assertEqual([c['case_id'] for c in zeta['cases']], [1, 3])
+        self.assertEqual((zeta['assets'], zeta['done'], zeta['compromised'], zeta['iocs'], zeta['vuln_open'],
+                          zeta['vuln_exploited_open']), (7, 1, 2, 1, 3, 1))
+        self.assertEqual((data[0]['assets'], data[0]['iocs']), (0, 6))
+
+    def test_customers_without_vulnerability_read_drops_the_vulnerability_totals(self):
+        with patch(f'{_BIZ}.war_room_scope_db_assets_breakdown', return_value=[]), \
+                patch(f'{_BIZ}.war_room_scope_db_ioc_case_counts', return_value=[]):
+            data = scope.war_room_scope_list_customers([1], include_vulnerabilities=False)['data']
+        self.assertNotIn('vuln_open', data[0])
+        self.assertNotIn('vuln_exploited_open', data[0])
+
     def test_truncation_flag(self):
         row = MagicMock(asset_name='A', asset_uuid=None, date_update=None, ioc_count=0,
                         asset_type_id=1)

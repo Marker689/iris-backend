@@ -61,6 +61,42 @@ class TestsRestWarRoomScope(TestCase):
         return next(flag['id'] for flag in flags
                     if not flag['requires_reason'] and not flag['requires_decision'])
 
+    def test_list_assets_should_filter_by_customer(self):
+        room_id = self._room()
+        case_id = self._attach_case(room_id)
+        customer_id = self._subject.create_dummy_customer()
+        other_case_id = self._subject.create_dummy_case(customer_id)
+        self._subject.create(f'/api/v2/war-rooms/{room_id}/cases', {'case_id': other_case_id})
+        self._asset(case_id, 'DC01')
+        asset_id = self._asset(other_case_id, 'DC02')
+        response = self._subject.get(f'/api/v2/war-rooms/{room_id}/scope/assets?customer_id={customer_id}')
+        self.assertEqual(200, response.status_code)
+        self.assertEqual([asset_id], [asset['asset_id'] for asset in response.json()['data']])
+
+    def test_list_customers_should_group_the_attached_cases(self):
+        room_id = self._room()
+        case_id = self._attach_case(room_id)
+        customer_id = self._subject.create_dummy_customer()
+        other_case_id = self._subject.create_dummy_case(customer_id)
+        self._subject.create(f'/api/v2/war-rooms/{room_id}/cases', {'case_id': other_case_id})
+        self._asset(other_case_id, 'DC01')
+        self._asset(other_case_id, 'DC02')
+        response = self._subject.get(f'/api/v2/war-rooms/{room_id}/scope/customers')
+        self.assertEqual(200, response.status_code)
+        customers = {entry['customer_id']: entry for entry in response.json()['data']}
+        self.assertEqual(2, len(customers))
+        self.assertEqual([other_case_id], [case['case_id'] for case in customers[customer_id]['cases']])
+        self.assertEqual(2, customers[customer_id]['assets'])
+        other = next(entry for c, entry in customers.items() if c != customer_id)
+        self.assertEqual([case_id], [case['case_id'] for case in other['cases']])
+        self.assertEqual(0, other['assets'])
+
+    def test_list_customers_should_return_403_when_user_is_not_a_member(self):
+        room_id = self._room()
+        user = self._subject.create_dummy_user()
+        response = user.get(f'/api/v2/war-rooms/{room_id}/scope/customers')
+        self.assertEqual(403, response.status_code)
+
     def test_list_assets_should_return_assets_of_attached_cases(self):
         room_id = self._room()
         case_id = self._attach_case(room_id)

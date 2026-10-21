@@ -381,11 +381,14 @@ def _customers_summary(case_ids):
     return list(customers.values())
 
 
-def _restrict_case_ids(readable_case_ids, case_id):
+def _restrict_case_ids(readable_case_ids, case_id, customer_id=None):
     ordered = list(readable_case_ids)
-    if case_id is None:
-        return ordered
-    return [cid for cid in ordered if cid == case_id]
+    if case_id is not None:
+        ordered = [cid for cid in ordered if cid == case_id]
+    if customer_id is not None:
+        of_customer = {row.case_id for row in war_room_scope_db_cases(ordered) if row.customer_id == customer_id}
+        ordered = [cid for cid in ordered if cid in of_customer]
+    return ordered
 
 
 def _parse_optional_int_arg(raw, field):
@@ -595,13 +598,14 @@ def _without_vulnerabilities(result):
 
 def war_room_scope_list_assets(readable_case_ids, search=None, flag=None, case_id=None, compromised=None,
                                vulnerable=None, vulnerability=None, page=None, per_page=None, sort=None,
-                               include_vulnerabilities=True, without_flag=None):
+                               include_vulnerabilities=True, without_flag=None, customer_id=None):
     """Assets of the readable attached cases.
 
     Query-string inputs are passed raw: `flag` is a flag id (assets
     carrying it) or `'none'` (assets without any flag), `without_flag` a
     flag id (assets not carrying it),
-    `case_id` an int, `compromised` `'1'`/`'true'`, `vulnerable`
+    `case_id` an int, `customer_id` an int (the assets of the attached
+    cases of this customer), `compromised` `'1'`/`'true'`, `vulnerable`
     `'open'`/`'exploited'`/`'none'`, `vulnerability` an identifier
     (`CVE-2024-3400`, an alias, an `IRIS-VULN-…` entry).
 
@@ -620,16 +624,17 @@ def war_room_scope_list_assets(readable_case_ids, search=None, flag=None, case_i
         if (vulnerable or '') != '' or (vulnerability or '') != '':
             raise BusinessProcessingError('Filtering on vulnerabilities needs the vulnerabilities_read permission')
         return _without_vulnerabilities(_list_assets(
-            readable_case_ids, search, flag, without_flag, case_id, compromised, None, None, page, per_page, sort,
-            False))
-    return _list_assets(readable_case_ids, search, flag, without_flag, case_id, compromised, vulnerable,
-                        vulnerability, page, per_page, sort, True)
+            readable_case_ids, search, flag, without_flag, case_id, customer_id, compromised, None, None, page,
+            per_page, sort, False))
+    return _list_assets(readable_case_ids, search, flag, without_flag, case_id, customer_id, compromised,
+                        vulnerable, vulnerability, page, per_page, sort, True)
 
 
-def _list_assets(readable_case_ids, search, flag, without_flag, case_id, compromised, vulnerable, vulnerability,
-                 page, per_page, sort, with_tags):
+def _list_assets(readable_case_ids, search, flag, without_flag, case_id, customer_id, compromised, vulnerable,
+                 vulnerability, page, per_page, sort, with_tags):
     search = _parse_search(search)
     case_filter = _parse_optional_int_arg(case_id, 'case_id')
+    customer_filter = _parse_optional_int_arg(customer_id, 'customer_id')
     flag_none = False
     flag_id = None
     if flag is not None and flag != '':
@@ -644,7 +649,7 @@ def _list_assets(readable_case_ids, search, flag, without_flag, case_id, comprom
     pagination = _parse_pagination(page, per_page)
     sort = _parse_sort(sort, _ASSET_SORTS)
 
-    case_ids = _restrict_case_ids(readable_case_ids, case_filter)
+    case_ids = _restrict_case_ids(readable_case_ids, case_filter, customer_filter)
     filters = {'search': search, 'flag_id': flag_id, 'flag_none': flag_none, 'without_flag_id': without_flag_id,
                'compromised': only_compromised, 'vulnerable': vulnerable_filter,
                'vulnerability': vulnerability_filter}
@@ -690,6 +695,41 @@ def _list_assets(readable_case_ids, search, flag, without_flag, case_id, comprom
         'case_totals': case_totals,
         'flag_totals': flag_totals,
     }
+
+
+def war_room_scope_list_customers(readable_case_ids, include_vulnerabilities=True):
+    """The customers of the readable attached cases, with their cases and
+    the asset / IOC totals over them. Cases without a customer are
+    grouped under `customer_id: None`. Without `include_vulnerabilities`
+    the vulnerability totals are left out."""
+    case_ids = list(readable_case_ids)
+    breakdown = {row.case_id: row for row in war_room_scope_db_assets_breakdown(case_ids)}
+    compromised = {row.case_id: int(row.assets or 0)
+                   for row in war_room_scope_db_assets_breakdown(case_ids, compromised=True)}
+    iocs = {row.case_id: int(row.iocs or 0) for row in war_room_scope_db_ioc_case_counts(case_ids)}
+    customers = {}
+    for row in war_room_scope_db_cases(case_ids):
+        entry = customers.get(row.customer_id)
+        if entry is None:
+            entry = {'customer_id': row.customer_id, 'customer_name': row.customer_name, 'cases': [],
+                     'assets': 0, 'done': 0, 'compromised': 0, 'iocs': 0, 'vuln_open': 0, 'vuln_exploited_open': 0}
+            customers[row.customer_id] = entry
+        entry['cases'].append({'case_id': row.case_id, 'case_name': row.case_name})
+        totals = breakdown.get(row.case_id)
+        if totals is not None:
+            entry['assets'] += int(totals.assets or 0)
+            entry['done'] += int(totals.done or 0)
+            entry['vuln_open'] += int(totals.vuln_open or 0)
+            entry['vuln_exploited_open'] += int(totals.vuln_exploited_open or 0)
+        entry['compromised'] += compromised.get(row.case_id, 0)
+        entry['iocs'] += iocs.get(row.case_id, 0)
+    data = sorted(customers.values(), key=lambda entry: (entry['customer_id'] is None,
+                                                         (entry['customer_name'] or '').lower()))
+    if not include_vulnerabilities:
+        for entry in data:
+            for field in _CASE_TOTAL_VULNERABILITY_FIELDS:
+                entry.pop(field, None)
+    return {'data': data}
 
 
 def war_room_scope_list_iocs(readable_case_ids, search=None, case_id=None, page=None, per_page=None, sort=None):

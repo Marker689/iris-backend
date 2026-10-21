@@ -62,6 +62,7 @@ from app.business.war_room_scope import war_room_scope_create_asset
 from app.business.war_room_scope import war_room_scope_create_ioc
 from app.business.war_room_scope import war_room_scope_export_iocs
 from app.business.war_room_scope import war_room_scope_list_assets
+from app.business.war_room_scope import war_room_scope_list_customers
 from app.business.war_room_scope import war_room_scope_list_iocs
 from app.business.war_room_scope import war_room_scope_push_assets
 from app.business.war_room_scope import war_room_scope_push_iocs
@@ -116,6 +117,7 @@ def _json_body():
                        ('flag_id', 'string', 'Only the assets carrying this flag, or none for unflagged assets'),
                        ('without_flag_id', 'integer', 'Only the assets not carrying this flag'),
                        ('case_id', 'integer', 'Only the assets of this attached case'),
+                       ('customer_id', 'integer', 'Only the assets of the attached cases of this customer'),
                        ('compromised', 'boolean', 'Only compromised assets'),
                        ('vulnerable', 'string',
                         'open (an open vulnerability finding), exploited (an exploited one) or none'),
@@ -137,6 +139,7 @@ def list_scope_assets(war_room_id):
             flag=request.args.get('flag_id'),
             without_flag=request.args.get('without_flag_id'),
             case_id=request.args.get('case_id'),
+            customer_id=request.args.get('customer_id'),
             compromised=request.args.get('compromised'),
             vulnerable=request.args.get('vulnerable'),
             vulnerability=request.args.get('vulnerability'),
@@ -147,6 +150,21 @@ def list_scope_assets(war_room_id):
         )
     except BusinessProcessingError as e:
         return response_api_error(e.get_message())
+    return response_api_success(result)
+
+
+@war_rooms_scope_blueprint.get('/customers')
+@ac_api_requires()
+@api_doc(tags=['WarRoomScope'],
+         summary='List the customers of the attached cases the caller can read, with their cases and totals')
+def list_scope_customers(war_room_id):
+    err = require_war_room_read(war_room_id)
+    if err is not None:
+        return err
+    result = war_room_scope_list_customers(
+        _readable_case_ids(war_room_id),
+        include_vulnerabilities=ac_current_user_can_read_vulnerabilities(),
+    )
     return response_api_success(result)
 
 
