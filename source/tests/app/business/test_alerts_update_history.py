@@ -49,6 +49,10 @@ class _Recorder:
     def enqueue(self, alert_identifier):
         self.events.append(('enqueue', alert_identifier))
 
+    def close_resolved_clusters(self, alert_identifiers):
+        self.events.append(('close_resolved_clusters', list(alert_identifiers)))
+        return []
+
     def names(self):
         return [name for name, _ in self.events]
 
@@ -61,6 +65,7 @@ class _AlertsUpdateTestCase(TestCase):
                 patch('app.business.alerts.track_activity', recorder.activity), \
                 patch('app.business.alerts.call_modules_hook', hook or recorder.hook), \
                 patch('app.business.alerts._enqueue_rule_evaluation', recorder.enqueue), \
+                patch('app.business.alerts.alert_clusters_close_resolved', recorder.close_resolved_clusters), \
                 patch('app.business.alerts.db') as database:
             database.session.commit = recorder.commit
             result = alerts_update(pristine, updated, activity_data)
@@ -151,6 +156,20 @@ class TestAlertsUpdateHooks(_AlertsUpdateTestCase):
 
         enqueued = [entry for name, entry in recorder.events if name == 'enqueue']
         self.assertEqual([7], enqueued)
+
+    def test_status_change_closes_resolved_clusters_after_the_final_commit(self):
+        recorder, _ = self._run(_FakeAlert(alert_id=7, status_id=2), _FakeAlert(alert_id=7, status_id=4), [])
+
+        names = recorder.names()
+        closes = [entry for name, entry in recorder.events if name == 'close_resolved_clusters']
+        self.assertEqual([[7]], closes)
+        last_commit = max(index for index, name in enumerate(names) if name == 'commit')
+        self.assertLess(last_commit, names.index('close_resolved_clusters'))
+
+    def test_unchanged_status_does_not_close_resolved_clusters(self):
+        recorder, _ = self._run(_FakeAlert(status_id=4), _FakeAlert(status_id=4), [])
+
+        self.assertNotIn('close_resolved_clusters', recorder.names())
 
     def test_a_module_rewriting_the_alert_is_returned_and_committed(self):
         replacement = _FakeAlert(alert_id=42, status_id=4)
