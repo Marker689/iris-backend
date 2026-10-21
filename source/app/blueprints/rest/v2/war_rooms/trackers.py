@@ -366,7 +366,7 @@ def add_tracker_rows(war_room_id, tracker_id):
         tracker = war_room_trackers_get(war_room_id, tracker_id)
         result = war_room_trackers_rows_add(war_room_id, tracker, body, _access(war_room_id), iris_current_user.id)
         if result['data']:
-            rows = war_room_trackers_describe_rows(row['label'] for row in result['data'])
+            rows = war_room_trackers_describe_rows((row['item_type'], row['label']) for row in result['data'])
             _emit_tracker_event(war_room_id, f'{tracker.name}: added {rows}', tracker.id)
         return result
     return _handle(_add, created=True)
@@ -437,6 +437,7 @@ def delete_tracker_row(war_room_id, tracker_id, row_id):
 
     def _delete():
         tracker = war_room_trackers_get(war_room_id, tracker_id)
-        label = war_room_trackers_rows_delete(tracker, row_id)
-        _emit_tracker_event(war_room_id, f'{tracker.name}: removed {label or "a row"}', tracker.id)
+        row = war_room_trackers_rows_delete(tracker, row_id)
+        _emit_tracker_event(war_room_id, f'{tracker.name}: removed {war_room_trackers_describe_rows([row])}',
+                            tracker.id)
     return _handle_deleted(_delete)

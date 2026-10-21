@@ -421,7 +421,7 @@ class TestRowsState(_Patches):
         self.assertEqual([(e.action, e.details) for e in events],
                          [('step_added', {'step_id': 1, 'step_name': 'Isolated'})])
         self.assertEqual(result['data'][0]['row_id'], rows[0].id)
-        self.assertEqual(trackers.war_room_trackers_describe_changes(changes), 'set Isolated on dc01')
+        self.assertEqual(trackers.war_room_trackers_describe_changes(changes), 'set Isolated on 1 asset')
 
     def test_no_change_creates_nothing(self):
         result, changes = trackers.war_room_trackers_rows_update_state(
@@ -488,20 +488,26 @@ class TestRowsAdd(_Patches):
 
 class TestStreamLines(TestCase):
 
-    def test_rows_are_listed_then_counted(self):
-        self.assertEqual(trackers.war_room_trackers_describe_rows(['a', 'b', 'a', None]), 'a, b, a row')
-        self.assertEqual(trackers.war_room_trackers_describe_rows(['a', 'b', 'c', 'd']), '4 rows')
+    def test_free_text_rows_are_named_then_counted(self):
+        self.assertEqual(trackers.war_room_trackers_describe_rows([(None, 'a'), (None, 'b'), (None, 'a'),
+                                                                   (None, None)]), 'a, b, a row')
+        self.assertEqual(trackers.war_room_trackers_describe_rows([(None, x) for x in 'abcd']), '4 rows')
+
+    def test_items_are_only_counted_by_type(self):
+        refs = [('asset', None), ('asset', None), ('ioc', None), ('managed_asset', None), (None, 'Call CERT')]
+        self.assertEqual(trackers.war_room_trackers_describe_rows(refs),
+                         'Call CERT, 2 assets, 1 IOC, 1 registry asset')
 
     def test_changes_are_grouped_by_step_and_field(self):
         step = {'step_id': 1, 'step_name': 'Sent email'}
         changes = [
-            ('ACME', [('step_added', step), ('note_changed', {'old': None, 'new': 'x'})]),
-            ('Globex', [('step_added', step), ('step_removed', {'step_id': 2, 'step_name': 'Pending'})]),
-            ('Initech', [('value_changed', {'column_key': 'c_owner', 'column_label': 'Owner', 'old': None,
-                                            'new': 'bob'})]),
+            (None, 'ACME', [('step_added', step), ('note_changed', {'old': None, 'new': 'x'})]),
+            ('customer', None, [('step_added', step), ('step_removed', {'step_id': 2, 'step_name': 'Pending'})]),
+            (None, 'Initech', [('value_changed', {'column_key': 'c_owner', 'column_label': 'Owner', 'old': None,
+                                                  'new': 'bob'})]),
         ]
         self.assertEqual(trackers.war_room_trackers_describe_changes(changes),
-                         'set Sent email on ACME, Globex; cleared Pending from Globex; '
+                         'set Sent email on ACME, 1 customer; cleared Pending from 1 customer; '
                          'edited the note of ACME; edited Owner of Initech')
 
     def test_nothing_changed_gives_no_line(self):

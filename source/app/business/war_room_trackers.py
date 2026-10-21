@@ -1107,19 +1107,12 @@ def _record(tracker_id, row_id, user_id, now, events):
                                                         created_at=now, action=action, details=details))
 
 
-def _row_label(row, item):
-    if row.item_type is None:
-        return row.label
-    if item is not None:
-        return item['label']
-    return f'{row.item_type} #{row.item_id}'
-
-
 def war_room_trackers_rows_update_state(war_room_id, tracker, body, access, user_id):
     """Bulk update of the steps / note / values / label of rows. Mirrored
     items get their stored row on their first actual change. One event
     per actual change. Returns `({data: [Row]}, changes)` (the targeted
-    rows, and the `(row label, events)` of the rows actually changed)."""
+    rows, and the `(item_type, label, events)` of the rows actually
+    changed, see `war_room_trackers_describe_changes`)."""
     if not isinstance(body, dict):
         raise BusinessProcessingError('Invalid request')
     refs = _parse_row_refs(body.get('rows'))
@@ -1158,7 +1151,7 @@ def war_room_trackers_rows_update_state(war_room_id, tracker, body, access, user
                 war_room_trackers_db_add(WarRoomTrackerRowStep(row_id=row.id, step_id=step_id, set_by_id=user_id,
                                                                set_at=now))
             _record(tracker.id, row.id, user_id, now, events)
-            applied.append((_row_label(row, item), events))
+            applied.append((row.item_type, row.label, events))
         result.append((row if row.id is not None else None, item))
     if not war_room_trackers_db_commit():
         raise BusinessProcessingError('These rows were changed meanwhile, reload and retry')
@@ -1252,12 +1245,12 @@ def _manual_row(tracker, row_id):
 
 
 def war_room_trackers_rows_delete(tracker, row_id):
-    """Returns the label of the deleted row."""
+    """Returns the `(item_type, label)` of the deleted row."""
     row = _manual_row(tracker, row_id)
-    label = _row_label(row, None)
+    ref = (row.item_type, row.label)
     war_room_trackers_db_delete(row)
     war_room_trackers_db_commit()
-    return label
+    return ref
 
 
 def war_room_trackers_rows_reorder(tracker, ids):
@@ -1271,37 +1264,59 @@ def war_room_trackers_rows_reorder(tracker, ids):
 
 _STREAM_LISTED_ROWS = 3
 
+_STREAM_ITEM_NOUNS = {
+    'asset': ('asset', 'assets'),
+    'ioc': ('IOC', 'IOCs'),
+    'customer': ('customer', 'customers'),
+    'case': ('case', 'cases'),
+    'managed_asset': ('registry asset', 'registry assets'),
+}
 
-def war_room_trackers_describe_rows(labels):
-    """The rows of a war-room stream line: their labels, or their count
-    past a few."""
-    labels = list(dict.fromkeys(label or 'a row' for label in labels))
-    if len(labels) > _STREAM_LISTED_ROWS:
-        return f'{len(labels)} rows'
-    return ', '.join(labels)
+
+def war_room_trackers_describe_rows(refs):
+    """The rows of a war-room stream line from their `(item_type, label)`.
+
+    The stream is read by every member of the room while the rows of an
+    item are bounded by the cases / registry scope of each reader: items
+    are only counted per type, never named. Free-text rows, visible to
+    the whole room, are named (or counted past a few)."""
+    labels = []
+    counts = {}
+    for item_type, label in refs:
+        if item_type is None:
+            labels.append(label or 'a row')
+        else:
+            counts[item_type] = counts.get(item_type, 0) + 1
+    labels = list(dict.fromkeys(labels))
+    parts = labels if len(labels) <= _STREAM_LISTED_ROWS else [f'{len(labels)} rows']
+    for item_type, count in counts.items():
+        singular, plural = _STREAM_ITEM_NOUNS.get(item_type, ('item', 'items'))
+        parts.append(f'{count} {singular if count == 1 else plural}')
+    return ', '.join(parts)
 
 
 def war_room_trackers_describe_changes(changes):
-    """One war-room stream line for the `(row label, events)` of a state
-    update, None when nothing changed."""
+    """One war-room stream line for the `(item_type, label, events)` of a
+    state update, None when nothing changed."""
     added = {}
     removed = {}
     edited = {}
-    for label, events in changes:
+    for item_type, label, events in changes:
+        ref = (item_type, label)
         for action, details in events:
             if action == 'step_added':
-                added.setdefault(details.get('step_name') or 'a step', []).append(label)
+                added.setdefault(details.get('step_name') or 'a step', []).append(ref)
             elif action == 'step_removed':
-                removed.setdefault(details.get('step_name') or 'a step', []).append(label)
+                removed.setdefault(details.get('step_name') or 'a step', []).append(ref)
             elif action == 'note_changed':
-                edited.setdefault('the note', []).append(label)
+                edited.setdefault('the note', []).append(ref)
             elif action == 'label_changed':
-                edited.setdefault('the label', []).append(label)
+                edited.setdefault('the label', []).append(ref)
             elif action == 'value_changed':
-                edited.setdefault(details.get('column_label') or 'a column', []).append(label)
-    parts = [f'set {step} on {war_room_trackers_describe_rows(labels)}' for step, labels in added.items()]
-    parts += [f'cleared {step} from {war_room_trackers_describe_rows(labels)}' for step, labels in removed.items()]
-    parts += [f'edited {what} of {war_room_trackers_describe_rows(labels)}' for what, labels in edited.items()]
+                edited.setdefault(details.get('column_label') or 'a column', []).append(ref)
+    parts = [f'set {step} on {war_room_trackers_describe_rows(refs)}' for step, refs in added.items()]
+    parts += [f'cleared {step} from {war_room_trackers_describe_rows(refs)}' for step, refs in removed.items()]
+    parts += [f'edited {what} of {war_room_trackers_describe_rows(refs)}' for what, refs in edited.items()]
     return '; '.join(parts) or None
 
 

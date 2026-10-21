@@ -187,7 +187,7 @@ class TestsRestWarRoomTrackers(TestCase):
             'rows': [{'item_type': 'asset', 'item_id': asset_id}], 'add_step_ids': [step_id]})
         listed = self._subject.get(f'/api/v2/war-rooms/{room_id}/chat').json()
         lines = [(m['body'], m['ref_type'], m['ref_id']) for m in listed if m['kind'] == 'tracker']
-        self.assertIn(('Hosts: set Isolated on dc01', 'war_room_tracker', tracker['id']), lines)
+        self.assertIn(('Hosts: set Isolated on 1 asset', 'war_room_tracker', tracker['id']), lines)
         self.assertIn(('Created tracker: Hosts', 'war_room_tracker', tracker['id']), lines)
 
     def test_state_should_reject_an_item_out_of_the_room(self):
