@@ -549,7 +549,8 @@ paths:
     put:
       operationId: put_ai_workflow_sharing_route_put
       summary: 'Share an AI workflow with groups (group_ids empty: private); their members may see it
-        and run it as themselves'
+        and run it as themselves, those of edit_group_ids (a subset, kept when omitted) may also edit
+        it'
       tags:
       - AiWorkflows
       security:

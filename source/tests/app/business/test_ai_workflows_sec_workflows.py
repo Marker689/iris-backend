@@ -446,6 +446,132 @@ class TestsSharedWithGroups(_WorkflowsTestCase):
         self.assertEqual([{'id': 5, 'name': 'G5'}, {'id': 6, 'name': 'G6'}], ai_workflows_share_groups())
 
 
+class TestsSharedForEditing(_WorkflowsTestCase):
+    """A workflow shared with a group for editing: its members edit, test
+    and replay it, as themselves, within the limits its owner set; only
+    the owner manages it."""
+
+    def setUp(self):
+        super().setUp()
+        self.workflows[3] = _stored_workflow(shared_group_ids=[5, 6], shared_edit_group_ids=[5])
+        self.keystore = []
+        for patcher in (patch(f'{_BUSINESS}.ai_workflows_live_emit_saved'),
+                        patch(f'{_BUSINESS}.ai_workflows_keystore_visible_entries',
+                              side_effect=lambda _user_id: [SimpleNamespace(name=n) for n in self.keystore])):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _graph(text):
+        graph = _legacy_graph()
+        graph['nodes'].append({'id': 'http', 'type': 'http', 'config': {'headers': {'Authorization': text}}})
+        return graph
+
+    def test_editor_should_edit_but_not_manage(self):
+        data = ai_workflows_get(3, _OTHER, False)
+        self.assertEqual((True, False), (data['can_edit'], data['can_manage']))
+        self.assertEqual([5], data['shared_edit_group_ids'])
+        owner = ai_workflows_get(3, _OWNER, False)
+        self.assertEqual((True, True), (owner['can_edit'], owner['can_manage']))
+
+    def test_member_of_a_view_only_group_should_not_edit(self):
+        self.user_groups[_OTHER] = [6]
+        self.assertFalse(ai_workflows_get(3, _OTHER, False)['can_edit'])
+        with self.assertRaises(AiWorkflowsForbiddenError):
+            ai_workflows_update(3, {'name': 'x'}, _OTHER, False)
+
+    def test_editor_should_save_a_new_version_attributed_to_them(self):
+        graph = self._graph('Bearer {{ vars.token }}')
+        ai_workflows_update(3, {'name': 'Renamed', 'graph': graph}, _OTHER, False)
+        self.assertEqual('Renamed', self.workflows[3].name)
+        self.assertEqual(2, self.workflows[3].version)
+        self.assertEqual(_OTHER, self.added[-1].created_by_id)
+        self.assertEqual(_OWNER, self.workflows[3].owner_id)
+
+    def test_editor_should_not_change_the_limits_the_owner_set(self):
+        for field, value in (('is_active', False), ('write_tool_allowlist', ['update_alert']),
+                             ('customer_scope', [1]), ('max_runs_per_hour', 5), ('token_budget_per_run', 10),
+                             ('suggestion_audience', 'owner'), ('owner_id', _OTHER)):
+            with self.subTest(field=field), self.assertRaises(AiWorkflowsForbiddenError):
+                ai_workflows_update(3, {field: value}, _OTHER, False)
+        self.assertEqual((True, [], 1), (self.workflows[3].is_active, self.workflows[3].write_tool_allowlist,
+                                         self.workflows[3].version))
+
+    def test_editor_should_resend_the_limits_unchanged(self):
+        ai_workflows_update(3, {'name': 'x', 'is_active': True, 'write_tool_allowlist': [], 'customer_scope': [],
+                                'max_runs_per_hour': 60, 'owner_id': _OWNER}, _OTHER, False)
+        self.assertEqual('x', self.workflows[3].name)
+
+    def test_editor_should_not_add_a_keystore_entry_they_cannot_use(self):
+        with self.assertRaises(AiWorkflowsForbiddenError):
+            ai_workflows_update(3, {'graph': self._graph('{{ key("OWNER_TOKEN") }}')}, _OTHER, False)
+        self.assertEqual(1, self.workflows[3].version)
+        self.keystore = ['OWNER_TOKEN']
+        ai_workflows_update(3, {'graph': self._graph('{{ key("OWNER_TOKEN") }}')}, _OTHER, False)
+        self.assertEqual(2, self.workflows[3].version)
+
+    def test_editor_should_keep_a_keystore_entry_already_there(self):
+        self.workflows[3].graph = self._graph('{{ key("OWNER_TOKEN") }}')
+        ai_workflows_update(3, {'name': 'x', 'graph': self._graph('Bearer {{ key("OWNER_TOKEN") }}')}, _OTHER,
+                            False)
+        self.assertEqual('x', self.workflows[3].name)
+
+    def test_owner_should_change_the_limits(self):
+        ai_workflows_update(3, {'max_runs_per_hour': 5, 'graph': self._graph('{{ key("ANY") }}')}, _OWNER, False)
+        self.assertEqual(5, self.workflows[3].max_runs_per_hour)
+
+    def test_editor_should_not_manage_it(self):
+        operations = [
+            lambda: ai_workflows_set_category(3, None, _OTHER, False),
+            lambda: ai_workflows_set_shared_groups(3, [5, 6], _OTHER, False, [5, 6]),
+            lambda: ai_workflows_export(3, _OTHER, False),
+            lambda: ai_workflows_delete(3, _OTHER, False),
+            lambda: ai_workflows_rotate_inbound_token(3, _OTHER, False),
+        ]
+        for operation in operations:
+            with self.assertRaises(AiWorkflowsForbiddenError):
+                operation()
+        self.assertEqual([5], self.workflows[3].shared_edit_group_ids)
+
+    def test_editor_test_should_act_as_the_editor(self):
+        node = {'id': 'n', 'type': 'llm', 'config': {}}
+        with patch(f'{_BUSINESS}.ai_workflows_graph_validate_node', return_value=[]), \
+                patch(f'{_BUSINESS}.ai_workflows_engine_test_context', return_value={}), \
+                patch(f'{_BUSINESS}.ai_workflows_engine_test_node',
+                      return_value=SimpleNamespace(uuid=uuid.uuid4())) as test_node:
+            ai_workflows_test_node(3, {'node': node, 'entity_type': 'alert', 'entity_id': 4}, _OTHER, False)
+            self.assertEqual(_OTHER, test_node.call_args.kwargs['run_as_user_id'])
+            ai_workflows_test_node(3, {'node': node, 'entity_type': 'alert', 'entity_id': 4}, _OWNER, False)
+            self.assertEqual(_OWNER, test_node.call_args.kwargs['run_as_user_id'])
+
+    def test_editor_run_should_act_as_the_editor(self):
+        ai_workflows_run_manual(3, {'entity_type': 'alert', 'entity_id': 4}, _OTHER, False)
+        self.assertEqual(_OTHER, self.insert_run.call_args.kwargs['run_as_user_id'])
+        self.start_run.assert_not_called()
+
+    def test_owner_should_choose_the_editors_among_the_shared_groups(self):
+        data = ai_workflows_set_shared_groups(3, [5, 6], _OWNER, False, [6, 6])
+        self.assertEqual([6], self.workflows[3].shared_edit_group_ids)
+        self.assertEqual([6], data['shared_edit_group_ids'])
+        with self.assertRaises(BusinessProcessingError):
+            ai_workflows_set_shared_groups(3, [5], _OWNER, False, [6])
+        for invalid in ([99], 'x', [True]):
+            with self.subTest(invalid=invalid), self.assertRaises(BusinessProcessingError):
+                ai_workflows_set_shared_groups(3, [5, 6], _OWNER, False, invalid)
+        self.assertEqual([6], self.workflows[3].shared_edit_group_ids)
+
+    def test_omitted_editors_should_be_kept_while_still_shared(self):
+        ai_workflows_set_shared_groups(3, [5, 6], _OWNER, False)
+        self.assertEqual([5], self.workflows[3].shared_edit_group_ids)
+        ai_workflows_set_shared_groups(3, [6], _OWNER, False)
+        self.assertEqual([], self.workflows[3].shared_edit_group_ids)
+
+    def test_list_should_tell_editors_from_managers(self):
+        with patch(f'{_BUSINESS}.ai_workflows_db_list', return_value=[self.workflows[3]]):
+            data = ai_workflows_list(_OTHER, False)
+        self.assertEqual([(True, False)], [(w['can_edit'], w['can_manage']) for w in data])
+
+
 class TestsDefinitionCaps(_WorkflowsTestCase):
 
     def test_description_over_10k_should_be_rejected(self):

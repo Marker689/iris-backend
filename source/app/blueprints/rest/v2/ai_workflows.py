@@ -21,7 +21,8 @@
 Reads need `ai_workflows_read` or `ai_workflows_write`, mutations (and
 `/validate`) need `ai_workflows_write`. Workflows are visible to their
 owner, to the members of the groups the owner shared them with (who may
-read and run them, not change them: 403) and to administrators; runs
+read and run them; edit them too when shared for editing, within the
+limits the owner set; anything else: 403) and to administrators; runs
 follow the visibility rule of
 `app.business.ai_workflows.ai_workflows_user_can_see_run`. Anything the
 caller cannot see answers 404. The API-key scope of the request bounds
@@ -508,13 +509,14 @@ def put_ai_workflow_category_route(identifier):
 @ai_workflows_blueprint.put('/<int:identifier>/sharing')
 @ac_api_requires(*_WRITE)
 @api_doc(tags=['AiWorkflows'], summary='Share an AI workflow with groups (group_ids empty: private); their members '
-                                         'may see it and run it as themselves')
+                                         'may see it and run it as themselves, those of edit_group_ids (a subset, '
+                                         'kept when omitted) may also edit it')
 def put_ai_workflow_sharing_route(identifier):
     body = request.get_json(silent=True)
     if not isinstance(body, dict) or 'group_ids' not in body:
         return response_api_error('group_ids is required (empty for a private workflow)')
     return _handle(lambda: ai_workflows_set_shared_groups(identifier, body['group_ids'], iris_current_user.id,
-                                                          _is_admin()))
+                                                          _is_admin(), body.get('edit_group_ids')))
 
 
 @ai_workflows_blueprint.delete('/<int:identifier>')

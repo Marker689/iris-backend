@@ -25,10 +25,14 @@ administrator; the REST layer derives both from the request (so an API
 key scope mask is honoured). Visibility rules:
 
 - workflows: administrators see every workflow, everyone else the ones
-  they own and the ones shared with one of their groups. Only the owner
-  (or an administrator) edits, shares, files, exports, deletes, tests or
-  replays a workflow; a member of a group it is shared with may read it,
-  its versions and its node events, and run it manually;
+  they own and the ones shared with one of their groups. A member of a
+  group it is shared with may read it, its versions and its node
+  events, and run it manually; one of a group it is shared with for
+  editing may also edit, test and replay it, but not change the limits
+  its owner set (activation, allowlist, customer scope, budgets,
+  audience) nor add a keystore entry they cannot use. Only the owner
+  (or an administrator) sets those, shares, files, exports, publishes or
+  deletes it;
 - runs: administrators see every run; everyone else must have owned the
   workflow when the run started (`run.owner_id`), be the run-as user or
   the user who triggered the run, AND be able to access the run's
@@ -42,8 +46,9 @@ key scope mask is honoured). Visibility rules:
 An object the caller may not see is reported as not found (404), so
 nothing can be probed; a shared workflow the caller may not change is
 forbidden (403). Runs started by the owner or an administrator act as
-the workflow owner; a manual run (or re-run) started by a member of a
-group the workflow is shared with acts as that member, like a run from
+the workflow owner; a manual run (or re-run), test or replay started
+by a member of a group the workflow is shared with (editor or not)
+acts as that member, like a run from
 an object menu: their permissions, entity access and personal keys,
 never the owner's. `scope_mask` is the API-key scope of the request
 (None for a session or an unscoped key) and bounds the run.
@@ -197,6 +202,9 @@ _VERSIONED_FIELDS = ('triggers', 'trigger_type', 'trigger_config', 'customer_sco
                      'write_tool_allowlist', 'max_runs_per_hour', 'token_budget_per_run',
                      'suggestion_audience')
 _DEFINITION_FIELDS = ('name', 'description', 'is_active') + _VERSIONED_FIELDS
+# What an editor who does not manage the workflow cannot change
+_OWNER_FIELDS = ('is_active', 'owner_id', 'customer_scope', 'write_tool_allowlist', 'max_runs_per_hour',
+                 'token_budget_per_run', 'suggestion_audience')
 
 _MAX_RUNS_PER_HOUR = 10000
 _MAX_TOKEN_BUDGET = 10_000_000
@@ -308,10 +316,11 @@ def _revision(definition) -> str:
 
 
 def ai_workflows_serialize(workflow, counts=None, users=None, with_graph=True, groups=None,
-                           can_edit=True) -> dict:
-    """`groups` maps group ids to names (looked up when None); `can_edit`
-    tells the caller whether they may change the workflow, or only see
-    and run it (shared with one of their groups)."""
+                           can_edit=True, can_manage=True) -> dict:
+    """`groups` maps group ids to names (looked up when None). `can_edit`
+    tells the caller whether they may edit the workflow, or only see and
+    run it (shared with one of their groups); `can_manage` whether they
+    may also set its limits, share, export or delete it (owner, admin)."""
     data = _definition(workflow)
     revision = _revision(data)
     if not with_graph:
@@ -336,7 +345,9 @@ def ai_workflows_serialize(workflow, counts=None, users=None, with_graph=True, g
         'category_id': getattr(workflow, 'category_id', None),
         'shared_group_ids': shared_group_ids,
         'shared_groups': [{'id': i, 'name': groups.get(i)} for i in shared_group_ids if i in groups],
+        'shared_edit_group_ids': list(getattr(workflow, 'shared_edit_group_ids', None) or []),
         'can_edit': bool(can_edit),
+        'can_manage': bool(can_manage),
         'created_by_id': workflow.created_by_id,
         'created_at': _iso(workflow.created_at),
         'updated_at': _iso(workflow.updated_at),
@@ -537,31 +548,64 @@ def _get_workflow(workflow_id) -> AiWorkflow:
     return workflow
 
 
-def _is_shared_with(workflow, user_id) -> bool:
-    shared = set(workflow.shared_group_ids or [])
-    return bool(shared) and bool(shared & set(ai_workflows_db_user_group_ids(user_id)))
+def _shared_with(group_ids, user_id, user_group_ids=None) -> bool:
+    """Whether the user is in one of `group_ids` (`user_group_ids`: theirs,
+    looked up only when needed and not given)."""
+    if not group_ids:
+        return False
+    if user_group_ids is None:
+        user_group_ids = ai_workflows_db_user_group_ids(user_id)
+    return bool(set(group_ids) & set(user_group_ids))
 
 
-def _can_edit(workflow, user_id, is_admin) -> bool:
+def _is_shared_with(workflow, user_id, user_group_ids=None) -> bool:
+    return _shared_with(workflow.shared_group_ids, user_id, user_group_ids)
+
+
+def _can_manage(workflow, user_id, is_admin) -> bool:
+    """The owner or an administrator: they alone set the limits of the
+    workflow, share, file, export, publish or delete it."""
     return is_admin or workflow.owner_id == user_id
+
+
+def _can_edit(workflow, user_id, is_admin, user_group_ids=None) -> bool:
+    """The owner, an administrator, or a member of a group the workflow is
+    shared with for editing."""
+    return _can_manage(workflow, user_id, is_admin) or _shared_with(
+        getattr(workflow, 'shared_edit_group_ids', None), user_id, user_group_ids)
 
 
 def _get_visible_workflow(workflow_id, user_id, is_admin) -> AiWorkflow:
     """A workflow someone else owns and did not share with a group of the
     user does not exist for a non-admin."""
     workflow = _get_workflow(workflow_id)
-    if not _can_edit(workflow, user_id, is_admin) and not _is_shared_with(workflow, user_id):
+    if not _can_manage(workflow, user_id, is_admin) and not _is_shared_with(workflow, user_id):
         raise ObjectNotFoundError()
     return workflow
 
 
-def _get_owned_workflow(workflow_id, user_id, is_admin) -> AiWorkflow:
-    """Only the owner (or an administrator) may change a workflow: one
-    shared with the user is forbidden, any other does not exist."""
+def _get_editable_workflow(workflow_id, user_id, is_admin) -> AiWorkflow:
+    """The owner, an administrator or an editor (shared for editing) may
+    edit a workflow: one only shared with the user is forbidden."""
     workflow = _get_visible_workflow(workflow_id, user_id, is_admin)
     if not _can_edit(workflow, user_id, is_admin):
+        raise AiWorkflowsForbiddenError('This workflow is shared with you, not for editing')
+    return workflow
+
+
+def _get_owned_workflow(workflow_id, user_id, is_admin) -> AiWorkflow:
+    """Only the owner (or an administrator) may manage a workflow: one
+    shared with the user is forbidden, any other does not exist."""
+    workflow = _get_visible_workflow(workflow_id, user_id, is_admin)
+    if not _can_manage(workflow, user_id, is_admin):
         raise AiWorkflowsForbiddenError('Only the owner of this workflow can do that')
     return workflow
+
+
+def _run_as(workflow, user_id, is_admin):
+    """Who a run started by `user_id` acts as: the owner when the user
+    manages the workflow, else the user (an editor or a member)."""
+    return workflow.owner_id if _can_manage(workflow, user_id, is_admin) else user_id
 
 
 def _run_owner_id(run):
@@ -905,10 +949,11 @@ def _write_version(workflow, user_id, note):
 def ai_workflows_list(user_id, is_admin) -> list:
     """The workflows the user owns or that are shared with one of their
     groups (administrators: every workflow)."""
+    user_group_ids = [] if is_admin else ai_workflows_db_user_group_ids(user_id)
     if is_admin:
         workflows = ai_workflows_db_list()
     else:
-        workflows = ai_workflows_db_list(owner_id=user_id, group_ids=ai_workflows_db_user_group_ids(user_id))
+        workflows = ai_workflows_db_list(owner_id=user_id, group_ids=user_group_ids)
     ids = [w.id for w in workflows]
     counts = ai_workflows_db_run_counts(ids, ai_workflows_db_utcnow() - datetime.timedelta(hours=24))
     users = ai_workflows_db_user_summary([w.owner_id for w in workflows])
@@ -916,14 +961,16 @@ def ai_workflows_list(user_id, is_admin) -> list:
     groups = ai_workflows_db_group_names(shared) if shared else {}
     # No graph in the listing: GET /<id> has it
     return [ai_workflows_serialize(w, counts.get(w.id, {}), users, with_graph=False, groups=groups,
-                                   can_edit=_can_edit(w, user_id, is_admin)) for w in workflows]
+                                   can_edit=_can_edit(w, user_id, is_admin, user_group_ids),
+                                   can_manage=_can_manage(w, user_id, is_admin)) for w in workflows]
 
 
 def ai_workflows_get(workflow_id, user_id, is_admin) -> dict:
     workflow = _get_visible_workflow(workflow_id, user_id, is_admin)
     counts = ai_workflows_db_run_counts([workflow.id], ai_workflows_db_utcnow() - datetime.timedelta(hours=24))
     return ai_workflows_serialize(workflow, counts.get(workflow.id, {}),
-                                  can_edit=_can_edit(workflow, user_id, is_admin))
+                                  can_edit=_can_edit(workflow, user_id, is_admin),
+                                  can_manage=_can_manage(workflow, user_id, is_admin))
 
 
 def ai_workflows_create(body, user_id, is_admin) -> dict:
@@ -938,8 +985,31 @@ def ai_workflows_create(body, user_id, is_admin) -> dict:
     return ai_workflows_serialize(workflow, {})
 
 
+def _comparable(value):
+    return sorted(set(value)) if isinstance(value, list) else value
+
+
+def _check_editor_change(workflow, attributes, user_id):
+    """An editor who does not manage the workflow changes its graph, never
+    the limits its owner set (the automatic runs act as the owner), nor
+    adds a keystore reference they could not use themselves."""
+    locked = [f for f in _OWNER_FIELDS if _comparable(attributes.get(f)) != _comparable(getattr(workflow, f))]
+    if locked:
+        raise AiWorkflowsForbiddenError(f'Only the owner of this workflow can change {", ".join(locked)}')
+    before = set(ai_workflows_portable_key_references(((workflow.graph or {}).get('nodes'))))
+    added = set(ai_workflows_portable_key_references(((attributes.get('graph') or {}).get('nodes')))) - before
+    if added:
+        usable = {e.name for e in ai_workflows_keystore_visible_entries(user_id)}
+        denied = sorted(added - usable)
+        if denied:
+            raise AiWorkflowsForbiddenError(f'Keystore entry {", ".join(denied)} does not exist or is not usable '
+                                            'by you')
+
+
 def ai_workflows_update(workflow_id, body, user_id, is_admin) -> dict:
-    workflow = _get_owned_workflow(workflow_id, user_id, is_admin)
+    """Owner, administrator or editor; an editor within the limits of
+    `_check_editor_change`."""
+    workflow = _get_editable_workflow(workflow_id, user_id, is_admin)
     before = _definition(workflow)
     expected = (body or {}).get('expected_revision')
     if expected is not None and not isinstance(expected, str):
@@ -947,6 +1017,8 @@ def ai_workflows_update(workflow_id, body, user_id, is_admin) -> dict:
     if expected is not None and expected != _revision(before):
         raise AiWorkflowsConflictError(_revision(before), workflow.version)
     attributes = _ai_workflows_validate(body, user_id, is_admin, existing=workflow)
+    if not _can_manage(workflow, user_id, is_admin):
+        _check_editor_change(workflow, attributes, user_id)
     for key, value in attributes.items():
         setattr(workflow, key, value)
     if ai_workflow_trigger_config(workflow, TRIGGER_WEBHOOK) is None:
@@ -993,10 +1065,10 @@ def ai_workflows_set_category(workflow_id, category_id, user_id, is_admin) -> di
     return ai_workflows_get(workflow.id, user_id, is_admin)
 
 
-def _validate_shared_group_ids(group_ids) -> list:
+def _validate_shared_group_ids(group_ids, field='group_ids') -> list:
     if not isinstance(group_ids, list) or len(group_ids) > _MAX_SHARED_GROUPS \
             or not all(isinstance(i, int) and not isinstance(i, bool) for i in group_ids):
-        raise BusinessProcessingError('Invalid sharing', data={'group_ids': ['Must be a list of group ids']})
+        raise BusinessProcessingError('Invalid sharing', data={field: ['Must be a list of group ids']})
     group_ids = sorted(set(group_ids))
     missing = sorted(set(group_ids) - set(ai_workflows_db_existing_group_ids(group_ids)))
     if missing:
@@ -1005,17 +1077,29 @@ def _validate_shared_group_ids(group_ids) -> list:
     return group_ids
 
 
-def ai_workflows_set_shared_groups(workflow_id, group_ids, user_id, is_admin) -> dict:
+def ai_workflows_set_shared_groups(workflow_id, group_ids, user_id, is_admin, edit_group_ids=None) -> dict:
     """Share the workflow with the members of `group_ids` (none: private
-    again). They may see it and run it manually, as themselves; only the
-    owner changes it. Not a definition change: no new version."""
+    again). They may see it and run it manually, as themselves; those of
+    `edit_group_ids` (a subset; None keeps the current editors still
+    shared with) may also edit it, within the limits its owner set. Not a
+    definition change: no new version."""
     workflow = _get_owned_workflow(workflow_id, user_id, is_admin)
     group_ids = _validate_shared_group_ids(group_ids)
-    if list(workflow.shared_group_ids or []) != group_ids:
+    if edit_group_ids is None:
+        edit_group_ids = [i for i in (workflow.shared_edit_group_ids or []) if i in group_ids]
+    edit_group_ids = sorted(set(edit_group_ids)) if isinstance(edit_group_ids, list) else edit_group_ids
+    edit_group_ids = _validate_shared_group_ids(edit_group_ids, 'edit_group_ids')
+    if set(edit_group_ids) - set(group_ids):
+        raise BusinessProcessingError('Invalid sharing', data={
+            'edit_group_ids': ['The workflow must be shared with every group that may edit it']})
+    if list(workflow.shared_group_ids or []) != group_ids \
+            or list(workflow.shared_edit_group_ids or []) != edit_group_ids:
         workflow.shared_group_ids = group_ids
+        workflow.shared_edit_group_ids = edit_group_ids
         ai_workflows_db_commit()
         names = ai_workflows_db_group_names(group_ids)
-        target = ', '.join(f'"{names.get(i, i)}"' for i in group_ids) if group_ids else 'no group'
+        target = ', '.join(f'"{names.get(i, i)}"{" (edit)" if i in edit_group_ids else ""}'
+                           for i in group_ids) if group_ids else 'no group'
         track_activity(f'AI workflow #{workflow.id} "{workflow.name}" shared with {target}', ctx_less=True)
     return ai_workflows_get(workflow.id, user_id, is_admin)
 
@@ -1287,8 +1371,9 @@ def _manual_trigger(workflow, node_id):
 def _start_run(workflow, trigger_type, user_id, is_admin, **kwargs):
     """A run started by `user_id`: acting as the workflow owner when the
     user is the owner or an administrator, else (a member of a group the
-    workflow is shared with) as the user, like a run from an object menu."""
-    if _can_edit(workflow, user_id, is_admin):
+    workflow is shared with, editor or not) as the user, like a run from
+    an object menu."""
+    if _can_manage(workflow, user_id, is_admin):
         return ai_workflows_engine_start_run(workflow, trigger_type, run_as_user_id=workflow.owner_id,
                                              triggered_by_user_id=user_id, **kwargs)
     denial = ai_workflows_engine_access_denial(workflow, user_id, kwargs.get('entity_type'),
@@ -1605,11 +1690,12 @@ def ai_workflows_node_event(workflow_id, node_id, step_id, user_id, is_admin, sc
 
 def ai_workflows_replay_event(workflow_id, node_id, step_id, body, user_id, is_admin, scope_mask=None) -> dict:
     """Replay an event through the current definition of the workflow,
-    from its node. Like a re-run, it acts as the workflow owner and is
-    triggered by the current user, who must access the entity; it is a
-    dry run if asked, or if the replayed run was one."""
+    from its node. Like a re-run, it acts as the workflow owner (as the
+    current user for an editor who does not manage it) and is triggered
+    by the current user, who must access the entity; it is a dry run if
+    asked, or if the replayed run was one."""
     ai_workflows_require_enabled()
-    workflow = _get_owned_workflow(workflow_id, user_id, is_admin)
+    workflow = _get_editable_workflow(workflow_id, user_id, is_admin)
     step, source = _get_node_event(workflow, node_id, step_id, user_id, is_admin, scope_mask)
     if node_id not in ai_workflows_graph_nodes(workflow.graph):
         raise BusinessProcessingError('This node is no longer in the workflow: the event cannot be replayed')
@@ -1619,7 +1705,8 @@ def ai_workflows_replay_event(workflow_id, node_id, step_id, body, user_id, is_a
         raise BusinessProcessingError('Invalid replay request', data={'dry_run': ['Must be a boolean']})
     _check_entity_access(user_id, source.entity_type, source.entity_id, scope_mask)
     run = ai_workflows_engine_replay_step(workflow, source, step, ai_workflows_db_list_steps(source.id),
-                                          triggered_by_user_id=user_id, dry_run=dry_run, scope_mask=scope_mask)
+                                          triggered_by_user_id=user_id, dry_run=dry_run, scope_mask=scope_mask,
+                                          run_as_user_id=_run_as(workflow, user_id, is_admin))
     mode = 'dry run' if dry_run else 'run'
     track_activity(f'AI workflow #{workflow.id} "{workflow.name}" event of node {node_id} (run {source.uuid}, '
                    f'step {step.id}) replayed as {mode} {run.uuid}', ctx_less=True)
@@ -1652,10 +1739,12 @@ def ai_workflows_test_node(workflow_id, body, user_id, is_admin, scope_mask=None
     upstream outputs / variables the tester supplies (`entity_type`,
     `entity_id`, `payload`, `nodes`, `vars`). The node is checked against
     the workflow write allowlist; like any run, the test acts as the
-    workflow owner, is triggered by the current user, who must access the
+    workflow owner (as the current user for an editor who does not
+    manage it), is triggered by the current user, who must access the
     entity, and really executes the node unless `dry_run`."""
     ai_workflows_require_enabled()
-    workflow = _get_owned_workflow(workflow_id, user_id, is_admin)
+    workflow = _get_editable_workflow(workflow_id, user_id, is_admin)
+    run_as_user_id = _run_as(workflow, user_id, is_admin)
     body = body if isinstance(body, dict) else {}
     node = body.get('node')
     errors = ai_workflows_graph_validate_node(node, workflow.write_tool_allowlist)
@@ -1684,7 +1773,8 @@ def ai_workflows_test_node(workflow_id, body, user_id, is_admin, scope_mask=None
         run = ai_workflows_engine_test_node(
             workflow, node, context, trigger_type=source.trigger_type, triggered_by_user_id=user_id,
             entity_type=source.entity_type, entity_id=source.entity_id, sub_entity=source.sub_entity,
-            payload=source.trigger_payload, dry_run=dry_run, source_step_id=step.id, scope_mask=scope_mask)
+            payload=source.trigger_payload, dry_run=dry_run, source_step_id=step.id, scope_mask=scope_mask,
+            run_as_user_id=run_as_user_id)
         origin = f'event of run {source.uuid} (step {step.id})'
     else:
         entity_type, entity_id = _check_entity(workflow, body.get('entity_type'), body.get('entity_id'), user_id,
@@ -1696,7 +1786,8 @@ def ai_workflows_test_node(workflow_id, body, user_id, is_admin, scope_mask=None
                                                    variables)
         run = ai_workflows_engine_test_node(
             workflow, node, context, trigger_type=TRIGGER_MANUAL, triggered_by_user_id=user_id,
-            entity_type=entity_type, entity_id=entity_id, payload=payload, dry_run=dry_run, scope_mask=scope_mask)
+            entity_type=entity_type, entity_id=entity_id, payload=payload, dry_run=dry_run, scope_mask=scope_mask,
+            run_as_user_id=run_as_user_id)
         origin = f'{entity_type} #{entity_id}' if entity_type else 'a supplied context'
     mode = 'dry run' if dry_run else 'run'
     track_activity(f'AI workflow #{workflow.id} "{workflow.name}" node {node["id"]} ({node["type"]}) tested on '

@@ -439,13 +439,14 @@ def ai_workflows_engine_replay_context(source, steps, step) -> dict:
 
 
 def ai_workflows_engine_replay_step(workflow, source, step, steps, *, triggered_by_user_id, dry_run=False,
-                                    scope_mask=None, enqueue=True) -> AiWorkflowRun:
+                                    scope_mask=None, enqueue=True, run_as_user_id=None) -> AiWorkflowRun:
     """Create (and commit) a run of the current definition of `workflow`
     that replays the event `step` processed in `source`: it starts at the
     step's node with the context that step saw, acting as the workflow
-    owner like any run (refused — a `skipped` run — when the owner lost
-    access to the entity). The caller checked the node still exists."""
-    run_as_user_id = workflow.owner_id
+    owner like any run, or as `run_as_user_id` (a workflow editor who
+    does not own it); refused — a `skipped` run — when that user lost
+    access to the entity. The caller checked the node still exists."""
+    run_as_user_id = run_as_user_id or workflow.owner_id
     denial = ai_workflows_engine_access_denial(workflow, run_as_user_id, source.entity_type, source.entity_id,
                                                scope_mask)
     replay = {'step_id': step.id, 'node_id': step.node_id,
@@ -454,7 +455,8 @@ def ai_workflows_engine_replay_step(workflow, source, step, steps, *, triggered_
         workflow, source.trigger_type, denial=denial, triggered_by_user_id=triggered_by_user_id,
         entity_type=source.entity_type, entity_id=source.entity_id, sub_entity=source.sub_entity,
         payload=source.trigger_payload, dry_run=dry_run, chain_depth=source.chain_depth or 0,
-        parent_run_id=source.parent_run_id, enqueue=enqueue, scope_mask=scope_mask, replay=replay)
+        parent_run_id=source.parent_run_id, enqueue=enqueue, scope_mask=scope_mask, replay=replay,
+        run_as_user_id=run_as_user_id)
 
 
 def ai_workflows_engine_test_context(trigger_type, payload, entity_type, entity_id, nodes=None,
@@ -472,17 +474,20 @@ def ai_workflows_engine_test_context(trigger_type, payload, entity_type, entity_
 
 def ai_workflows_engine_test_node(workflow, node, context, *, trigger_type, triggered_by_user_id,
                                   entity_type=None, entity_id=None, sub_entity=None, payload=None, dry_run=False,
-                                  source_step_id=None, scope_mask=None, enqueue=True) -> AiWorkflowRun:
+                                  source_step_id=None, scope_mask=None, enqueue=True,
+                                  run_as_user_id=None) -> AiWorkflowRun:
     """Create (and commit) a run that executes `node` (a definition the
     caller validated, possibly not saved yet) on its own with `context`,
-    acting as the workflow owner like any run (refused — a `skipped` run
-    — when the owner cannot access the entity). It stops after the node."""
-    denial = ai_workflows_engine_access_denial(workflow, workflow.owner_id, entity_type, entity_id, scope_mask)
+    acting as the workflow owner like any run, or as `run_as_user_id` (a
+    workflow editor who does not own it); refused — a `skipped` run —
+    when that user cannot access the entity. It stops after the node."""
+    run_as_user_id = run_as_user_id or workflow.owner_id
+    denial = ai_workflows_engine_access_denial(workflow, run_as_user_id, entity_type, entity_id, scope_mask)
     replay = {'step_id': source_step_id, 'node_id': node['id'], 'context': context}
     return ai_workflows_engine_insert_run(
         workflow, trigger_type, denial=denial, triggered_by_user_id=triggered_by_user_id,
         entity_type=entity_type, entity_id=entity_id, sub_entity=sub_entity, payload=payload, dry_run=dry_run,
-        enqueue=enqueue, scope_mask=scope_mask, replay=replay, tested_node=node)
+        enqueue=enqueue, scope_mask=scope_mask, replay=replay, tested_node=node, run_as_user_id=run_as_user_id)
 
 
 # ---- Executing ------------------------------------------------------------------------

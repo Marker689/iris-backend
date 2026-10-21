@@ -270,6 +270,9 @@ class AiWorkflow(db.Model):
     # Groups whose members may see the workflow and run it manually, as
     # themselves. Not part of the definition either: no new version
     shared_group_ids = Column(JSONB, nullable=False, default=list, server_default='[]')
+    # Those of `shared_group_ids` whose members may also edit the graph
+    # (not its owner-set limits: allowlist, scope, budgets, activation)
+    shared_edit_group_ids = Column(JSONB, nullable=False, default=list, server_default='[]')
 
     created_by_id = Column(ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
