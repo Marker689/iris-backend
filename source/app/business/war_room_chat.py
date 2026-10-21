@@ -213,6 +213,9 @@ _VALID_KINDS = {
     # anchor in the stream so the row's `created_at` and thread
     # placement stay consistent with every other kind.
     'poll',
+    # `tracker` rows narrate what changed in the war-room trackers
+    # (trackers, steps, rows); emitted by the trackers REST routes.
+    'tracker',
 }
 
 

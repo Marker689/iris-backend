@@ -410,7 +410,7 @@ class TestRowsState(_Patches):
         self.patches['war_room_trackers_db_steps'].return_value = [_step(1, 'Isolated')]
 
     def test_a_mirrored_item_gets_its_row_on_its_first_change(self):
-        result = trackers.war_room_trackers_rows_update_state(
+        result, changes = trackers.war_room_trackers_rows_update_state(
             7, _tracker(source='assets'), {'rows': [{'item_type': 'asset', 'item_id': 1}], 'add_step_ids': [1]},
             trackers.WarRoomTrackerAccess([1]), 3)
         rows = self.added_of(WarRoomTrackerRow)
@@ -421,13 +421,15 @@ class TestRowsState(_Patches):
         self.assertEqual([(e.action, e.details) for e in events],
                          [('step_added', {'step_id': 1, 'step_name': 'Isolated'})])
         self.assertEqual(result['data'][0]['row_id'], rows[0].id)
+        self.assertEqual(trackers.war_room_trackers_describe_changes(changes), 'set Isolated on dc01')
 
     def test_no_change_creates_nothing(self):
-        result = trackers.war_room_trackers_rows_update_state(
+        result, changes = trackers.war_room_trackers_rows_update_state(
             7, _tracker(source='assets'), {'rows': [{'item_type': 'asset', 'item_id': 1}], 'remove_step_ids': [1]},
             trackers.WarRoomTrackerAccess([1]), 3)
         self.assertEqual(self.added, [])
         self.assertIsNone(result['data'][0]['row_id'])
+        self.assertEqual(changes, [])
 
     def test_an_item_out_of_the_source_is_refused(self):
         for ref in ({'item_type': 'asset', 'item_id': 2}, {'item_type': 'ioc', 'item_id': 1}, {'row_id': 5}):
@@ -482,6 +484,28 @@ class TestRowsAdd(_Patches):
     def test_mirror_rows_cannot_be_deleted(self):
         with self.assertRaises(BusinessProcessingError):
             trackers.war_room_trackers_rows_delete(_tracker(source='assets'), 1)
+
+
+class TestStreamLines(TestCase):
+
+    def test_rows_are_listed_then_counted(self):
+        self.assertEqual(trackers.war_room_trackers_describe_rows(['a', 'b', 'a', None]), 'a, b, a row')
+        self.assertEqual(trackers.war_room_trackers_describe_rows(['a', 'b', 'c', 'd']), '4 rows')
+
+    def test_changes_are_grouped_by_step_and_field(self):
+        step = {'step_id': 1, 'step_name': 'Sent email'}
+        changes = [
+            ('ACME', [('step_added', step), ('note_changed', {'old': None, 'new': 'x'})]),
+            ('Globex', [('step_added', step), ('step_removed', {'step_id': 2, 'step_name': 'Pending'})]),
+            ('Initech', [('value_changed', {'column_key': 'c_owner', 'column_label': 'Owner', 'old': None,
+                                            'new': 'bob'})]),
+        ]
+        self.assertEqual(trackers.war_room_trackers_describe_changes(changes),
+                         'set Sent email on ACME, Globex; cleared Pending from Globex; '
+                         'edited the note of ACME; edited Owner of Initech')
+
+    def test_nothing_changed_gives_no_line(self):
+        self.assertIsNone(trackers.war_room_trackers_describe_changes([]))
 
 
 class TestHistory(_Patches):

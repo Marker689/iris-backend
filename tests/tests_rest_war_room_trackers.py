@@ -177,6 +177,19 @@ class TestsRestWarRoomTrackers(TestCase):
                                     {'item_type': 'asset', 'item_id': asset_id}).json()
         self.assertEqual({'step_added', 'note_changed', 'value_changed'}, {event['action'] for event in history})
 
+    def test_state_should_post_a_line_in_the_war_room_stream(self):
+        room_id = self._room()
+        case_id = self._attach_case(room_id)
+        asset_id = self._asset(case_id, 'dc01')
+        step_id = self._step(room_id, 'Isolated').json()['id']
+        tracker = self._tracker(room_id, 'assets', name='Hosts').json()
+        self._subject.create(f'/api/v2/war-rooms/{room_id}/trackers/{tracker["id"]}/rows/state', {
+            'rows': [{'item_type': 'asset', 'item_id': asset_id}], 'add_step_ids': [step_id]})
+        listed = self._subject.get(f'/api/v2/war-rooms/{room_id}/chat').json()
+        lines = [(m['body'], m['ref_type'], m['ref_id']) for m in listed if m['kind'] == 'tracker']
+        self.assertIn(('Hosts: set Isolated on dc01', 'war_room_tracker', tracker['id']), lines)
+        self.assertIn(('Created tracker: Hosts', 'war_room_tracker', tracker['id']), lines)
+
     def test_state_should_reject_an_item_out_of_the_room(self):
         room_id = self._room()
         case_id = self._subject.create_dummy_case()

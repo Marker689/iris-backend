@@ -24,7 +24,8 @@ caller sees of the rows is bounded by the attached cases it can read and
 by its Assets Manager scope (registry assets need asset_manager_read).
 Saving a room as a template needs server administrator, like every
 template change. Live updates go out on the `trackers` topic (see
-`live.py`)."""
+`live.py`); what changed is also posted to the war-room stream as
+`tracker` rows."""
 
 from flask import Blueprint
 from flask import request
@@ -43,11 +44,14 @@ from app.blueprints.rest.v2.war_rooms.access import require_war_room_read
 from app.blueprints.rest.v2.war_rooms.access import require_war_room_write
 from app.blueprints.rest.v2.war_rooms.access import war_room_readable_attached_case_ids
 from app.business.managed_assets import managed_assets_viewer_scope
+from app.business.war_room_chat import emit_system_event
 from app.business.war_room_tracker_templates import tracker_templates_apply
 from app.business.war_room_tracker_templates import tracker_templates_save_from_war_room
 from app.business.war_room_trackers import WarRoomTrackerAccess
 from app.business.war_room_trackers import war_room_trackers_create
 from app.business.war_room_trackers import war_room_trackers_delete
+from app.business.war_room_trackers import war_room_trackers_describe_changes
+from app.business.war_room_trackers import war_room_trackers_describe_rows
 from app.business.war_room_trackers import war_room_trackers_get
 from app.business.war_room_trackers import war_room_trackers_history
 from app.business.war_room_trackers import war_room_trackers_list
@@ -125,6 +129,14 @@ def _serialize_tracker(war_room_id, tracker):
     return _serialize_trackers(war_room_id, [tracker])[0]
 
 
+def _emit_tracker_event(war_room_id, body, tracker_id=None):
+    emit_system_event(
+        war_room_id, 'tracker', body,
+        author_id=iris_current_user.id,
+        ref_type='war_room_tracker' if tracker_id is not None else None, ref_id=tracker_id,
+    )
+
+
 def _query_int(name):
     raw = request.args.get(name)
     if raw is None or raw == '':
@@ -157,8 +169,12 @@ def create_tracker_step(war_room_id):
     if err is not None:
         return err
     body = _body()
-    return _handle(lambda: war_room_trackers_serialize_step(war_room_trackers_step_create(war_room_id, body)),
-                   created=True)
+
+    def _create():
+        step = war_room_trackers_step_create(war_room_id, body)
+        _emit_tracker_event(war_room_id, f'Created tracker step: {step.name}')
+        return war_room_trackers_serialize_step(step)
+    return _handle(_create, created=True)
 
 
 @war_rooms_tracker_steps_blueprint.post('/reorder')
@@ -192,7 +208,11 @@ def delete_tracker_step(war_room_id, step_id):
     err = require_war_room_write(war_room_id)
     if err is not None:
         return err
-    return _handle_deleted(lambda: war_room_trackers_step_delete(war_room_id, step_id))
+
+    def _delete():
+        name = war_room_trackers_step_delete(war_room_id, step_id)
+        _emit_tracker_event(war_room_id, f'Deleted tracker step: {name}')
+    return _handle_deleted(_delete)
 
 
 # -------------------------------------------------------------- Trackers --
@@ -216,9 +236,12 @@ def create_tracker(war_room_id):
     if err is not None:
         return err
     body = _body()
-    return _handle(lambda: _serialize_tracker(war_room_id,
-                                              war_room_trackers_create(war_room_id, body, iris_current_user.id)),
-                   created=True)
+
+    def _create():
+        tracker = war_room_trackers_create(war_room_id, body, iris_current_user.id)
+        _emit_tracker_event(war_room_id, f'Created tracker: {tracker.name}', tracker.id)
+        return _serialize_tracker(war_room_id, tracker)
+    return _handle(_create, created=True)
 
 
 @war_rooms_trackers_blueprint.post('/reorder')
@@ -248,6 +271,10 @@ def apply_tracker_template(war_room_id):
 
     def _apply():
         steps, trackers = tracker_templates_apply(war_room_id, template_id, iris_current_user.id)
+        if trackers:
+            names = ', '.join(tracker.name for tracker in trackers)
+            _emit_tracker_event(war_room_id, f'Applied a tracker template: {names}',
+                                trackers[0].id if len(trackers) == 1 else None)
         return {'steps': [war_room_trackers_serialize_step(s) for s in steps],
                 'trackers': _serialize_trackers(war_room_id, trackers)}
     return _handle(_apply)
@@ -284,7 +311,16 @@ def update_tracker(war_room_id, tracker_id):
     if err is not None:
         return err
     body = _body()
-    return _handle(lambda: _serialize_tracker(war_room_id, war_room_trackers_update(war_room_id, tracker_id, body)))
+
+    def _update():
+        previous = war_room_trackers_get(war_room_id, tracker_id).name
+        tracker = war_room_trackers_update(war_room_id, tracker_id, body)
+        if tracker.name != previous:
+            _emit_tracker_event(war_room_id, f'Renamed tracker: {previous} → {tracker.name}', tracker.id)
+        else:
+            _emit_tracker_event(war_room_id, f'Updated tracker: {tracker.name}', tracker.id)
+        return _serialize_tracker(war_room_id, tracker)
+    return _handle(_update)
 
 
 @war_rooms_trackers_blueprint.delete('/<int:tracker_id>')
@@ -294,7 +330,11 @@ def delete_tracker(war_room_id, tracker_id):
     err = require_war_room_write(war_room_id)
     if err is not None:
         return err
-    return _handle_deleted(lambda: war_room_trackers_delete(war_room_id, tracker_id))
+
+    def _delete():
+        name = war_room_trackers_delete(war_room_id, tracker_id)
+        _emit_tracker_event(war_room_id, f'Deleted tracker: {name}')
+    return _handle_deleted(_delete)
 
 
 # ------------------------------------------------------------------ Rows --
@@ -321,9 +361,15 @@ def add_tracker_rows(war_room_id, tracker_id):
     if err is not None:
         return err
     body = _body()
-    return _handle(lambda: war_room_trackers_rows_add(war_room_id, war_room_trackers_get(war_room_id, tracker_id),
-                                                      body, _access(war_room_id), iris_current_user.id),
-                   created=True)
+
+    def _add():
+        tracker = war_room_trackers_get(war_room_id, tracker_id)
+        result = war_room_trackers_rows_add(war_room_id, tracker, body, _access(war_room_id), iris_current_user.id)
+        if result['data']:
+            rows = war_room_trackers_describe_rows(row['label'] for row in result['data'])
+            _emit_tracker_event(war_room_id, f'{tracker.name}: added {rows}', tracker.id)
+        return result
+    return _handle(_add, created=True)
 
 
 @war_rooms_trackers_blueprint.post('/<int:tracker_id>/rows/state')
@@ -335,9 +381,16 @@ def update_tracker_rows_state(war_room_id, tracker_id):
     if err is not None:
         return err
     body = _body()
-    return _handle(lambda: war_room_trackers_rows_update_state(
-        war_room_id, war_room_trackers_get(war_room_id, tracker_id), body, _access(war_room_id),
-        iris_current_user.id))
+
+    def _update():
+        tracker = war_room_trackers_get(war_room_id, tracker_id)
+        result, changes = war_room_trackers_rows_update_state(war_room_id, tracker, body, _access(war_room_id),
+                                                              iris_current_user.id)
+        summary = war_room_trackers_describe_changes(changes)
+        if summary is not None:
+            _emit_tracker_event(war_room_id, f'{tracker.name}: {summary}', tracker.id)
+        return result
+    return _handle(_update)
 
 
 @war_rooms_trackers_blueprint.post('/<int:tracker_id>/rows/reorder')
@@ -381,5 +434,9 @@ def delete_tracker_row(war_room_id, tracker_id, row_id):
     err = require_war_room_write(war_room_id)
     if err is not None:
         return err
-    return _handle_deleted(lambda: war_room_trackers_rows_delete(war_room_trackers_get(war_room_id, tracker_id),
-                                                                 row_id))
+
+    def _delete():
+        tracker = war_room_trackers_get(war_room_id, tracker_id)
+        label = war_room_trackers_rows_delete(tracker, row_id)
+        _emit_tracker_event(war_room_id, f'{tracker.name}: removed {label or "a row"}', tracker.id)
+    return _handle_deleted(_delete)
