@@ -43,6 +43,12 @@ from app.models.war_rooms import WarRoomTask
 
 _TITLE_MAX_LEN = 1024
 _MAX_TEAMS = 50
+# Closing a task and moving it to one of these statuses are the same
+# thing: closing sets `_DONE_STATUS_NAME`, reopening goes back to
+# `_REOPENED_STATUS_NAME`.
+_DONE_STATUS_NAME = 'Done'
+_CLOSED_STATUS_NAMES = (_DONE_STATUS_NAME, 'Canceled')
+_REOPENED_STATUS_NAME = 'To do'
 
 
 def _validate_title(title):
@@ -410,6 +416,8 @@ def war_room_task_update(war_room_id, task_id, **fields):
             setattr(task, f, fields[f])
     if 'tags' in fields:
         task.tags = _normalize_tags(fields['tags'])
+    if task.status_id != prior['status_id']:
+        _sync_closed_with_status(task, updated_by_id)
     added_team_ids = []
     if team_ids is not None:
         added_team_ids = task_teams_db_replace(task.task_id, team_ids, updated_by_id)
@@ -457,10 +465,39 @@ def _track_task_changes(task, prior, current):
         track_activity(f'updated war room task "{task.title}"', war_room_id=war_room_id)
 
 
+def _task_status_ids_by_name(names):
+    return {
+        row.status_name: row.id
+        for row in TaskStatus.query
+        .filter(TaskStatus.status_name.in_(names))
+        .with_entities(TaskStatus.id, TaskStatus.status_name)
+        .all()
+    }
+
+
+def _closed_status_ids():
+    return set(_task_status_ids_by_name(_CLOSED_STATUS_NAMES).values())
+
+
+def _sync_closed_with_status(task, closed_by_id):
+    """A task moved to a closed status (the board's Done column) is closed,
+    one moved out of it is reopened — the same as ticking it in the list."""
+    closed = task.status_id is not None and task.status_id in _closed_status_ids()
+    if closed and task.closed_at is None:
+        task.closed_at = datetime.datetime.utcnow()
+        task.closed_by_id = closed_by_id
+    elif not closed and task.closed_at is not None:
+        task.closed_at = None
+        task.closed_by_id = None
+
+
 def war_room_task_close(war_room_id, task_id, closed_by_id=None):
     task = war_room_task_get(war_room_id, task_id)
     task.closed_at = datetime.datetime.utcnow()
     task.closed_by_id = closed_by_id
+    closed_status_ids = _task_status_ids_by_name(_CLOSED_STATUS_NAMES)
+    if task.status_id not in closed_status_ids.values():
+        task.status_id = closed_status_ids.get(_DONE_STATUS_NAME, task.status_id)
     db.session.commit()
     track_activity(f'closed war room task "{task.title}"', war_room_id=war_room_id)
     task = call_modules_hook('on_postload_war_room_task_close', task)
@@ -471,6 +508,8 @@ def war_room_task_reopen(war_room_id, task_id):
     task = war_room_task_get(war_room_id, task_id)
     task.closed_at = None
     task.closed_by_id = None
+    if task.status_id is not None and task.status_id in _closed_status_ids():
+        task.status_id = _task_status_ids_by_name([_REOPENED_STATUS_NAME]).get(_REOPENED_STATUS_NAME)
     db.session.commit()
     track_activity(f'reopened war room task "{task.title}"', war_room_id=war_room_id)
     task = call_modules_hook('on_postload_war_room_task_reopen', task)
