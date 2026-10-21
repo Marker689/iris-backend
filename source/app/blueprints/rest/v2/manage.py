@@ -38,6 +38,7 @@ from app.blueprints.rest.v2.manage_routes.vulnerabilities import vulnerabilities
 from app.blueprints.rest.v2.manage_routes.managed_asset_vulnerabilities import \
     managed_asset_vulnerabilities_blueprint
 from app.blueprints.rest.v2.manage_routes.tutorials import tutorials_blueprint
+from app.blueprints.rest.v2.manage_routes.tracker_templates import tracker_templates_blueprint
 
 manage_v2_blueprint = Blueprint("manage", __name__, url_prefix="/manage")
 
@@ -60,3 +61,4 @@ manage_v2_blueprint.register_blueprint(asset_flags_blueprint)
 manage_v2_blueprint.register_blueprint(vulnerabilities_blueprint)
 manage_v2_blueprint.register_blueprint(managed_asset_vulnerabilities_blueprint)
 manage_v2_blueprint.register_blueprint(tutorials_blueprint)
+manage_v2_blueprint.register_blueprint(tracker_templates_blueprint)

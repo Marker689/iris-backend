@@ -1,0 +1,385 @@
+#  IRIS Source Code
+#  Copyright (C) 2026 - DFIR-IRIS
+#  contact@dfir-iris.org
+#
+#  This program is free software; you can redistribute it and/or
+#  modify it under the terms of the GNU Lesser General Public
+#  License as published by the Free Software Foundation; either
+#  version 3 of the License, or (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+#  Lesser General Public License for more details.
+#
+#  You should have received a copy of the GNU Lesser General Public License
+#  along with this program; if not, write to the Free Software Foundation,
+#  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+"""War-room trackers: the room's steps, its trackers, their rows and
+row history, and the tracker templates applied to / saved from a room.
+
+Reads need war-room read access, writes war-room write access. What a
+caller sees of the rows is bounded by the attached cases it can read and
+by its Assets Manager scope (registry assets need asset_manager_read).
+Saving a room as a template needs server administrator, like every
+template change. Live updates go out on the `trackers` topic (see
+`live.py`)."""
+
+from flask import Blueprint
+from flask import request
+
+from app.blueprints.access_controls import ac_api_requires
+from app.blueprints.access_controls import ac_current_user_has_permission
+from app.blueprints.access_controls import ac_current_user_permissions_mask
+from app.blueprints.iris_user import iris_current_user
+from app.blueprints.rest.api_doc import api_doc
+from app.blueprints.rest.endpoints import response_api_created
+from app.blueprints.rest.endpoints import response_api_deleted
+from app.blueprints.rest.endpoints import response_api_error
+from app.blueprints.rest.endpoints import response_api_not_found
+from app.blueprints.rest.endpoints import response_api_success
+from app.blueprints.rest.v2.war_rooms.access import require_war_room_read
+from app.blueprints.rest.v2.war_rooms.access import require_war_room_write
+from app.blueprints.rest.v2.war_rooms.access import war_room_readable_attached_case_ids
+from app.business.managed_assets import managed_assets_viewer_scope
+from app.business.war_room_tracker_templates import tracker_templates_apply
+from app.business.war_room_tracker_templates import tracker_templates_save_from_war_room
+from app.business.war_room_trackers import WarRoomTrackerAccess
+from app.business.war_room_trackers import war_room_trackers_create
+from app.business.war_room_trackers import war_room_trackers_delete
+from app.business.war_room_trackers import war_room_trackers_get
+from app.business.war_room_trackers import war_room_trackers_history
+from app.business.war_room_trackers import war_room_trackers_list
+from app.business.war_room_trackers import war_room_trackers_rows_add
+from app.business.war_room_trackers import war_room_trackers_rows_delete
+from app.business.war_room_trackers import war_room_trackers_rows_list
+from app.business.war_room_trackers import war_room_trackers_rows_reorder
+from app.business.war_room_trackers import war_room_trackers_rows_update_state
+from app.business.war_room_trackers import war_room_trackers_serialize_many
+from app.business.war_room_trackers import war_room_trackers_serialize_step
+from app.business.war_room_trackers import war_room_trackers_step_create
+from app.business.war_room_trackers import war_room_trackers_step_delete
+from app.business.war_room_trackers import war_room_trackers_step_update
+from app.business.war_room_trackers import war_room_trackers_steps_list
+from app.business.war_room_trackers import war_room_trackers_steps_reorder
+from app.business.war_room_trackers import war_room_trackers_trackers_reorder
+from app.business.war_room_trackers import war_room_trackers_update
+from app.models.authorization import Permissions
+from app.models.errors import BusinessProcessingError
+from app.models.errors import ObjectNotFoundError
+
+
+war_rooms_tracker_steps_blueprint = Blueprint(
+    'war_rooms_tracker_steps_rest_v2', __name__,
+    url_prefix='/<int:war_room_id>/tracker-steps'
+)
+
+war_rooms_trackers_blueprint = Blueprint(
+    'war_rooms_trackers_rest_v2', __name__,
+    url_prefix='/<int:war_room_id>/trackers'
+)
+
+
+def _body():
+    body = request.get_json(silent=True)
+    return body if isinstance(body, dict) else {}
+
+
+def _handle(operation, created=False):
+    try:
+        result = operation()
+    except ObjectNotFoundError:
+        return response_api_not_found()
+    except BusinessProcessingError as e:
+        return response_api_error(e.get_message(), data=e.get_data())
+    if created:
+        return response_api_created(result)
+    return response_api_success(result)
+
+
+def _handle_deleted(operation):
+    try:
+        operation()
+    except ObjectNotFoundError:
+        return response_api_not_found()
+    except BusinessProcessingError as e:
+        return response_api_error(e.get_message(), data=e.get_data())
+    return response_api_deleted()
+
+
+def _access(war_room_id):
+    """What the caller sees of the room: its readable attached cases and,
+    with asset_manager_read, its Assets Manager scope."""
+    registry_scope = None
+    if ac_current_user_has_permission(Permissions.asset_manager_read):
+        registry_scope = managed_assets_viewer_scope(iris_current_user, ac_current_user_permissions_mask())
+    return WarRoomTrackerAccess(war_room_readable_attached_case_ids(war_room_id), registry_scope)
+
+
+def _serialize_trackers(war_room_id, trackers):
+    return war_room_trackers_serialize_many(war_room_id, trackers, _access(war_room_id))
+
+
+def _serialize_tracker(war_room_id, tracker):
+    return _serialize_trackers(war_room_id, [tracker])[0]
+
+
+def _query_int(name):
+    raw = request.args.get(name)
+    if raw is None or raw == '':
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        raise BusinessProcessingError(f'{name} must be an integer')
+    return value
+
+
+# ----------------------------------------------------------------- Steps --
+
+@war_rooms_tracker_steps_blueprint.get('')
+@ac_api_requires()
+@api_doc(tags=['WarRoomTrackers'], summary='List the tracker steps of a war room, ordered')
+def list_tracker_steps(war_room_id):
+    err = require_war_room_read(war_room_id)
+    if err is not None:
+        return err
+    return response_api_success([war_room_trackers_serialize_step(s) for s in war_room_trackers_steps_list(war_room_id)])
+
+
+@war_rooms_tracker_steps_blueprint.post('')
+@ac_api_requires()
+@api_doc(response_shape='created', tags=['WarRoomTrackers'],
+         summary='Create a tracker step (name unique in the room, case-insensitively)')
+def create_tracker_step(war_room_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    body = _body()
+    return _handle(lambda: war_room_trackers_serialize_step(war_room_trackers_step_create(war_room_id, body)),
+                   created=True)
+
+
+@war_rooms_tracker_steps_blueprint.post('/reorder')
+@ac_api_requires()
+@api_doc(tags=['WarRoomTrackers'], summary='Reorder the tracker steps (listed ids first, the others after)')
+def reorder_tracker_steps(war_room_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    body = _body()
+    return _handle(lambda: [war_room_trackers_serialize_step(s)
+                            for s in war_room_trackers_steps_reorder(war_room_id, body.get('ids'))])
+
+
+@war_rooms_tracker_steps_blueprint.patch('/<int:step_id>')
+@ac_api_requires()
+@api_doc(tags=['WarRoomTrackers'], summary='Update a tracker step (fields left out keep their value)')
+def update_tracker_step(war_room_id, step_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    body = _body()
+    return _handle(lambda: war_room_trackers_serialize_step(war_room_trackers_step_update(war_room_id, step_id, body)))
+
+
+@war_rooms_tracker_steps_blueprint.delete('/<int:step_id>')
+@ac_api_requires()
+@api_doc(response_shape='deleted', tags=['WarRoomTrackers'],
+         summary='Delete a tracker step: removed from every row and from the trackers offering it')
+def delete_tracker_step(war_room_id, step_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    return _handle_deleted(lambda: war_room_trackers_step_delete(war_room_id, step_id))
+
+
+# -------------------------------------------------------------- Trackers --
+
+@war_rooms_trackers_blueprint.get('')
+@ac_api_requires()
+@api_doc(tags=['WarRoomTrackers'], summary='List the trackers of a war room, with the number of rows the caller sees')
+def list_trackers(war_room_id):
+    err = require_war_room_read(war_room_id)
+    if err is not None:
+        return err
+    return response_api_success(_serialize_trackers(war_room_id, war_room_trackers_list(war_room_id)))
+
+
+@war_rooms_trackers_blueprint.post('')
+@ac_api_requires()
+@api_doc(response_shape='created', tags=['WarRoomTrackers'],
+         summary='Create a tracker (manual, or mirroring the assets / iocs / customers / cases / registry_assets)')
+def create_tracker(war_room_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    body = _body()
+    return _handle(lambda: _serialize_tracker(war_room_id,
+                                              war_room_trackers_create(war_room_id, body, iris_current_user.id)),
+                   created=True)
+
+
+@war_rooms_trackers_blueprint.post('/reorder')
+@ac_api_requires()
+@api_doc(tags=['WarRoomTrackers'], summary='Reorder the trackers (listed ids first, the others after)')
+def reorder_trackers(war_room_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    body = _body()
+    return _handle(lambda: _serialize_trackers(war_room_id,
+                                               war_room_trackers_trackers_reorder(war_room_id, body.get('ids'))))
+
+
+@war_rooms_trackers_blueprint.post('/apply-template')
+@ac_api_requires()
+@api_doc(tags=['WarRoomTrackers'],
+         summary='Apply a tracker template: merge its steps by name and create its trackers. '
+                 'Returns every step of the room and the created trackers')
+def apply_tracker_template(war_room_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    template_id = _body().get('template_id')
+    if not isinstance(template_id, int) or isinstance(template_id, bool):
+        return response_api_error('template_id must be an integer')
+
+    def _apply():
+        steps, trackers = tracker_templates_apply(war_room_id, template_id, iris_current_user.id)
+        return {'steps': [war_room_trackers_serialize_step(s) for s in steps],
+                'trackers': _serialize_trackers(war_room_id, trackers)}
+    return _handle(_apply)
+
+
+@war_rooms_trackers_blueprint.post('/save-as-template')
+@ac_api_requires(Permissions.server_administrator)
+@api_doc(response_shape='created', tags=['WarRoomTrackers'],
+         summary='Save the steps and trackers (all, or tracker_ids) of the war room as a new tracker template')
+def save_trackers_as_template(war_room_id):
+    err = require_war_room_read(war_room_id)
+    if err is not None:
+        return err
+    body = _body()
+    return _handle(lambda: tracker_templates_save_from_war_room(war_room_id, body, iris_current_user.id),
+                   created=True)
+
+
+@war_rooms_trackers_blueprint.get('/<int:tracker_id>')
+@ac_api_requires()
+@api_doc(tags=['WarRoomTrackers'], summary='Get a tracker')
+def get_tracker(war_room_id, tracker_id):
+    err = require_war_room_read(war_room_id)
+    if err is not None:
+        return err
+    return _handle(lambda: _serialize_tracker(war_room_id, war_room_trackers_get(war_room_id, tracker_id)))
+
+
+@war_rooms_trackers_blueprint.patch('/<int:tracker_id>')
+@ac_api_requires()
+@api_doc(tags=['WarRoomTrackers'], summary='Update a tracker (fields left out keep their value, the source cannot change)')
+def update_tracker(war_room_id, tracker_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    body = _body()
+    return _handle(lambda: _serialize_tracker(war_room_id, war_room_trackers_update(war_room_id, tracker_id, body)))
+
+
+@war_rooms_trackers_blueprint.delete('/<int:tracker_id>')
+@ac_api_requires()
+@api_doc(response_shape='deleted', tags=['WarRoomTrackers'], summary='Delete a tracker with its rows and their history')
+def delete_tracker(war_room_id, tracker_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    return _handle_deleted(lambda: war_room_trackers_delete(war_room_id, tracker_id))
+
+
+# ------------------------------------------------------------------ Rows --
+
+@war_rooms_trackers_blueprint.get('/<int:tracker_id>/rows')
+@ac_api_requires()
+@api_doc(tags=['WarRoomTrackers'],
+         summary='List the rows of a tracker: every current source item merged with its state for a mirror, '
+                 'the stored rows for a manual tracker (capped)')
+def list_tracker_rows(war_room_id, tracker_id):
+    err = require_war_room_read(war_room_id)
+    if err is not None:
+        return err
+    return _handle(lambda: war_room_trackers_rows_list(war_room_id, war_room_trackers_get(war_room_id, tracker_id),
+                                                       _access(war_room_id)))
+
+
+@war_rooms_trackers_blueprint.post('/<int:tracker_id>/rows')
+@ac_api_requires()
+@api_doc(response_shape='created', tags=['WarRoomTrackers'],
+         summary='Add rows to a manual tracker (free text or war-room items; items already present are skipped)')
+def add_tracker_rows(war_room_id, tracker_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    body = _body()
+    return _handle(lambda: war_room_trackers_rows_add(war_room_id, war_room_trackers_get(war_room_id, tracker_id),
+                                                      body, _access(war_room_id), iris_current_user.id),
+                   created=True)
+
+
+@war_rooms_trackers_blueprint.post('/<int:tracker_id>/rows/state')
+@ac_api_requires()
+@api_doc(tags=['WarRoomTrackers'],
+         summary='Bulk update the steps, note, column values or label of tracker rows (one history event per change)')
+def update_tracker_rows_state(war_room_id, tracker_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    body = _body()
+    return _handle(lambda: war_room_trackers_rows_update_state(
+        war_room_id, war_room_trackers_get(war_room_id, tracker_id), body, _access(war_room_id),
+        iris_current_user.id))
+
+
+@war_rooms_trackers_blueprint.post('/<int:tracker_id>/rows/reorder')
+@ac_api_requires()
+@api_doc(response_shape='deleted', tags=['WarRoomTrackers'],
+         summary='Reorder the rows of a manual tracker (listed ids first, the others after)')
+def reorder_tracker_rows(war_room_id, tracker_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    body = _body()
+    return _handle_deleted(lambda: war_room_trackers_rows_reorder(war_room_trackers_get(war_room_id, tracker_id),
+                                                                  body.get('ids')))
+
+
+@war_rooms_trackers_blueprint.get('/<int:tracker_id>/rows/history')
+@ac_api_requires()
+@api_doc(tags=['WarRoomTrackers'],
+         summary='History of one row (row_id, or item_type and item_id) or the latest events of the tracker',
+         query_params=[('row_id', 'integer', 'Events of this row'),
+                       ('item_type', 'string', 'Events of the row of this item (with item_id)'),
+                       ('item_id', 'integer', 'Events of the row of this item (with item_type)')])
+def tracker_rows_history(war_room_id, tracker_id):
+    err = require_war_room_read(war_room_id)
+    if err is not None:
+        return err
+
+    def _history():
+        return war_room_trackers_history(
+            war_room_id, war_room_trackers_get(war_room_id, tracker_id), _access(war_room_id),
+            row_id=_query_int('row_id'), item_type=request.args.get('item_type') or None,
+            item_id=_query_int('item_id'),
+        )
+    return _handle(_history)
+
+
+@war_rooms_trackers_blueprint.delete('/<int:tracker_id>/rows/<int:row_id>')
+@ac_api_requires()
+@api_doc(response_shape='deleted', tags=['WarRoomTrackers'], summary='Delete a row of a manual tracker with its history')
+def delete_tracker_row(war_room_id, tracker_id, row_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+    return _handle_deleted(lambda: war_room_trackers_rows_delete(war_room_trackers_get(war_room_id, tracker_id),
+                                                                 row_id))

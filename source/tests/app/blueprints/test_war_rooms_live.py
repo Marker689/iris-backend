@@ -176,6 +176,8 @@ class TestsAfterRequest(TestCase):
             ('/api/v2/war-rooms/3/scope/staging/8', 'DELETE'): 'scope',
             ('/api/v2/war-rooms/3/timelines/events/2', 'PATCH'): 'timelines',
             ('/api/v2/war-rooms/3/decisions/2', 'PATCH'): 'decisions',
+            ('/api/v2/war-rooms/3/trackers/4/rows/state', 'POST'): 'trackers',
+            ('/api/v2/war-rooms/3/tracker-steps', 'POST'): 'trackers',
             ('/api/v2/war-rooms/3/cases', 'POST'): 'cases',
             ('/api/v2/war-rooms/3/members', 'POST'): 'members',
             ('/api/v2/war-rooms/3/notes-folders', 'POST'): 'notes',

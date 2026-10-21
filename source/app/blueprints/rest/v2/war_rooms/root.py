@@ -86,6 +86,8 @@ from app.blueprints.rest.v2.war_rooms.sitreps import war_rooms_sitreps_blueprint
 from app.blueprints.rest.v2.war_rooms.tasks import war_rooms_tasks_blueprint
 from app.blueprints.rest.v2.war_rooms.teams import war_rooms_teams_blueprint
 from app.blueprints.rest.v2.war_rooms.timelines import war_rooms_timelines_blueprint
+from app.blueprints.rest.v2.war_rooms.trackers import war_rooms_tracker_steps_blueprint
+from app.blueprints.rest.v2.war_rooms.trackers import war_rooms_trackers_blueprint
 from app.blueprints.rest.v2.war_rooms.vulnerabilities import war_rooms_vulnerabilities_blueprint
 
 
@@ -103,6 +105,8 @@ war_rooms_blueprint.register_blueprint(war_rooms_sitreps_blueprint)
 war_rooms_blueprint.register_blueprint(war_rooms_datastore_blueprint)
 war_rooms_blueprint.register_blueprint(war_rooms_teams_blueprint)
 war_rooms_blueprint.register_blueprint(war_rooms_decisions_blueprint)
+war_rooms_blueprint.register_blueprint(war_rooms_tracker_steps_blueprint)
+war_rooms_blueprint.register_blueprint(war_rooms_trackers_blueprint)
 war_rooms_blueprint.register_blueprint(war_rooms_board_blueprint)
 war_rooms_blueprint.register_blueprint(war_rooms_scope_blueprint)
 war_rooms_blueprint.register_blueprint(war_rooms_note_shares_blueprint)

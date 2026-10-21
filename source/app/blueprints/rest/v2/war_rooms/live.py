@@ -43,6 +43,7 @@ from app.iris_engine.war_rooms_live import TOPIC_SITREPS
 from app.iris_engine.war_rooms_live import TOPIC_TASKS
 from app.iris_engine.war_rooms_live import TOPIC_TEAMS
 from app.iris_engine.war_rooms_live import TOPIC_TIMELINES
+from app.iris_engine.war_rooms_live import TOPIC_TRACKERS
 from app.iris_engine.war_rooms_live import TOPIC_VULNERABILITIES
 from app.iris_engine.war_rooms_live import war_rooms_live_emit
 
@@ -73,6 +74,8 @@ _WAR_ROOM_SECTIONS = {
     'notes-folders': TOPIC_NOTES,
     'note-shares': TOPIC_NOTES,
     'chat': TOPIC_CHAT,
+    'trackers': TOPIC_TRACKERS,
+    'tracker-steps': TOPIC_TRACKERS,
 }
 
 # First path segment after `/cases/<id>` -> topic of the attached rooms
