@@ -438,6 +438,34 @@ def event_children_count(event_id: int) -> int:
     )
 
 
+def events_hydration(event_ids: Iterable[int]) -> dict:
+    """Batched `event_asset_ids` / `event_ioc_ids` / `event_children_count`
+    over several events: `{event_id: (asset_ids, ioc_ids, children_count)}`,
+    three queries whatever the number of events."""
+    event_ids = list(dict.fromkeys(event_ids))
+    if not event_ids:
+        return {}
+    assets = {event_id: [] for event_id in event_ids}
+    for row in (WarRoomTimelineEventAsset.query
+                .filter(WarRoomTimelineEventAsset.event_id.in_(event_ids))
+                .with_entities(WarRoomTimelineEventAsset.event_id, WarRoomTimelineEventAsset.asset_id)
+                .all()):
+        assets[row.event_id].append(row.asset_id)
+    iocs = {event_id: [] for event_id in event_ids}
+    for row in (WarRoomTimelineEventIoc.query
+                .filter(WarRoomTimelineEventIoc.event_id.in_(event_ids))
+                .with_entities(WarRoomTimelineEventIoc.event_id, WarRoomTimelineEventIoc.ioc_id)
+                .all()):
+        iocs[row.event_id].append(row.ioc_id)
+    children = {event_id: 0 for event_id in event_ids}
+    for row in (WarRoomTimelineEvent.query
+                .filter(WarRoomTimelineEvent.parent_id.in_(event_ids))
+                .with_entities(WarRoomTimelineEvent.parent_id)
+                .all()):
+        children[row.parent_id] += 1
+    return {event_id: (assets[event_id], iocs[event_id], children[event_id]) for event_id in event_ids}
+
+
 def delete_timeline_event(war_room_id, event_id):
     row = _get_event(war_room_id, event_id)
     label = row.title or (f'case event #{row.event_id}' if row.event_id else f'event #{row.id}')

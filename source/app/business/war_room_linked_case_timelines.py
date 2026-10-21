@@ -30,7 +30,7 @@ from typing import Iterable
 from typing import Set
 
 
-from app.business.case_timelines import case_timeline_list
+from app.business.access_controls import ac_fast_check_user_has_cases_access
 from app.models.authorization import CaseAccessLevel
 from app.models.cases import CaseEventTimeline
 from app.models.cases import CaseTimeline
@@ -47,11 +47,7 @@ def _accessible_linked_case_ids(war_room_id: int, user_id: int) -> Set[int]:
     the timelines sidebar AND on the events endpoint (i.e., can't
     smuggle case events by guessing timeline ids).
 
-    Late import of the case-ACL helper matches the pattern in
-    `app.business.collab._war_room_access_check` — importing at module
-    top would trip a circular import through `app.blueprints`."""
-    from app.blueprints.access_controls import ac_fast_check_user_has_case_access
-
+    One batched access check, whatever the number of linked cases."""
     linked_case_ids = [
         row.case_id
         for row in WarRoomCase.query
@@ -62,15 +58,10 @@ def _accessible_linked_case_ids(war_room_id: int, user_id: int) -> Set[int]:
     if not linked_case_ids:
         return set()
 
-    reachable: Set[int] = set()
-    for case_id in linked_case_ids:
-        level = ac_fast_check_user_has_case_access(
-            user_id, case_id,
-            [CaseAccessLevel.read_only, CaseAccessLevel.full_access],
-        )
-        if level is not None:
-            reachable.add(case_id)
-    return reachable
+    return set(ac_fast_check_user_has_cases_access(
+        user_id, linked_case_ids,
+        [CaseAccessLevel.read_only, CaseAccessLevel.full_access],
+    ))
 
 
 def list_linked_case_timelines(war_room_id: int, user_id: int) -> list:
@@ -120,9 +111,20 @@ def list_linked_case_timelines(war_room_id: int, user_id: int) -> list:
         .all()
     )
 
+    # One query for the timelines of every case, in `case_timeline_list`'s
+    # "defaults first, then chronological" order.
+    timelines_by_case = {case_id: [] for case_id in ordered_case_ids}
+    for t in (CaseTimeline.query
+              .filter(CaseTimeline.case_id.in_(ordered_case_ids))
+              .order_by(CaseTimeline.is_default.desc(),
+                        CaseTimeline.created_at.asc(),
+                        CaseTimeline.timeline_id.asc())
+              .all()):
+        timelines_by_case[t.case_id].append(t)
+
     result = []
     for case_id in ordered_case_ids:
-        timelines = case_timeline_list(case_id)
+        timelines = timelines_by_case[case_id]
         result.append({
             'case_id': case_id,
             'case_name': case_names.get(case_id) or f'Case #{case_id}',
@@ -213,14 +215,48 @@ def list_linked_case_events(war_room_id: int, user_id: int,
         .all()
     )
 
-    return [_serialize_case_event(event, timeline_id)
+    hydration = _case_events_hydration(event.event_id for event, _ in rows)
+    return [_case_event_to_dict(event, timeline_id, *hydration[event.event_id])
             for event, timeline_id in rows]
 
 
-def _serialize_case_event(event: CasesEvent, source_timeline_id: int) -> dict:
+def _case_events_hydration(event_ids: Iterable[int]) -> dict:
+    """`{event_id: (asset_ids, ioc_ids, children_count)}` for the case
+    events, three queries whatever the number of events (per-event
+    lookups add up quickly over the timelines of dozens of cases)."""
+    from app.models.models import CaseEventsAssets
+    from app.models.models import CaseEventsIoc
+
+    event_ids = list(dict.fromkeys(event_ids))
+    if not event_ids:
+        return {}
+    assets = {event_id: [] for event_id in event_ids}
+    for row in (CaseEventsAssets.query
+                .filter(CaseEventsAssets.event_id.in_(event_ids))
+                .with_entities(CaseEventsAssets.event_id, CaseEventsAssets.asset_id)
+                .all()):
+        assets[row.event_id].append(row.asset_id)
+    iocs = {event_id: [] for event_id in event_ids}
+    for row in (CaseEventsIoc.query
+                .filter(CaseEventsIoc.event_id.in_(event_ids))
+                .with_entities(CaseEventsIoc.event_id, CaseEventsIoc.ioc_id)
+                .all()):
+        iocs[row.event_id].append(row.ioc_id)
+    children = {event_id: 0 for event_id in event_ids}
+    for row in (CasesEvent.query
+                .filter(CasesEvent.parent_event_id.in_(event_ids))
+                .with_entities(CasesEvent.parent_event_id)
+                .all()):
+        children[row.parent_event_id] += 1
+    return {event_id: (assets[event_id], iocs[event_id], children[event_id]) for event_id in event_ids}
+
+
+def _case_event_to_dict(event: CasesEvent, source_timeline_id: int,
+                        asset_ids: list, ioc_ids: list, children_count: int) -> dict:
     """Case event → war-room-event-shaped dict. Kept out of the query so
     it stays trivial to reuse from tests and any future socket-driven
-    push path that needs the same shape.
+    push path that needs the same shape. `asset_ids` / `ioc_ids` /
+    `children_count` come from `_case_events_hydration`.
 
     Every field the war-room event card renders is populated here from
     its case-side equivalent — `event_source` / `event_raw` /
@@ -231,31 +267,6 @@ def _serialize_case_event(event: CasesEvent, source_timeline_id: int) -> dict:
     frontend gates edit affordances on `war_room_source === 'case'`.
     Per-event comments aren't part of the war-room event surface.
     """
-    from app.models.models import CaseEventsAssets
-    from app.models.models import CaseEventsIoc
-
-    # Cheap targeted lookups. Bulk-batching these into a single N-way
-    # join would be micro-optimisation; the projection is called with
-    # a bounded set of events (per selected case timeline) and each
-    # scalar count is a single index lookup.
-    asset_ids = [
-        r.asset_id for r in
-        CaseEventsAssets.query
-        .filter_by(event_id=event.event_id)
-        .with_entities(CaseEventsAssets.asset_id).all()
-    ]
-    ioc_ids = [
-        r.ioc_id for r in
-        CaseEventsIoc.query
-        .filter_by(event_id=event.event_id)
-        .with_entities(CaseEventsIoc.ioc_id).all()
-    ]
-    children_count = (
-        CasesEvent.query
-        .filter(CasesEvent.parent_event_id == event.event_id)
-        .count()
-    )
-
     return {
         # Synthetic id — never a bare integer so it won't collide with
         # native `WarRoomTimelineEvent.id`. The frontend uses this as

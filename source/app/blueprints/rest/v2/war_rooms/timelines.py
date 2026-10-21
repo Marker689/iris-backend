@@ -27,6 +27,7 @@ from app.business.war_room_timelines import (
     event_asset_ids,
     event_children_count,
     event_ioc_ids,
+    events_hydration,
     list_timeline_events,
     list_timelines,
     set_event_assets,
@@ -58,7 +59,7 @@ def _serialize_timeline(t):
     }
 
 
-def _serialize_event(e):
+def _serialize_event(e, hydration=None):
     """Wire shape for a native war-room event.
 
     Matches the case-timeline event card's expectations — the card
@@ -68,7 +69,14 @@ def _serialize_event(e):
     the projection layer sets it to `'case'` on case-sourced rows so
     the frontend can discriminate. Per-event comments aren't part of
     the war-room event surface — war-room chat plays that role.
+
+    `hydration` is the `(asset_ids, ioc_ids, children_count)` of the
+    event, from `events_hydration` when serialising a whole list; looked
+    up here otherwise.
     """
+    if hydration is None:
+        hydration = (event_asset_ids(e.id), event_ioc_ids(e.id), event_children_count(e.id))
+    asset_ids, ioc_ids, children_count = hydration
     return {
         'id': e.id,
         # `uuid` may be absent on databases predating the column —
@@ -92,9 +100,9 @@ def _serialize_event(e):
         'modification_history': getattr(e, 'modification_history', None),
         # Hydrated read-side extras. Kept as arrays / ints so the
         # frontend's derived-state code can spot changes cheaply.
-        'assets': event_asset_ids(e.id),
-        'iocs': event_ioc_ids(e.id),
-        'children_count': event_children_count(e.id),
+        'assets': asset_ids,
+        'iocs': ioc_ids,
+        'children_count': children_count,
         'created_at': e.created_at.isoformat() if e.created_at else None,
         'created_by_id': e.created_by_id,
     }
@@ -186,7 +194,8 @@ def list_events(war_room_id):
         except ValueError:
             return response_api_error('Invalid timeline_ids')
     rows = list_timeline_events(war_room_id, timeline_ids=timeline_ids)
-    return response_api_success(data=[_serialize_event(e) for e in rows])
+    hydration = events_hydration(e.id for e in rows)
+    return response_api_success(data=[_serialize_event(e, hydration[e.id]) for e in rows])
 
 
 def _parse_event_date(raw):

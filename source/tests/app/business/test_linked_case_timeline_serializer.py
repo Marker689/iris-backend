@@ -2,18 +2,18 @@
 #  Copyright (C) 2026 - DFIR-IRIS
 #  contact@dfir-iris.org
 
-"""Unit tests for _serialize_case_event in war_room_linked_case_timelines.py.
+"""Unit tests for _case_event_to_dict in war_room_linked_case_timelines.py.
 
-The function does three DB sub-queries for asset IDs, IOC IDs and children
-count. Those are patched out so the field-mapping logic is testable purely.
+The asset IDs, IOC IDs and children count are hydrated in batch by the
+caller, so the field mapping is testable purely.
 """
 
 import datetime
 import uuid
 from unittest import TestCase
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-from app.business.war_room_linked_case_timelines import _serialize_case_event
+from app.business.war_room_linked_case_timelines import _case_event_to_dict
 
 
 def _make_event(**kwargs):
@@ -43,40 +43,7 @@ def _make_event(**kwargs):
 
 
 def _serialize(event, source_timeline_id=1, asset_ids=None, ioc_ids=None, children_count=0):
-    """Helper: call _serialize_case_event with patched DB lookups."""
-    if asset_ids is None:
-        asset_ids = []
-    if ioc_ids is None:
-        ioc_ids = []
-
-    with patch('app.business.war_room_linked_case_timelines.CasesEvent') as mock_ce, \
-         patch('app.business.war_room_linked_case_timelines.CaseEventsAssets', create=True) as _mca, \
-         patch('app.business.war_room_linked_case_timelines.CaseEventsIoc', create=True) as _mci:
-
-        # Patch inside the lazy import block — _serialize_case_event does
-        # `from app.models.models import CaseEventsAssets` locally.
-        with patch.dict('sys.modules', {}):
-            import sys
-
-            # Build tiny stubs the function can `.query.filter_by(...).with_entities(...).all()` on
-            assets_stub = MagicMock()
-            assets_stub.query.filter_by.return_value.with_entities.return_value.all.return_value = [
-                MagicMock(asset_id=aid) for aid in asset_ids
-            ]
-            iocs_stub = MagicMock()
-            iocs_stub.query.filter_by.return_value.with_entities.return_value.all.return_value = [
-                MagicMock(ioc_id=iid) for iid in ioc_ids
-            ]
-            mock_ce.query.filter.return_value.count.return_value = children_count
-
-            sys.modules['app.models.models'] = MagicMock(
-                CaseEventsAssets=assets_stub,
-                CaseEventsIoc=iocs_stub,
-            )
-            try:
-                return _serialize_case_event(event, source_timeline_id)
-            finally:
-                sys.modules.pop('app.models.models', None)
+    return _case_event_to_dict(event, source_timeline_id, asset_ids or [], ioc_ids or [], children_count)
 
 
 class TestSerializeCaseEvent(TestCase):
