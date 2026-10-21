@@ -813,6 +813,30 @@ class WarRoomSitRep(db.Model):
     authored_by = relationship('User')
 
 
+class WarRoomDatastorePath(db.Model):
+    """Folder of the war-room datastore, same shape as the case
+    `DataStorePath`: one root folder per war room (`path_is_root`, created
+    on first use) and the others hanging off it through `path_parent_id`.
+
+    Folders exist in the database only — the bytes of the files stay
+    where they were uploaded, so moving a file or a folder never touches
+    the disk.
+    """
+    __tablename__ = 'war_room_datastore_path'
+
+    path_id = Column(BigInteger, primary_key=True)
+    war_room_id = Column(BigInteger,
+                         ForeignKey('war_room.war_room_id', ondelete='CASCADE'),
+                         nullable=False, index=True)
+    path_name = Column(Text, nullable=False)
+    path_parent_id = Column(BigInteger,
+                            ForeignKey('war_room_datastore_path.path_id', ondelete='CASCADE'),
+                            nullable=True)
+    path_is_root = Column(Boolean, nullable=False, server_default=text('false'))
+
+    war_room = relationship('WarRoom')
+
+
 class WarRoomDatastoreFile(db.Model):
     """File stored in the war-room datastore.
 
@@ -822,6 +846,9 @@ class WarRoomDatastoreFile(db.Model):
     war-room level live here; files belonging to a specific attached
     case still live in that case's existing datastore and are surfaced
     in the unified view as virtual rows joined from the cases.
+
+    `file_parent_id` is the folder holding the file; NULL (files uploaded
+    before folders existed, or whose folder vanished) means the root.
     """
     __tablename__ = 'war_room_datastore_file'
 
@@ -838,6 +865,9 @@ class WarRoomDatastoreFile(db.Model):
     uploaded_at = Column(DateTime, nullable=False, server_default=text('now()'))
     uploaded_by_id = Column(BigInteger, ForeignKey('user.id'), nullable=True)
     tags = Column(Text, nullable=True)
+    file_parent_id = Column(BigInteger,
+                            ForeignKey('war_room_datastore_path.path_id', ondelete='SET NULL'),
+                            nullable=True, index=True)
 
     war_room = relationship('WarRoom')
     uploaded_by = relationship('User')

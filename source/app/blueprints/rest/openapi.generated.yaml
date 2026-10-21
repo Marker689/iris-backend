@@ -15128,6 +15128,34 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+    post:
+      operationId: update_file_post
+      summary: Update a datastore file
+      tags:
+      - WarRoomDatastore
+      security:
+      - ApiKey: []
+      description: when absent) and an optional `file` replacing the contents.
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v2/war-rooms/{war_room_id}/datastore/{file_id}/content:
     get:
       operationId: download_file_get
@@ -15143,6 +15171,241 @@ paths:
         schema:
           type: integer
       - name: file_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/war-rooms/{war_room_id}/datastore/{file_id}/move:
+    post:
+      operationId: move_file_post
+      summary: Move a datastore file
+      tags:
+      - WarRoomDatastore
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/war-rooms/{war_room_id}/datastore/folders:
+    get:
+      operationId: list_folders_get
+      summary: List datastore folders
+      tags:
+      - WarRoomDatastore
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: add_folder_post
+      summary: Create a datastore folder
+      tags:
+      - WarRoomDatastore
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/war-rooms/{war_room_id}/datastore/folders/{folder_id}:
+    delete:
+      operationId: delete_folder_delete
+      summary: Delete a datastore folder
+      tags:
+      - WarRoomDatastore
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: folder_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '204':
+          $ref: '#/components/responses/Deleted'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    get:
+      operationId: get_folder_get
+      summary: Get a datastore folder
+      tags:
+      - WarRoomDatastore
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: folder_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/war-rooms/{war_room_id}/datastore/folders/{folder_id}/files:
+    post:
+      operationId: upload_file_to_folder_post
+      summary: Upload a file to a datastore folder
+      tags:
+      - WarRoomDatastore
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: folder_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/war-rooms/{war_room_id}/datastore/folders/{folder_id}/move:
+    post:
+      operationId: move_folder_post
+      summary: Move a datastore folder
+      tags:
+      - WarRoomDatastore
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: folder_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/war-rooms/{war_room_id}/datastore/folders/{folder_id}/rename:
+    post:
+      operationId: rename_folder_post
+      summary: Rename a datastore folder
+      tags:
+      - WarRoomDatastore
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: folder_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/war-rooms/{war_room_id}/datastore/tree:
+    get:
+      operationId: get_tree_get
+      summary: Get the datastore tree
+      tags:
+      - WarRoomDatastore
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
         in: path
         required: true
         schema:
