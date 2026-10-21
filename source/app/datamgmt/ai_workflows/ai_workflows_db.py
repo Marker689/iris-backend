@@ -93,10 +93,13 @@ def ai_workflows_db_delete(obj):
 
 # ---- Workflows ------------------------------------------------------------
 
-def ai_workflows_db_list(owner_id=None):
+def ai_workflows_db_list(owner_id=None, group_ids=None):
+    """Every workflow, or those `owner_id` owns plus those shared with one
+    of `group_ids`."""
     query = AiWorkflow.query
     if owner_id is not None:
-        query = query.filter(AiWorkflow.owner_id == owner_id)
+        shared = [AiWorkflow.shared_group_ids.contains([group_id]) for group_id in group_ids or []]
+        query = query.filter(or_(AiWorkflow.owner_id == owner_id, *shared))
     return query.order_by(AiWorkflow.name.asc(), AiWorkflow.id.asc()).all()
 
 
@@ -693,6 +696,17 @@ def ai_workflows_db_existing_group_ids(group_ids) -> list:
         return []
     rows = Group.query.with_entities(Group.group_id).filter(Group.group_id.in_(ids)).all()
     return [r[0] for r in rows]
+
+
+def ai_workflows_db_group_names(group_ids=None) -> dict:
+    """{group id: name} of `group_ids`, or of every group when None."""
+    query = Group.query.with_entities(Group.group_id, Group.group_name)
+    if group_ids is not None:
+        ids = [i for i in set(group_ids) if i is not None]
+        if not ids:
+            return {}
+        query = query.filter(Group.group_id.in_(ids))
+    return {r[0]: r[1] for r in query.order_by(Group.group_name.asc()).all()}
 
 
 # ---- Business / REST helpers ----------------------------------------------

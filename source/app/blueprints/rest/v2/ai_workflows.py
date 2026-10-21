@@ -20,7 +20,9 @@
 
 Reads need `ai_workflows_read` or `ai_workflows_write`, mutations (and
 `/validate`) need `ai_workflows_write`. Workflows are visible to their
-owner and to administrators; runs follow the visibility rule of
+owner, to the members of the groups the owner shared them with (who may
+read and run them, not change them: 403) and to administrators; runs
+follow the visibility rule of
 `app.business.ai_workflows.ai_workflows_user_can_see_run`. Anything the
 caller cannot see answers 404. The API-key scope of the request bounds
 the runs it starts. The public callback / inbound-trigger endpoints live
@@ -81,6 +83,8 @@ from app.business.ai_workflows import ai_workflows_rotate_inbound_token
 from app.business.ai_workflows import ai_workflows_rotate_signing_secret
 from app.business.ai_workflows import ai_workflows_run_manual
 from app.business.ai_workflows import ai_workflows_set_category
+from app.business.ai_workflows import ai_workflows_set_shared_groups
+from app.business.ai_workflows import ai_workflows_share_groups
 from app.business.ai_workflows import ai_workflows_update
 from app.business.ai_workflows import ai_workflows_validate_definition
 from app.business.categories import categories_create
@@ -241,7 +245,8 @@ def cancel_ai_workflow_run_route(run_uuid):
 @ai_workflows_blueprint.post('/runs/<run_uuid>/rerun')
 @ac_api_requires(*_WRITE)
 @api_doc(response_shape='created', tags=['AiWorkflows'],
-         summary='Start a new run with the trigger of an existing run (acts as the workflow owner)')
+         summary='Start a new run with the trigger of an existing run (acts as the workflow owner, '
+                 'or as you when the workflow is only shared with you)')
 def rerun_ai_workflow_run_route(run_uuid):
     return _handle(lambda: ai_workflows_rerun(run_uuid, iris_current_user.id, _is_admin(), _scope_mask()),
                    created=True)
@@ -444,11 +449,19 @@ def delete_ai_workflow_category_route(category_id):
     return response_api_deleted()
 
 
+@ai_workflows_blueprint.get('/share-groups')
+@ac_api_requires(*_WRITE)
+@api_doc(tags=['AiWorkflows'], summary='List the groups an AI workflow can be shared with')
+def list_ai_workflow_share_groups_route():
+    return _handle(ai_workflows_share_groups)
+
+
 # ---- Workflows -------------------------------------------------------------
 
 @ai_workflows_blueprint.get('')
 @ac_api_requires(*_READ)
-@api_doc(tags=['AiWorkflows'], summary='List AI workflows (own workflows, all for administrators) with 24h run counts')
+@api_doc(tags=['AiWorkflows'], summary='List AI workflows (own and shared with one of your groups, all for '
+                                         'administrators) with 24h run counts')
 def list_ai_workflows_route():
     return _handle(lambda: ai_workflows_list(iris_current_user.id, _is_admin()))
 
@@ -490,6 +503,18 @@ def put_ai_workflow_category_route(identifier):
         return response_api_error('category_id is required (null for no category)')
     return _handle(lambda: ai_workflows_set_category(identifier, body['category_id'], iris_current_user.id,
                                                      _is_admin()))
+
+
+@ai_workflows_blueprint.put('/<int:identifier>/sharing')
+@ac_api_requires(*_WRITE)
+@api_doc(tags=['AiWorkflows'], summary='Share an AI workflow with groups (group_ids empty: private); their members '
+                                         'may see it and run it as themselves')
+def put_ai_workflow_sharing_route(identifier):
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or 'group_ids' not in body:
+        return response_api_error('group_ids is required (empty for a private workflow)')
+    return _handle(lambda: ai_workflows_set_shared_groups(identifier, body['group_ids'], iris_current_user.id,
+                                                          _is_admin()))
 
 
 @ai_workflows_blueprint.delete('/<int:identifier>')
@@ -588,7 +613,8 @@ def get_ai_workflow_version_route(identifier, version):
 @ai_workflows_blueprint.post('/<int:identifier>/run')
 @ac_api_requires(*_WRITE)
 @api_doc(response_shape='created', tags=['AiWorkflows'],
-         summary='Run an AI workflow manually; the run acts as the workflow owner')
+         summary='Run an AI workflow manually; the run acts as the workflow owner, or as you when the '
+                 'workflow is only shared with you')
 def run_ai_workflow_route(identifier):
     body, refused = _definition_body()
     if refused is not None:

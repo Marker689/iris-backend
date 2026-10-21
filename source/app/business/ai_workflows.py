@@ -24,8 +24,11 @@ Callers pass the acting user id and whether that user is a server
 administrator; the REST layer derives both from the request (so an API
 key scope mask is honoured). Visibility rules:
 
-- workflows: administrators see every workflow, everyone else only the
-  ones they own;
+- workflows: administrators see every workflow, everyone else the ones
+  they own and the ones shared with one of their groups. Only the owner
+  (or an administrator) edits, shares, files, exports, deletes, tests or
+  replays a workflow; a member of a group it is shared with may read it,
+  its versions and its node events, and run it manually;
 - runs: administrators see every run; everyone else must have owned the
   workflow when the run started (`run.owner_id`), be the run-as user or
   the user who triggered the run, AND be able to access the run's
@@ -37,9 +40,13 @@ key scope mask is honoured). Visibility rules:
   sees who resolved it, not the data.
 
 An object the caller may not see is reported as not found (404), so
-nothing can be probed. Runs always act as the workflow owner, whoever
-starts them; `scope_mask` is the API-key scope of the request (None
-for a session or an unscoped key) and bounds the run.
+nothing can be probed; a shared workflow the caller may not change is
+forbidden (403). Runs started by the owner or an administrator act as
+the workflow owner; a manual run (or re-run) started by a member of a
+group the workflow is shared with acts as that member, like a run from
+an object menu: their permissions, entity access and personal keys,
+never the owner's. `scope_mask` is the API-key scope of the request
+(None for a session or an unscoped key) and bounds the run.
 """
 
 import copy
@@ -69,6 +76,8 @@ from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_get_run_by
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_get_step
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_get_user
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_get_version
+from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_existing_group_ids
+from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_group_names
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_list
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_list_inbound_events
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_run_uuids
@@ -85,12 +94,15 @@ from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_lock_workf
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_owned_workflow_ids
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_postload_hooks
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_run_counts
+from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_user_group_ids
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_user_summary
 from app.datamgmt.ai_workflows.ai_workflows_db import ai_workflows_db_utcnow
 from app.iris_engine.access_control.utils import ac_get_effective_permissions_of_user
+from app.iris_engine.ai_workflows.engine import ai_workflows_engine_access_denial
 from app.iris_engine.ai_workflows.engine import ai_workflows_engine_cancel_run
 from app.iris_engine.ai_workflows.engine import ai_workflows_engine_hash_token
 from app.iris_engine.ai_workflows.engine import ai_workflows_engine_inbound_url
+from app.iris_engine.ai_workflows.engine import ai_workflows_engine_insert_run
 from app.iris_engine.ai_workflows.engine import ai_workflows_engine_new_token
 from app.iris_engine.ai_workflows.engine import ai_workflows_engine_replay_context
 from app.iris_engine.ai_workflows.engine import ai_workflows_engine_replay_step
@@ -192,6 +204,7 @@ _MAX_PER_PAGE = 100
 _MAX_DESCRIPTION = 10_000
 _MAX_ALLOWLIST = 200
 _MAX_CUSTOMER_SCOPE = 1000
+_MAX_SHARED_GROUPS = 200
 # Run detail / export: a tool-call result over this is cut, and a step
 # shows at most this many tool calls
 _MAX_TOOL_RESULT_CHARS = 16 * 1024
@@ -294,12 +307,19 @@ def _revision(definition) -> str:
     return hashlib.sha256(encoded).hexdigest()[:16]
 
 
-def ai_workflows_serialize(workflow, counts=None, users=None, with_graph=True) -> dict:
+def ai_workflows_serialize(workflow, counts=None, users=None, with_graph=True, groups=None,
+                           can_edit=True) -> dict:
+    """`groups` maps group ids to names (looked up when None); `can_edit`
+    tells the caller whether they may change the workflow, or only see
+    and run it (shared with one of their groups)."""
     data = _definition(workflow)
     revision = _revision(data)
     if not with_graph:
         data.pop('graph', None)
     is_webhook = ai_workflow_trigger_config(workflow, TRIGGER_WEBHOOK) is not None
+    shared_group_ids = list(getattr(workflow, 'shared_group_ids', None) or [])
+    if groups is None:
+        groups = ai_workflows_db_group_names(shared_group_ids) if shared_group_ids else {}
     data.update({
         'id': workflow.id,
         'uuid': _str_uuid(workflow.uuid),
@@ -314,6 +334,9 @@ def ai_workflows_serialize(workflow, counts=None, users=None, with_graph=True) -
         'inbound_url': ai_workflows_engine_inbound_url(str(workflow.uuid)) if is_webhook and workflow.uuid else None,
         'last_fired_at': _iso(workflow.last_fired_at),
         'category_id': getattr(workflow, 'category_id', None),
+        'shared_group_ids': shared_group_ids,
+        'shared_groups': [{'id': i, 'name': groups.get(i)} for i in shared_group_ids if i in groups],
+        'can_edit': bool(can_edit),
         'created_by_id': workflow.created_by_id,
         'created_at': _iso(workflow.created_at),
         'updated_at': _iso(workflow.updated_at),
@@ -514,11 +537,30 @@ def _get_workflow(workflow_id) -> AiWorkflow:
     return workflow
 
 
-def _get_owned_workflow(workflow_id, user_id, is_admin) -> AiWorkflow:
-    """A workflow someone else owns does not exist for a non-admin."""
+def _is_shared_with(workflow, user_id) -> bool:
+    shared = set(workflow.shared_group_ids or [])
+    return bool(shared) and bool(shared & set(ai_workflows_db_user_group_ids(user_id)))
+
+
+def _can_edit(workflow, user_id, is_admin) -> bool:
+    return is_admin or workflow.owner_id == user_id
+
+
+def _get_visible_workflow(workflow_id, user_id, is_admin) -> AiWorkflow:
+    """A workflow someone else owns and did not share with a group of the
+    user does not exist for a non-admin."""
     workflow = _get_workflow(workflow_id)
-    if not is_admin and workflow.owner_id != user_id:
+    if not _can_edit(workflow, user_id, is_admin) and not _is_shared_with(workflow, user_id):
         raise ObjectNotFoundError()
+    return workflow
+
+
+def _get_owned_workflow(workflow_id, user_id, is_admin) -> AiWorkflow:
+    """Only the owner (or an administrator) may change a workflow: one
+    shared with the user is forbidden, any other does not exist."""
+    workflow = _get_visible_workflow(workflow_id, user_id, is_admin)
+    if not _can_edit(workflow, user_id, is_admin):
+        raise AiWorkflowsForbiddenError('Only the owner of this workflow can do that')
     return workflow
 
 
@@ -861,18 +903,27 @@ def _write_version(workflow, user_id, note):
 
 
 def ai_workflows_list(user_id, is_admin) -> list:
-    workflows = ai_workflows_db_list(owner_id=None if is_admin else user_id)
+    """The workflows the user owns or that are shared with one of their
+    groups (administrators: every workflow)."""
+    if is_admin:
+        workflows = ai_workflows_db_list()
+    else:
+        workflows = ai_workflows_db_list(owner_id=user_id, group_ids=ai_workflows_db_user_group_ids(user_id))
     ids = [w.id for w in workflows]
     counts = ai_workflows_db_run_counts(ids, ai_workflows_db_utcnow() - datetime.timedelta(hours=24))
     users = ai_workflows_db_user_summary([w.owner_id for w in workflows])
+    shared = {i for w in workflows for i in (w.shared_group_ids or [])}
+    groups = ai_workflows_db_group_names(shared) if shared else {}
     # No graph in the listing: GET /<id> has it
-    return [ai_workflows_serialize(w, counts.get(w.id, {}), users, with_graph=False) for w in workflows]
+    return [ai_workflows_serialize(w, counts.get(w.id, {}), users, with_graph=False, groups=groups,
+                                   can_edit=_can_edit(w, user_id, is_admin)) for w in workflows]
 
 
 def ai_workflows_get(workflow_id, user_id, is_admin) -> dict:
-    workflow = _get_owned_workflow(workflow_id, user_id, is_admin)
+    workflow = _get_visible_workflow(workflow_id, user_id, is_admin)
     counts = ai_workflows_db_run_counts([workflow.id], ai_workflows_db_utcnow() - datetime.timedelta(hours=24))
-    return ai_workflows_serialize(workflow, counts.get(workflow.id, {}))
+    return ai_workflows_serialize(workflow, counts.get(workflow.id, {}),
+                                  can_edit=_can_edit(workflow, user_id, is_admin))
 
 
 def ai_workflows_create(body, user_id, is_admin) -> dict:
@@ -942,6 +993,38 @@ def ai_workflows_set_category(workflow_id, category_id, user_id, is_admin) -> di
     return ai_workflows_get(workflow.id, user_id, is_admin)
 
 
+def _validate_shared_group_ids(group_ids) -> list:
+    if not isinstance(group_ids, list) or len(group_ids) > _MAX_SHARED_GROUPS \
+            or not all(isinstance(i, int) and not isinstance(i, bool) for i in group_ids):
+        raise BusinessProcessingError('Invalid sharing', data={'group_ids': ['Must be a list of group ids']})
+    group_ids = sorted(set(group_ids))
+    missing = sorted(set(group_ids) - set(ai_workflows_db_existing_group_ids(group_ids)))
+    if missing:
+        raise BusinessProcessingError('Invalid sharing', data={
+            'group_ids': [f'Unknown group ids: {", ".join(str(i) for i in missing)}']})
+    return group_ids
+
+
+def ai_workflows_set_shared_groups(workflow_id, group_ids, user_id, is_admin) -> dict:
+    """Share the workflow with the members of `group_ids` (none: private
+    again). They may see it and run it manually, as themselves; only the
+    owner changes it. Not a definition change: no new version."""
+    workflow = _get_owned_workflow(workflow_id, user_id, is_admin)
+    group_ids = _validate_shared_group_ids(group_ids)
+    if list(workflow.shared_group_ids or []) != group_ids:
+        workflow.shared_group_ids = group_ids
+        ai_workflows_db_commit()
+        names = ai_workflows_db_group_names(group_ids)
+        target = ', '.join(f'"{names.get(i, i)}"' for i in group_ids) if group_ids else 'no group'
+        track_activity(f'AI workflow #{workflow.id} "{workflow.name}" shared with {target}', ctx_less=True)
+    return ai_workflows_get(workflow.id, user_id, is_admin)
+
+
+def ai_workflows_share_groups() -> list:
+    """`[{id, name}]` of the groups a workflow can be shared with."""
+    return [{'id': group_id, 'name': name} for group_id, name in ai_workflows_db_group_names().items()]
+
+
 def ai_workflows_delete(workflow_id, user_id, is_admin) -> None:
     """Deactivate under the workflow lock (no trigger can start a run
     past this point), cancel the active runs, then delete."""
@@ -1007,7 +1090,7 @@ def ai_workflows_import(document, user_id, is_admin) -> dict:
 
 
 def ai_workflows_list_versions(workflow_id, user_id, is_admin) -> list:
-    workflow = _get_owned_workflow(workflow_id, user_id, is_admin)
+    workflow = _get_visible_workflow(workflow_id, user_id, is_admin)
     versions = ai_workflows_db_list_versions(workflow.id)
     users = ai_workflows_db_user_summary([v.created_by_id for v in versions])
     return [{
@@ -1020,7 +1103,7 @@ def ai_workflows_list_versions(workflow_id, user_id, is_admin) -> list:
 
 
 def ai_workflows_get_version(workflow_id, version, user_id, is_admin) -> dict:
-    workflow = _get_owned_workflow(workflow_id, user_id, is_admin)
+    workflow = _get_visible_workflow(workflow_id, user_id, is_admin)
     row = ai_workflows_db_get_version(workflow.id, version)
     if row is None:
         raise ObjectNotFoundError()
@@ -1201,13 +1284,28 @@ def _manual_trigger(workflow, node_id):
     return trigger
 
 
+def _start_run(workflow, trigger_type, user_id, is_admin, **kwargs):
+    """A run started by `user_id`: acting as the workflow owner when the
+    user is the owner or an administrator, else (a member of a group the
+    workflow is shared with) as the user, like a run from an object menu."""
+    if _can_edit(workflow, user_id, is_admin):
+        return ai_workflows_engine_start_run(workflow, trigger_type, run_as_user_id=workflow.owner_id,
+                                             triggered_by_user_id=user_id, **kwargs)
+    denial = ai_workflows_engine_access_denial(workflow, user_id, kwargs.get('entity_type'),
+                                               kwargs.get('entity_id'), kwargs.get('scope_mask'))
+    return ai_workflows_engine_insert_run(workflow, trigger_type, denial=denial, run_as_user_id=user_id,
+                                          triggered_by_user_id=user_id, **kwargs)
+
+
 def ai_workflows_run_manual(workflow_id, body, user_id, is_admin, scope_mask=None) -> dict:
     """Manual run (or dry run), at the trigger node `trigger_node_id` of
-    the body (see `_manual_trigger`). It acts as the workflow owner, is
-    recorded as triggered by the clicking user, who must access the
-    entity, and is bounded by the clicking user's API-key scope."""
+    the body (see `_manual_trigger`). It acts as the workflow owner, or
+    as the clicking user when the workflow is only shared with them (see
+    `_start_run`), is recorded as triggered by the clicking user, who must
+    access the entity, and is bounded by the clicking user's API-key
+    scope."""
     ai_workflows_require_enabled()
-    workflow = _get_owned_workflow(workflow_id, user_id, is_admin)
+    workflow = _get_visible_workflow(workflow_id, user_id, is_admin)
     body = body if isinstance(body, dict) else {}
     trigger = _manual_trigger(workflow, body.get('trigger_node_id'))
     entity_type, entity_id = _check_entity(workflow, body.get('entity_type'), body.get('entity_id'), user_id,
@@ -1218,10 +1316,8 @@ def ai_workflows_run_manual(workflow_id, body, user_id, is_admin, scope_mask=Non
     payload = body.get('payload')
     if payload is not None and not isinstance(payload, (dict, list)):
         raise BusinessProcessingError('Invalid run request', data={'payload': ['Must be an object or a list']})
-    run = ai_workflows_engine_start_run(
-        workflow, TRIGGER_MANUAL,
-        run_as_user_id=workflow.owner_id,
-        triggered_by_user_id=user_id,
+    run = _start_run(
+        workflow, TRIGGER_MANUAL, user_id, is_admin,
         entity_type=entity_type,
         entity_id=entity_id,
         payload=payload,
@@ -1237,18 +1333,17 @@ def ai_workflows_run_manual(workflow_id, body, user_id, is_admin, scope_mask=Non
 
 
 def ai_workflows_rerun(run_uuid, user_id, is_admin, scope_mask=None) -> dict:
-    """Same trigger payload, new run, acting as the workflow owner and
-    triggered by the current user, who must access the entity."""
+    """Same trigger payload, new run, triggered by the current user, who
+    must access the entity; it acts as the workflow owner, or as the
+    current user when the workflow is only shared with them."""
     ai_workflows_require_enabled()
     original = _get_visible_run(run_uuid, user_id, is_admin, scope_mask)
     if original.workflow_id is None:
         raise BusinessProcessingError('The workflow of this run has been deleted')
-    workflow = _get_owned_workflow(original.workflow_id, user_id, is_admin)
+    workflow = _get_visible_workflow(original.workflow_id, user_id, is_admin)
     _check_entity_access(user_id, original.entity_type, original.entity_id, scope_mask)
-    run = ai_workflows_engine_start_run(
-        workflow, original.trigger_type,
-        run_as_user_id=workflow.owner_id,
-        triggered_by_user_id=user_id,
+    run = _start_run(
+        workflow, original.trigger_type, user_id, is_admin,
         entity_type=original.entity_type,
         entity_id=original.entity_id,
         sub_entity=original.sub_entity,
@@ -1401,14 +1496,16 @@ def _socket_user(user_id):
     return user, is_admin
 
 
-def _socket_workflow(workflow_id, user_id, is_admin) -> AiWorkflow:
+def _socket_workflow(workflow_id, user_id, is_admin, owned=True) -> AiWorkflow:
     if isinstance(workflow_id, bool):
         raise ObjectNotFoundError()
     try:
         workflow_id = int(workflow_id)
     except (TypeError, ValueError):
         raise ObjectNotFoundError()
-    return _get_owned_workflow(workflow_id, user_id, is_admin)
+    if owned:
+        return _get_owned_workflow(workflow_id, user_id, is_admin)
+    return _get_visible_workflow(workflow_id, user_id, is_admin)
 
 
 def ai_workflows_live_room(user_id, run_uuid=None, workflow_id=None) -> str:
@@ -1428,7 +1525,7 @@ def ai_workflows_editor_session(user_id, workflow_id) -> dict:
     workflow they can see: the room of its editors, and the identity the
     others are shown — the server's, never the client's."""
     user, is_admin = _socket_user(user_id)
-    workflow = _socket_workflow(workflow_id, user_id, is_admin)
+    workflow = _socket_workflow(workflow_id, user_id, is_admin, owned=False)
     return {'room': ai_workflows_live_editor_room(workflow.id), 'workflow_id': workflow.id,
             'user_id': user.id, 'user_name': user.name or user.user}
 
@@ -1437,7 +1534,7 @@ def ai_workflows_node_stats(workflow_id, user_id, is_admin) -> dict:
     """`{nodes: {node_id: {total, counts: {status: n}, last_at}}}`: the
     events each node processed, over every run of the workflow (for a
     non-administrator, the runs they are involved in)."""
-    workflow = _get_owned_workflow(workflow_id, user_id, is_admin)
+    workflow = _get_visible_workflow(workflow_id, user_id, is_admin)
     stats = ai_workflows_business_db_node_stats(workflow.id, None if is_admin else user_id)
     return {'nodes': {node_id: {'total': sum(entry['counts'].values()), 'counts': entry['counts'],
                                 'last_at': _iso(entry['last_at'])}
@@ -1450,7 +1547,7 @@ def ai_workflows_node_events(workflow_id, node_id, user_id, is_admin, status=Non
     a non-administrator only sees the events of runs they can see
     (`ai_workflows_user_can_see_run`: involved in, on an entity they can
     access) — not those of a previous owner of the workflow."""
-    workflow = _get_owned_workflow(workflow_id, user_id, is_admin)
+    workflow = _get_visible_workflow(workflow_id, user_id, is_admin)
     if status and status not in _EVENT_STATUSES:
         raise BusinessProcessingError('Invalid status filter', data={'status': [f'Unknown status {status}']})
     per_page = max(1, min(int(per_page or 25), _MAX_PER_PAGE))
@@ -1499,7 +1596,7 @@ def _get_node_event(workflow, node_id, step_id, user_id, is_admin, scope_mask):
 
 def ai_workflows_node_event(workflow_id, node_id, step_id, user_id, is_admin, scope_mask=None) -> dict:
     """One event with the context the node saw (what a replay starts with)."""
-    workflow = _get_owned_workflow(workflow_id, user_id, is_admin)
+    workflow = _get_visible_workflow(workflow_id, user_id, is_admin)
     step, run = _get_node_event(workflow, node_id, step_id, user_id, is_admin, scope_mask)
     data = {**_step_public(step), 'run': ai_workflows_run_summary(run)}
     data['context'] = ai_workflows_engine_replay_context(run, ai_workflows_db_list_steps(run.id), step)

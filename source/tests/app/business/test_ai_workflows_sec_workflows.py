@@ -33,17 +33,25 @@ from unittest.mock import patch
 from app import app
 from app.blueprints.rest.v2 import ai_workflows as ai_workflows_routes
 from app.business.ai_workflows import AiWorkflowsDisabledError
+from app.business.ai_workflows import AiWorkflowsForbiddenError
 from app.business.ai_workflows import ai_workflows_create
 from app.business.ai_workflows import ai_workflows_delete
+from app.business.ai_workflows import ai_workflows_export
 from app.business.ai_workflows import ai_workflows_get
+from app.business.ai_workflows import ai_workflows_get_version
 from app.business.ai_workflows import ai_workflows_list
 from app.business.ai_workflows import ai_workflows_list_runs
+from app.business.ai_workflows import ai_workflows_list_versions
 from app.business.ai_workflows import ai_workflows_rerun
 from app.business.ai_workflows import ai_workflows_rotate_inbound_token
 from app.business.ai_workflows import ai_workflows_rotate_signing_secret
 from app.business.ai_workflows import ai_workflows_run_manual
 from app.business.ai_workflows import ai_workflows_serialize
+from app.business.ai_workflows import ai_workflows_set_category
+from app.business.ai_workflows import ai_workflows_set_shared_groups
+from app.business.ai_workflows import ai_workflows_share_groups
 from app.business.ai_workflows import ai_workflows_suggestion_public
+from app.business.ai_workflows import ai_workflows_test_node
 from app.business.ai_workflows import ai_workflows_update
 from app.business.ai_workflows import ai_workflows_user_can_see_run
 from app.business.ai_workflows import _cap_tool_calls
@@ -118,6 +126,9 @@ class _WorkflowsTestCase(TestCase):
         self.start_run = MagicMock(return_value=SimpleNamespace(uuid=uuid.uuid4()))
         self.workflows = {}
         self.runs = {}
+        self.user_groups = {_OTHER: [5]}
+        self.denial = MagicMock(return_value=None)
+        self.insert_run = MagicMock(return_value=SimpleNamespace(uuid=uuid.uuid4()))
         patchers = [
             patch(f'{_BUSINESS}.ai_workflows_db_get_user', side_effect=lambda i: self.users.get(i)),
             patch(f'{_BUSINESS}.ai_workflows_db_get', side_effect=lambda i: self.workflows.get(i)),
@@ -126,6 +137,14 @@ class _WorkflowsTestCase(TestCase):
             patch(f'{_BUSINESS}.ai_workflows_db_commit'),
             patch(f'{_BUSINESS}.ai_workflows_db_run_counts', return_value={}),
             patch(f'{_BUSINESS}.ai_workflows_db_user_summary', return_value={}),
+            patch(f'{_BUSINESS}.ai_workflows_db_user_group_ids',
+                  side_effect=lambda i: self.user_groups.get(i, [])),
+            patch(f'{_BUSINESS}.ai_workflows_db_group_names',
+                  side_effect=lambda ids=None: {i: f'G{i}' for i in (ids if ids is not None else (5, 6))}),
+            patch(f'{_BUSINESS}.ai_workflows_db_existing_group_ids',
+                  side_effect=lambda ids: [i for i in ids if i in (5, 6)]),
+            patch(f'{_BUSINESS}.ai_workflows_engine_access_denial', self.denial),
+            patch(f'{_BUSINESS}.ai_workflows_engine_insert_run', self.insert_run),
             patch(f'{_BUSINESS}.ai_workflows_db_entity_exists', return_value=True),
             patch(f'{_BUSINESS}.ai_workflows_db_entity_customer', return_value=1),
             patch(f'{_BUSINESS}.ac_get_effective_permissions_of_user', return_value=0),
@@ -324,6 +343,107 @@ class TestsNotFoundForNonOwners(_WorkflowsTestCase):
         for operation in operations:
             with self.assertRaises(ObjectNotFoundError):
                 operation()
+
+
+class TestsSharedWithGroups(_WorkflowsTestCase):
+    """A workflow shared with a group: its members see it and run it as
+    themselves, only the owner changes it."""
+
+    def setUp(self):
+        super().setUp()
+        self.workflows[3] = _stored_workflow(shared_group_ids=[5])
+
+    def test_member_should_see_the_workflow_without_edit_rights(self):
+        data = ai_workflows_get(3, _OTHER, False)
+        self.assertFalse(data['can_edit'])
+        self.assertEqual([{'id': 5, 'name': 'G5'}], data['shared_groups'])
+        self.assertTrue(ai_workflows_get(3, _OWNER, False)['can_edit'])
+
+    def test_member_should_read_the_versions(self):
+        with patch(f'{_BUSINESS}.ai_workflows_db_list_versions', return_value=[]), \
+                patch(f'{_BUSINESS}.ai_workflows_db_get_version', return_value=None):
+            self.assertEqual([], ai_workflows_list_versions(3, _OTHER, False))
+            with self.assertRaises(ObjectNotFoundError):
+                ai_workflows_get_version(3, 1, _OTHER, False)
+
+    def test_user_outside_the_groups_should_not_find_it(self):
+        self.user_groups[_OTHER] = [6]
+        with self.assertRaises(ObjectNotFoundError):
+            ai_workflows_get(3, _OTHER, False)
+
+    def test_member_should_not_change_share_export_test_or_delete_it(self):
+        operations = [
+            lambda: ai_workflows_update(3, {'name': 'x'}, _OTHER, False),
+            lambda: ai_workflows_set_category(3, None, _OTHER, False),
+            lambda: ai_workflows_set_shared_groups(3, [], _OTHER, False),
+            lambda: ai_workflows_export(3, _OTHER, False),
+            lambda: ai_workflows_test_node(3, {}, _OTHER, False),
+            lambda: ai_workflows_delete(3, _OTHER, False),
+        ]
+        for operation in operations:
+            with self.assertRaises(AiWorkflowsForbiddenError):
+                operation()
+        self.assertEqual('Stored', self.workflows[3].name)
+        self.assertEqual([5], self.workflows[3].shared_group_ids)
+
+    def test_member_run_should_act_as_the_member(self):
+        ai_workflows_run_manual(3, {'entity_type': 'alert', 'entity_id': 4}, _OTHER, False)
+        self.start_run.assert_not_called()
+        self.assertEqual(_OTHER, self.denial.call_args.args[1])
+        kwargs = self.insert_run.call_args.kwargs
+        self.assertEqual(_OTHER, kwargs['run_as_user_id'])
+        self.assertEqual(_OTHER, kwargs['triggered_by_user_id'])
+        self.assertEqual(('alert', 4), (kwargs['entity_type'], kwargs['entity_id']))
+
+    def test_member_run_refused_to_the_member_should_be_recorded_as_skipped(self):
+        self.denial.return_value = 'The run-as user cannot access alert #4'
+        ai_workflows_run_manual(3, {'entity_type': 'alert', 'entity_id': 4}, _OTHER, False)
+        self.assertEqual('The run-as user cannot access alert #4', self.insert_run.call_args.kwargs['denial'])
+
+    def test_member_should_still_need_entity_access(self):
+        self.can_access.return_value = False
+        with self.assertRaises(ObjectNotFoundError):
+            ai_workflows_run_manual(3, {'entity_type': 'alert', 'entity_id': 4}, _OTHER, False)
+        self.insert_run.assert_not_called()
+
+    def test_owner_and_admin_runs_should_still_act_as_the_owner(self):
+        for user_id, is_admin in ((_OWNER, False), (_ADMIN, True)):
+            ai_workflows_run_manual(3, {'entity_type': 'alert', 'entity_id': 4}, user_id, is_admin)
+            self.assertEqual(_OWNER, self.start_run.call_args.kwargs['run_as_user_id'])
+        self.insert_run.assert_not_called()
+
+    def test_member_rerun_should_act_as_the_member(self):
+        run = _run(owner_id=_OWNER, run_as_user_id=_OTHER, triggered_by_user_id=_OTHER)
+        self.runs[run.uuid] = run
+        ai_workflows_rerun(str(run.uuid), _OTHER, False)
+        self.assertEqual(_OTHER, self.insert_run.call_args.kwargs['run_as_user_id'])
+        self.start_run.assert_not_called()
+
+    def test_owner_should_share_with_existing_groups_only(self):
+        data = ai_workflows_set_shared_groups(3, [6, 5, 6], _OWNER, False)
+        self.assertEqual([5, 6], self.workflows[3].shared_group_ids)
+        self.assertEqual([5, 6], data['shared_group_ids'])
+        for invalid in ([99], 'x', [True], None, list(range(201))):
+            with self.assertRaises(BusinessProcessingError):
+                ai_workflows_set_shared_groups(3, invalid, _OWNER, False)
+        self.assertEqual([5, 6], self.workflows[3].shared_group_ids)
+
+    def test_sharing_should_not_be_a_new_version(self):
+        ai_workflows_set_shared_groups(3, [], _OWNER, False)
+        self.assertEqual([], self.workflows[3].shared_group_ids)
+        self.assertEqual(1, self.workflows[3].version)
+        self.assertEqual([], self.added)
+
+    def test_list_should_carry_the_shared_workflows_and_who_may_edit(self):
+        owned = _stored_workflow(owner_id=_OTHER)
+        owned.id = 4
+        with patch(f'{_BUSINESS}.ai_workflows_db_list', return_value=[self.workflows[3], owned]) as listing:
+            data = ai_workflows_list(_OTHER, False)
+        self.assertEqual({'owner_id': _OTHER, 'group_ids': [5]}, listing.call_args.kwargs)
+        self.assertEqual([(3, False), (4, True)], [(w['id'], w['can_edit']) for w in data])
+
+    def test_share_groups_should_list_every_group(self):
+        self.assertEqual([{'id': 5, 'name': 'G5'}, {'id': 6, 'name': 'G6'}], ai_workflows_share_groups())
 
 
 class TestsDefinitionCaps(_WorkflowsTestCase):

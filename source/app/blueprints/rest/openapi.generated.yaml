@@ -225,7 +225,8 @@ paths:
   /api/v2/ai-workflows:
     get:
       operationId: list_ai_workflows_route_get
-      summary: List AI workflows (own workflows, all for administrators) with 24h run counts
+      summary: List AI workflows (own and shared with one of your groups, all for administrators) with
+        24h run counts
       tags:
       - AiWorkflows
       security:
@@ -523,7 +524,32 @@ paths:
   /api/v2/ai-workflows/{identifier}/run:
     post:
       operationId: run_ai_workflow_route_post
-      summary: Run an AI workflow manually; the run acts as the workflow owner
+      summary: Run an AI workflow manually; the run acts as the workflow owner, or as you when the workflow
+        is only shared with you
+      tags:
+      - AiWorkflows
+      security:
+      - ApiKey: []
+      parameters:
+      - name: identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/ai-workflows/{identifier}/sharing:
+    put:
+      operationId: put_ai_workflow_sharing_route_put
+      summary: 'Share an AI workflow with groups (group_ids empty: private); their members may see it
+        and run it as themselves'
       tags:
       - AiWorkflows
       security:
@@ -1177,7 +1203,8 @@ paths:
   /api/v2/ai-workflows/runs/{run_uuid}/rerun:
     post:
       operationId: rerun_ai_workflow_run_route_post
-      summary: Start a new run with the trigger of an existing run (acts as the workflow owner)
+      summary: Start a new run with the trigger of an existing run (acts as the workflow owner, or as
+        you when the workflow is only shared with you)
       tags:
       - AiWorkflows
       security:
@@ -1197,6 +1224,21 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/v2/ai-workflows/share-groups:
+    get:
+      operationId: list_ai_workflow_share_groups_route_get
+      summary: List the groups an AI workflow can be shared with
+      tags:
+      - AiWorkflows
+      security:
+      - ApiKey: []
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/v2/ai-workflows/validate:
     post:
       operationId: validate_ai_workflow_route_post

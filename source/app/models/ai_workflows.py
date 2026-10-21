@@ -267,6 +267,9 @@ class AiWorkflow(db.Model):
     last_skipped_at = Column(DateTime, nullable=True)
     # Filing only: not part of the definition, so no new version
     category_id = Column(ForeignKey('object_category.id', ondelete='SET NULL'), nullable=True, index=True)
+    # Groups whose members may see the workflow and run it manually, as
+    # themselves. Not part of the definition either: no new version
+    shared_group_ids = Column(JSONB, nullable=False, default=list, server_default='[]')
 
     created_by_id = Column(ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
     created_at = Column(DateTime, nullable=False, server_default=func.now())

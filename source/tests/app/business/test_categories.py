@@ -166,7 +166,8 @@ class TestAiWorkflowSetCategory(_Store):
 
     def setUp(self):
         super().setUp()
-        self.workflow = SimpleNamespace(id=9, name='Flow', owner_id=3, category_id=None, category=None)
+        self.workflow = SimpleNamespace(id=9, name='Flow', owner_id=3, category_id=None, category=None,
+                                        shared_group_ids=[])
         self._wf_patchers = [
             patch('app.business.ai_workflows.ai_workflows_db_get',
                   side_effect=lambda i: self.workflow if i == 9 else None),

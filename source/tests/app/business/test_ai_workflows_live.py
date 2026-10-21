@@ -46,7 +46,7 @@ class _LiveTestCase(TestCase):
         self.run = SimpleNamespace(id=3, uuid=_RUN_UUID, workflow_id=7, run_as_user_id=_OWNER,
                                    triggered_by_user_id=None, owner_id=_OWNER, workflow=None,
                                    definition_snapshot={}, entity_type=None, entity_id=None)
-        self.workflow = SimpleNamespace(id=7, owner_id=_OWNER)
+        self.workflow = SimpleNamespace(id=7, owner_id=_OWNER, shared_group_ids=[])
         patchers = [
             patch.dict(app.config, {'AI_WORKFLOWS_ENABLED': True}),
             patch(f'{_BUSINESS}.ai_workflows_db_get_user',
@@ -57,6 +57,8 @@ class _LiveTestCase(TestCase):
                   side_effect=lambda value: self.run if value == _RUN_UUID else None),
             patch(f'{_BUSINESS}.ai_workflows_db_get',
                   side_effect=lambda workflow_id: self.workflow if workflow_id == 7 else None),
+            patch(f'{_BUSINESS}.ai_workflows_db_user_group_ids',
+                  side_effect=lambda user_id: [5] if user_id == _ANALYST else []),
         ]
         for patcher in patchers:
             patcher.start()
@@ -78,6 +80,11 @@ class TestsLiveRoom(_LiveTestCase):
 
     def test_owner_should_follow_the_workflow(self):
         self.assertEqual('ai-workflow-7', ai_workflows_live_room(_OWNER, workflow_id=7))
+
+    def test_member_of_a_group_it_is_shared_with_should_not_follow_every_run(self):
+        self.workflow.shared_group_ids = [5]
+        with self.assertRaises(AiWorkflowsForbiddenError):
+            ai_workflows_live_room(_ANALYST, workflow_id=7)
 
     def test_other_user_should_not_follow_the_workflow(self):
         with self.assertRaises(ObjectNotFoundError):
@@ -107,6 +114,10 @@ class TestsEditorSession(_LiveTestCase):
     def test_other_user_should_not_open_the_editor(self):
         with self.assertRaises(ObjectNotFoundError):
             ai_workflows_editor_session(_ANALYST, 7)
+
+    def test_member_of_a_group_it_is_shared_with_should_open_the_editor(self):
+        self.workflow.shared_group_ids = [5]
+        self.assertEqual(_ANALYST, ai_workflows_editor_session(_ANALYST, 7)['user_id'])
 
     def test_administrator_should_open_any_editor(self):
         self.permissions = Permissions.server_administrator.value
