@@ -67,6 +67,7 @@ from app.iris_engine.ai_workflows.entities import ai_workflows_entities_filter_a
 from app.iris_engine.module_handler.module_handler import register_builtin_hook_listener
 from app.iris_engine.webhooks.dispatch import webhooks_build_event
 from app.iris_engine.webhooks.dispatch import webhooks_current_actor
+from app.iris_engine.webhooks.events import MANUAL_ACTION
 from app.models.ai_workflows import ENTITY_ALERT
 from app.models.ai_workflows import ENTITY_ALERT_CLUSTER
 from app.models.ai_workflows import ENTITY_CASE
@@ -86,7 +87,7 @@ logger = logging.getLogger(__name__)
 
 _POSTLOAD_PREFIX = 'on_postload_'
 # War room actions on the war room itself (others are on a sub-object)
-_WAR_ROOM_OWN_ACTIONS = ('', 'create', 'update', 'delete', 'archive', 'unarchive')
+_WAR_ROOM_OWN_ACTIONS = ('', 'create', 'update', 'delete', 'archive', 'unarchive', MANUAL_ACTION)
 _DEFAULT_MAX_TARGETS = 50
 # Pages of open entities a schedule scans for ones its owner can access
 _MAX_TARGET_PAGES = 5

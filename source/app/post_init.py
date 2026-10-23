@@ -603,6 +603,8 @@ def create_safe_hooks():
                 hook_description='Triggered on case attachment to a war room, after commit in DB')
     create_safe(db.session, IrisHook, hook_name='on_postload_war_room_case_detach',
                 hook_description='Triggered on case detachment from a war room, after commit in DB')
+    create_safe(db.session, IrisHook, hook_name='on_manual_trigger_war_room',
+                hook_description='Triggered upon user action')
 
     # --- War Room notes
     create_safe(db.session, IrisHook, hook_name='on_postload_war_room_note_create',

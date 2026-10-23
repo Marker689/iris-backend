@@ -123,6 +123,7 @@ MENU_ENTITY_TYPES = {
     'evidence': ENTITY_CASE,
     'datastore_file': ENTITY_CASE,
     'task': ENTITY_CASE,
+    'war_room': ENTITY_WAR_ROOM,
 }
 MENU_LABEL_MAX_LENGTH = 64
 # Menus whose selection can make one run (`batch`): objects of one case

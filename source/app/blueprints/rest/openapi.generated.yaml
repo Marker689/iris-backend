@@ -15935,6 +15935,29 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/v2/war-rooms/{war_room_id}/dim-hooks/invoke:
+    post:
+      operationId: invoke_war_room_dim_hook_post
+      summary: Invoke a DIM hook against a war room
+      tags:
+      - WarRooms
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v2/war-rooms/{war_room_id}/linked-case-timelines:
     get:
       operationId: list_available_get

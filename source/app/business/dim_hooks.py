@@ -40,6 +40,7 @@ from app.models.errors import BusinessProcessingError
 
 
 ALERT_MANUAL_HOOK_NAME = 'on_manual_trigger_alert'
+WAR_ROOM_MANUAL_HOOK_NAME = 'on_manual_trigger_war_room'
 
 
 @dataclass
@@ -178,3 +179,48 @@ def invoke_hook_for_alerts(
         )
 
     return HookInvocationResult(queued=len(alerts), logs=list(logs))
+
+
+def invoke_hook_for_war_room(
+    war_room: Any,
+    hook_name: str,
+    hook_ui_name: str,
+    module_name: str,
+    webhook_id: Optional[int] = None,
+    workflow_id: Optional[int] = None,
+    workflow_trigger_id: Optional[str] = None,
+    user_id: Optional[int] = None,
+    scope_mask: Optional[int] = None,
+) -> HookInvocationResult:
+    """Dispatch a manual hook against an already-loaded war room.
+
+    Like alerts, a war room sits outside any case: the route loads it
+    after its own ACL check and hands the row over. `caseid` is passed
+    as None to `call_modules_hook`, which only uses it to label the row
+    in the module tasks table.
+    """
+    if not hook_name:
+        raise BusinessProcessingError('Missing hook_name')
+
+    # Same reason as for alerts: a module registered for another manual
+    # hook must not be handed a war room.
+    if hook_name != WAR_ROOM_MANUAL_HOOK_NAME:
+        raise BusinessProcessingError(f'Hook {hook_name} is not a war room hook')
+
+    if workflow_id is not None:
+        started, run_logs = ai_workflow_menus_run(workflow_id, hook_name, [war_room], user_id, scope_mask,
+                                                  trigger_node_id=workflow_trigger_id)
+        return HookInvocationResult(queued=started, logs=run_logs)
+
+    if webhook_id is not None:
+        webhooks_invoke_manual(webhook_id, hook_name, [war_room])
+    else:
+        call_modules_hook(
+            hook_name,
+            [war_room],
+            caseid=None,
+            hook_ui_name=hook_ui_name,
+            module_name=module_name,
+        )
+
+    return HookInvocationResult(queued=1, logs=[])

@@ -307,3 +307,46 @@ class TestsRestDimHooks(TestCase):
 
         self.assertEqual(200, response.status_code)
         self.assertEqual(0, response.json()['queued'])
+
+    # ------------------------------------------------------------------
+    # POST /api/v2/war-rooms/<id>/dim-hooks/invoke
+    # ------------------------------------------------------------------
+    def _create_war_room(self):
+        return self._subject.create('/api/v2/war-rooms', {'name': 'Crisis Alpha'}).json()['war_room_id']
+
+    def _invoke_war_room(self, war_room_identifier, body):
+        return self._subject.create(f'/api/v2/war-rooms/{war_room_identifier}/dim-hooks/invoke', body)
+
+    def test_list_hooks_returns_200_and_array_for_war_room(self):
+        response = self._subject.get('/api/v2/dim-hooks', query_parameters={'target': 'war_room'})
+        self.assertEqual(200, response.status_code)
+        self.assertIsInstance(response.json(), list)
+
+    def test_invoke_war_room_returns_queued_1(self):
+        war_room_identifier = self._create_war_room()
+        response = self._invoke_war_room(war_room_identifier, {'hook_name': 'on_manual_trigger_war_room'})
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(1, response.json()['queued'])
+
+    def test_invoke_war_room_returns_400_when_hook_name_missing(self):
+        war_room_identifier = self._create_war_room()
+        response = self._invoke_war_room(war_room_identifier, {})
+        self.assertEqual(400, response.status_code)
+
+    def test_invoke_war_room_returns_400_when_hook_name_is_not_a_war_room_hook(self):
+        war_room_identifier = self._create_war_room()
+        response = self._invoke_war_room(war_room_identifier, {'hook_name': 'on_manual_trigger_case'})
+        self.assertEqual(400, response.status_code)
+
+    def test_invoke_war_room_returns_404_when_war_room_missing(self):
+        response = self._invoke_war_room(999999999, {'hook_name': 'on_manual_trigger_war_room'})
+        self.assertEqual(404, response.status_code)
+
+    def test_invoke_war_room_returns_403_when_user_has_no_war_room_access(self):
+        war_room_identifier = self._create_war_room()
+        user = self._subject.create_dummy_user()
+        response = user.create(
+            f'/api/v2/war-rooms/{war_room_identifier}/dim-hooks/invoke',
+            {'hook_name': 'on_manual_trigger_war_room'},
+        )
+        self.assertEqual(403, response.status_code)

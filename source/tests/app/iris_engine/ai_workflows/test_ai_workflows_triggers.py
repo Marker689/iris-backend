@@ -79,6 +79,11 @@ class TestsTriggerEntity(EngineTestCase):
         self.assertEqual(('war_room', 3, None),
                          ai_workflows_triggers_entity(_event(object_type='war_room', action='update', object_id=3)))
 
+    def test_war_room_menu_is_about_the_war_room_itself(self):
+        event = _event(hook='on_manual_trigger_war_room', object_type='war_room', action='manual_trigger',
+                       object_id=3, data={'war_room_id': 3})
+        self.assertEqual(('war_room', 3, None), ai_workflows_triggers_entity(event))
+
     def test_case_object_goes_to_its_case(self):
         event = _event(object_type='ioc', object_id=77, case={'id': 4, 'name': 'c'})
         self.assertEqual(('case', 4, {'type': 'ioc', 'id': 77}), ai_workflows_triggers_entity(event))
