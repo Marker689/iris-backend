@@ -17,6 +17,7 @@
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 import configparser
+import json
 from app.cors import parse_allowed_origins
 from app.cors import primary_public_url
 from app.logger import logger
@@ -221,6 +222,29 @@ if authentication_type == 'oidc_proxy':
         exit(0)
     else:
         logger.info("OIDC configuration properly parsed")
+
+
+def _parse_oidc_roles_mapping(raw):
+    """Parse OIDC_MAPPING_ROLES, a JSON object of claim value -> IRIS group id.
+
+    Parsed at startup so a typo stops the app with a clear message instead of
+    turning every OIDC login into a 500.
+    """
+    try:
+        mapping = json.loads(raw)
+    except ValueError as e:
+        raise IrisConfigException(f'OIDC_MAPPING_ROLES is not valid JSON: {e}')
+
+    if not isinstance(mapping, dict):
+        raise IrisConfigException('OIDC_MAPPING_ROLES must be a JSON object mapping claim values to IRIS group ids')
+
+    parsed = {}
+    for name, group_id in mapping.items():
+        if isinstance(group_id, bool) or not str(group_id).strip().isdigit():
+            raise IrisConfigException(f"OIDC_MAPPING_ROLES maps '{name}' to '{group_id}', which is not a group id")
+        parsed[name] = int(group_id)
+
+    return parsed
 
 
 class CeleryConfig:
@@ -594,8 +618,14 @@ class Config:
         OIDC_SCOPES = config.load('OIDC', 'SCOPES', fallback="openid email profile")
         OIDC_MAPPING_USERNAME = config.load('OIDC', 'MAPPING_USERNAME', fallback='preferred_username')
         OIDC_MAPPING_EMAIL = config.load('OIDC', 'MAPPING_EMAIL', fallback='email')
-        OIDC_MAPPING_USERGROUP = config.load('OIDC', 'MAPPING_USERGROUP', fallback=None)
-        OIDC_MAPPING_ROLES = config.load('OIDC', 'MAPPING_ROLES', fallback=None)
+        # Empty values count as unset: the Helm chart renders unset values as "".
+        OIDC_MAPPING_USERGROUP = config.load('OIDC', 'MAPPING_USERGROUP', fallback=None) or None
+        OIDC_MAPPING_ROLES = config.load('OIDC', 'MAPPING_ROLES', fallback=None) or None
+        if OIDC_MAPPING_ROLES:
+            if not OIDC_MAPPING_USERGROUP:
+                raise IrisConfigException('OIDC_MAPPING_ROLES is set but OIDC_MAPPING_USERGROUP is not: '
+                                          'IRIS would not know which claim to read the roles from')
+            OIDC_MAPPING_ROLES = _parse_oidc_roles_mapping(OIDC_MAPPING_ROLES)
         # Whether an absent `email_verified` claim is enough to let a token
         # take over an existing local account. Off by default so existing
         # deployments keep working; an explicit `email_verified: false` never

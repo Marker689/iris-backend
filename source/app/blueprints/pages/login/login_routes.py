@@ -23,7 +23,6 @@ import qrcode
 import random
 import string
 import time
-import json
 from flask import Blueprint, flash
 from flask import redirect
 from flask import render_template
@@ -365,6 +364,92 @@ def _oidc_resolve_user(external_id, user_login, claims_are_verified):
     return user, None
 
 
+_OIDC_CLAIM_MISSING = object()
+
+
+def _oidc_claim(claims, path):
+    """Read a claim, following dots into nested objects, or None if absent.
+
+    `realm_access.roles` reaches Keycloak's realm roles. A key that itself
+    contains dots (a namespaced claim such as `https://example.com/groups`, or
+    a client id under `resource_access`) is tried whole before being split,
+    longest first, so both spellings resolve.
+    """
+    if not path:
+        return None
+
+    value = _oidc_claim_walk(claims, path.split("."))
+    return None if value is _OIDC_CLAIM_MISSING else value
+
+
+def _oidc_claim_walk(node, parts):
+    if not parts:
+        return node
+
+    if not hasattr(node, "get"):
+        return _OIDC_CLAIM_MISSING
+
+    for end in range(len(parts), 0, -1):
+        child = node.get(".".join(parts[:end]), _OIDC_CLAIM_MISSING)
+        if child is _OIDC_CLAIM_MISSING:
+            continue
+
+        value = _oidc_claim_walk(child, parts[end:])
+        if value is not _OIDC_CLAIM_MISSING:
+            return value
+
+    return _OIDC_CLAIM_MISSING
+
+
+def _oidc_claim_groups(claims, path):
+    """The group names a token carries: None if the claim is absent, else a list.
+
+    A single group sent as a bare string is one group, not a sequence of
+    characters. Anything that is neither a string nor a list carries no group
+    the mapping could recognise, so it reads as an empty list.
+    """
+    value = _oidc_claim(claims, path)
+    if value is None:
+        return None
+
+    if isinstance(value, str):
+        value = [value]
+
+    if not isinstance(value, (list, tuple)):
+        log.warning(f"OIDC group claim '{path}' is a {type(value).__name__}, expected a list of names")
+        return []
+
+    return [str(name) for name in value if isinstance(name, (str, int)) and str(name)]
+
+
+def _oidc_group_ids(group_names, roles_mapping):
+    """The IRIS group ids the token's group names map to.
+
+    Without OIDC_MAPPING_ROLES the names are matched against IRIS group names.
+    A mapped id whose group was since deleted is skipped with a warning rather
+    than failing the login on a foreign key.
+    """
+    groups = {group.group_id: group.group_name for group in get_groups_list()}
+    if roles_mapping:
+        name_to_id = roles_mapping
+    else:
+        name_to_id = {name: group_id for group_id, name in groups.items()}
+
+    group_ids = set()
+    for name in group_names:
+        group_id = name_to_id.get(name)
+        if group_id is None:
+            continue
+
+        if group_id not in groups:
+            log.warning(f"OIDC_MAPPING_ROLES maps '{name}' to group {group_id}, which does not exist")
+            continue
+
+        group_ids.add(group_id)
+
+    return group_ids
+
+
 if is_authentication_oidc():
 
     @login_blueprint.route("/oidc-authorize")
@@ -429,13 +514,10 @@ if is_authentication_oidc():
                     access_token=access_token_resp["access_token"],
                 )
 
-            user_login = claims.get(username_field) or claims.get(email_field)
-            user_name = claims.get(email_field) or claims.get(username_field)
+            user_login = _oidc_claim(claims, username_field) or _oidc_claim(claims, email_field)
+            user_name = _oidc_claim(claims, email_field) or _oidc_claim(claims, username_field)
 
-            if usergroup_field is not None:
-                user_group = claims.get(usergroup_field)
-            else:
-                user_group = None
+            claimed_groups = _oidc_claim_groups(claims, usergroup_field) if usergroup_field else None
 
             if not user_login:
                 log.error(
@@ -475,7 +557,7 @@ if is_authentication_oidc():
                     ctx_less=True,
                     display_in_ui=True,
                 )
-                return response_error("User not found in IRIS", 404)
+                return response_error("User not found in IRIS", status=404)
 
             log.info(f"Creating OIDC user {user_login} in database")
             track_activity(
@@ -498,27 +580,22 @@ if is_authentication_oidc():
             )
 
         if user and not user.active:
-            return response_error("User not active in IRIS", 403)
+            return response_error("User not active in IRIS", status=403)
 
-        if user and (not user_group) and userroles_mapping_field:
-            return response_error(
-                "Required user group information missing in OIDC response", 403
+        # Once a group claim is configured the provider is authoritative for
+        # membership: an empty or absent claim means "no groups", so someone
+        # removed from every group at the provider loses their IRIS groups too
+        # instead of keeping them. Synced before the refusal below so sessions
+        # the account already holds lose the old groups' rights as well.
+        if usergroup_field:
+            update_user_groups(
+                user.id, _oidc_group_ids(claimed_groups or [], userroles_mapping_field)
             )
 
-        if user_group:
-            if not userroles_mapping_field:
-                groups_list = get_groups_list()
-                group_name_to_id = {
-                    group.group_name: group.group_id for group in groups_list
-                }
-            else:
-                group_name_to_id = json.loads(userroles_mapping_field)
-            new_user_group = [
-                group_name_to_id[group_name]
-                for group_name in user_group
-                if group_name in group_name_to_id
-            ]
-            update_user_groups(user.id, new_user_group)
+            if claimed_groups is None and userroles_mapping_field:
+                return response_error(
+                    "Required user group information missing in OIDC response", status=403
+                )
 
         # Mark this session as OIDC-authenticated so the SPA can call
         # /api/v2/auth/oidc-exchange exactly once to trade the session
