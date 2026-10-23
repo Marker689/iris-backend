@@ -244,6 +244,16 @@ def get_timeline_event(war_room_id, event_id):
     return _get_event(war_room_id, event_id)
 
 
+def _activity_label(row):
+    """How the war-room activity names the event. The activity is read
+    by every member of the room, so an event a tracker restricted to the
+    readers of its cases or registry asset is never named by its title
+    (which holds the item label and values)."""
+    if row.visibility_case_ids is not None or row.visibility_managed_asset_id is not None:
+        return f'event #{row.id}'
+    return row.title or (f'case event #{row.event_id}' if row.event_id else f'event #{row.id}')
+
+
 def update_timeline_event(war_room_id, event_id, *, title=_UNSET, content=_UNSET,
                           event_date=_UNSET, event_tz=_UNSET, color=_UNSET,
                           category=_UNSET, timeline_id=_UNSET,
@@ -296,8 +306,7 @@ def update_timeline_event(war_room_id, event_id, *, title=_UNSET, content=_UNSET
     if ioc_ids is not _UNSET:
         _set_ioc_links(row.id, ioc_ids or [])
     db.session.commit()
-    label = row.title or (f'case event #{row.event_id}' if row.event_id else f'event #{row.id}')
-    track_activity(f'updated timeline event "{label}"', war_room_id=war_room_id)
+    track_activity(f'updated timeline event "{_activity_label(row)}"', war_room_id=war_room_id)
     row = call_modules_hook('on_postload_war_room_timeline_event_update', row)
     return row
 
@@ -309,9 +318,8 @@ def toggle_event_flag(war_room_id, event_id):
     row = _get_event(war_room_id, event_id)
     row.is_flagged = not row.is_flagged
     db.session.commit()
-    label = row.title or f'event #{row.id}'
     track_activity(
-        f'{"flagged" if row.is_flagged else "unflagged"} timeline event "{label}"',
+        f'{"flagged" if row.is_flagged else "unflagged"} timeline event "{_activity_label(row)}"',
         war_room_id=war_room_id,
     )
     return row
@@ -363,7 +371,7 @@ def duplicate_event(war_room_id, event_id, created_by_id=None):
 
     db.session.commit()
     track_activity(
-        f'duplicated timeline event "{src.title or f"#{src.id}"}"',
+        f'duplicated timeline event "{_activity_label(src)}"',
         war_room_id=war_room_id,
     )
     return dup
@@ -479,7 +487,7 @@ def events_hydration(event_ids: Iterable[int]) -> dict:
 
 def delete_timeline_event(war_room_id, event_id):
     row = _get_event(war_room_id, event_id)
-    label = row.title or (f'case event #{row.event_id}' if row.event_id else f'event #{row.id}')
+    label = _activity_label(row)
     db.session.delete(row)
     db.session.commit()
     track_activity(f'deleted timeline event "{label}"', war_room_id=war_room_id)

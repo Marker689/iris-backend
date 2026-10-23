@@ -33,11 +33,13 @@ from app import app
 from app.blueprints.rest.v2.war_rooms import access
 from app.blueprints.rest.v2.war_rooms import timelines as timeline_routes
 from app.blueprints.rest.v2.war_rooms import trackers as tracker_routes
+from app.business import war_room_timelines
 from app.models.authorization import CaseAccessLevel
 from app.models.errors import ObjectNotFoundError
 
 
 _ACCESS = 'app.blueprints.rest.v2.war_rooms.access'
+_BIZ = 'app.business.war_room_timelines'
 _TIMELINES = 'app.blueprints.rest.v2.war_rooms.timelines'
 _TRACKERS = 'app.blueprints.rest.v2.war_rooms.trackers'
 
@@ -167,6 +169,43 @@ class TestTimelineRoutes(_Route):
         with app.test_request_context('/', method='POST', json={'title': 'x', 'parent_id': 2}):
             self.assertEqual(inspect.unwrap(timeline_routes.add_event)(10, 4), '404')
         create.assert_not_called()
+
+
+class TestEventActivity(TestCase):
+    """The war-room activity is read by every member: a restricted event
+    is never named by its title there."""
+
+    def setUp(self):
+        self.stack = ExitStack()
+        self.stack.enter_context(patch(f'{_BIZ}.db'))
+        self.stack.enter_context(patch(f'{_BIZ}.call_modules_hook'))
+        self.track = self.stack.enter_context(patch(f'{_BIZ}.track_activity'))
+
+    def tearDown(self):
+        self.stack.close()
+
+    def _row(self, case_ids=None, managed_asset_id=None):
+        return SimpleNamespace(id=8, title='IOCs · evil.example: Blocked', event_id=None, is_flagged=False,
+                               visibility_case_ids=case_ids, visibility_managed_asset_id=managed_asset_id)
+
+    def _messages(self, row):
+        with patch(f'{_BIZ}._get_event', return_value=row):
+            war_room_timelines.toggle_event_flag(10, row.id)
+            war_room_timelines.delete_timeline_event(10, row.id)
+        return [call.args[0] for call in self.track.call_args_list]
+
+    def test_a_case_gated_event_is_named_by_its_id(self):
+        self.assertEqual(self._messages(self._row(case_ids=[3])),
+                         ['flagged timeline event "event #8"', 'deleted timeline event "event #8"'])
+
+    def test_a_registry_asset_event_is_named_by_its_id(self):
+        for message in self._messages(self._row(managed_asset_id=5)):
+            self.assertNotIn('evil.example', message)
+
+    def test_an_unrestricted_event_keeps_its_title(self):
+        self.assertEqual(self._messages(self._row()),
+                         ['flagged timeline event "IOCs · evil.example: Blocked"',
+                          'deleted timeline event "IOCs · evil.example: Blocked"'])
 
 
 class TestTrackerRoutes(TestCase):
