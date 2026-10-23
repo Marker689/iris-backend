@@ -65,6 +65,7 @@ from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_com
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_delete
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_events
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_events_not_in_timeline
+from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_events_not_in_timeline_count
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_events_not_in_timeline_counts
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_existing_user_ids
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_row_counts
@@ -779,7 +780,8 @@ def war_room_trackers_build_tracker(war_room_id, data, room_step_ids, sort_order
 
 def war_room_trackers_serialize(tracker, row_count, names, timeline_backfill=0):
     """`timeline_backfill`: with a `changes` timeline sync, the past
-    changes not in the timelines yet (made before the sync was on)."""
+    changes of the rows the caller sees not in the timelines yet (made
+    before the sync was on)."""
     return {
         'id': tracker.id,
         'war_room_id': tracker.war_room_id,
@@ -804,20 +806,36 @@ def _writes_changes(tracker):
     return (tracker.timeline_sync or {}).get('mode') == 'changes'
 
 
+def _visible_stored_rows(tracker, cache):
+    """`{row_id: (stored, item)}`: the stored rows of a tracker the caller
+    sees (free-text rows, and rows whose item is in its sight)."""
+    if tracker.source == 'manual':
+        pairs = _manual_pairs(war_room_trackers_db_rows(tracker.id), cache)
+    else:
+        pairs, _ = _mirror_pairs(tracker, cache)
+    return {stored.id: (stored, item) for stored, item in pairs
+            if stored is not None and (stored.item_type is None or item is not None)}
+
+
 def war_room_trackers_serialize_many(war_room_id, trackers, access):
-    """Trackers with the number of rows the caller sees."""
+    """Trackers with the number of rows the caller sees and, for a
+    `changes` timeline sync, the past changes of those rows it can still
+    write to the timelines."""
     cache = _SourceCache(war_room_id, access)
     stored = war_room_trackers_db_row_counts([t.id for t in trackers if t.source == 'manual'])
     names = war_room_trackers_db_user_names([t.created_by_id for t in trackers])
-    backfill = war_room_trackers_db_events_not_in_timeline_counts([t.id for t in trackers if _writes_changes(t)])
+    pending = war_room_trackers_db_events_not_in_timeline_counts([t.id for t in trackers if _writes_changes(t)])
     out = []
     for tracker in trackers:
         if tracker.source == 'manual':
             count = stored.get(tracker.id, 0)
         else:
             count = len(cache.items(tracker.source)[0])
-        out.append(war_room_trackers_serialize(tracker, min(count, WAR_ROOM_TRACKERS_ROWS_LIMIT), names,
-                                               backfill.get(tracker.id, 0)))
+        backfill = 0
+        if pending.get(tracker.id):
+            backfill = war_room_trackers_db_events_not_in_timeline_count(
+                tracker.id, list(_visible_stored_rows(tracker, cache)))
+        out.append(war_room_trackers_serialize(tracker, min(count, WAR_ROOM_TRACKERS_ROWS_LIMIT), names, backfill))
     return out
 
 
@@ -1369,46 +1387,38 @@ def war_room_trackers_values_before(values, later_value_events):
 
 def _timeline_backfill(war_room_id, tracker, access, user_id):
     """Write the past changes of a `changes` sync, oldest first, at most
-    `WAR_ROOM_TRACKERS_TIMELINE_BACKFILL_LIMIT` per call (the summary's
-    `remaining` tells what is left). Every change handled is marked
-    `in_timeline`, including those of rows the caller cannot see or of
-    cases it cannot write, as live changes are: nothing is written twice."""
-    groups = _history_groups(war_room_trackers_db_events_not_in_timeline(
-        tracker.id, WAR_ROOM_TRACKERS_TIMELINE_BACKFILL_LIMIT))
-    row_ids = sorted({group[0].row_id for group in groups})
+    `WAR_ROOM_TRACKERS_TIMELINE_BACKFILL_LIMIT` per call. Only the changes
+    of the rows the caller sees are handled and marked `in_timeline`; the
+    others stay pending for the members who see them (the summary's
+    `remaining` and `remaining_restricted`). A handled change of a case the
+    caller cannot write is marked without being written, as live changes
+    are: nothing is written twice. Each change names its author."""
     cache = _SourceCache(war_room_id, access)
-    if tracker.source == 'manual':
-        pairs = _manual_pairs(war_room_trackers_db_rows_by_ids(tracker.id, row_ids), cache)
-    else:
-        pairs, _ = _mirror_pairs(tracker, cache)
-        wanted = set(row_ids)
-        pairs = [(stored, item) for stored, item in pairs if stored is not None and stored.id in wanted]
-    by_row = {stored.id: (stored, item) for stored, item in pairs}
+    by_row = _visible_stored_rows(tracker, cache)
+    groups = _history_groups(war_room_trackers_db_events_not_in_timeline(
+        tracker.id, list(by_row), WAR_ROOM_TRACKERS_TIMELINE_BACKFILL_LIMIT))
+    row_ids = sorted({group[0].row_id for group in groups})
     later = {}
     if groups:
         for event in war_room_trackers_db_value_events_after(row_ids, groups[0][0].id):
             later.setdefault(event.row_id, []).append(event)
     writer = WarRoomTrackerTimelineWriter(war_room_id, tracker, access.writable_case_ids, user_id, _utcnow(), {})
-    gone = 0
     for group in groups:
         for event in group:
             event.in_timeline = True
-        stored, item = by_row.get(group[0].row_id, (None, None))
-        if stored is None:
-            # A mirrored item that left the war room (or the caller's sight).
-            gone += 1
-            continue
+        stored, item = by_row[group[0].row_id]
         last_id = group[-1].id
         values = war_room_trackers_values_before(
             stored.values, [event for event in later.get(stored.id, ()) if event.id > last_id])
         writer.row_history(stored, item, [(event.action, event.details or {}) for event in group],
-                           group[0].created_at, values)
+                           group[0].created_at, values, group[0].user_id)
     if not war_room_trackers_db_commit():
         raise BusinessProcessingError('The timelines were changed meanwhile, retry')
     writer.finish()
     summary = writer.summary()
-    summary['restricted_rows'] += gone
-    summary['remaining'] = war_room_trackers_db_events_not_in_timeline_counts([tracker.id]).get(tracker.id, 0)
+    summary['remaining'] = war_room_trackers_db_events_not_in_timeline_count(tracker.id, list(by_row))
+    pending = war_room_trackers_db_events_not_in_timeline_counts([tracker.id]).get(tracker.id, 0)
+    summary['remaining_restricted'] = max(pending - summary['remaining'], 0)
     return summary
 
 

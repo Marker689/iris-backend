@@ -388,8 +388,9 @@ def update_tracker_rows_state(war_room_id, tracker_id):
 @ac_api_requires()
 @api_doc(tags=['WarRoomTrackers'],
          summary='Catch the timelines up with a tracker whose timeline sync was turned on after the fact: the '
-                 'current state of the rows the caller sees (state mode), or the past changes not in the timelines '
-                 'yet, oldest first and at most 2000 per call, `remaining` telling what is left (changes mode). '
+                 'current state of the rows the caller sees (state mode), or the past changes of those rows not in '
+                 'the timelines yet, oldest first and at most 2000 per call, `remaining` telling what is left and '
+                 '`remaining_restricted` what is left for the members who see the other rows (changes mode). '
                  'Case timelines are only written where the caller has full access')
 def sync_tracker_timeline(war_room_id, tracker_id):
     err = require_war_room_write(war_room_id)

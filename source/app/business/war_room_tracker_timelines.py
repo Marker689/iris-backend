@@ -48,6 +48,9 @@ Permissions, decided by the blueprint and handed in through the
   (`visibility_case_ids`), or the registry asset (`visibility_managed_asset_id`):
   the timeline routes only show it to the members who can read them.
 - rows whose item the user cannot see (`restricted`) are never written.
+- an event is created by the user writing it, which may not be who made
+  the change (a backfill, a state refresh): its content names the author
+  of the changes (`changes`) or the last user who changed the row (`state`).
 
 Nothing is committed here: the events are flushed in the transaction of
 the tracker change, which the caller commits. `finish()` logs the case
@@ -236,8 +239,9 @@ def _quote(text):
     return '\n'.join(f'> {line}' for line in str(text).splitlines() or [''])
 
 
-def war_room_tracker_timelines_changes_text(tracker_name, label, events, columns, names):
-    """`(title, content)` of a `changes` event."""
+def war_room_tracker_timelines_changes_text(tracker_name, label, events, columns, names, author=None):
+    """`(title, content)` of a `changes` event. `author` names who made
+    the changes (the event itself is created by whoever writes it)."""
     by_key = {column['key']: column for column in columns or ()}
     phrases = []
     lines = []
@@ -268,18 +272,24 @@ def war_room_tracker_timelines_changes_text(tracker_name, label, events, columns
             new = _format_value(column, details.get('new'), names)
             phrases.append(f'{column_label}: {new}' if new is not None else f'{column_label} cleared')
             lines.append(f'- **{column_label}**: {old or _EMPTY} → {new or _EMPTY}')
+    if author:
+        lines.append(f'\n_Changed by {author}_')
     return _title(tracker_name, label, '; '.join(phrases)), '\n'.join(lines)
 
 
-def war_room_tracker_timelines_state_text(tracker_name, label, step_names, columns, values, note, names):
+def war_room_tracker_timelines_state_text(tracker_name, label, step_names, columns, values, note, names,
+                                         updated_by=None):
     """`(title, content)` of a `state` event. `step_names` are the names
-    of the steps of the row, in the order of the war room."""
+    of the steps of the row, in the order of the war room; `updated_by`
+    names who last changed it."""
     steps = ', '.join(step_names)
     lines = [f'**Steps:** {steps or "none"}']
     for column in columns or ():
         formatted = _format_value(column, (values or {}).get(column['key']), names)
         if formatted is not None:
             lines.append(f'**{column["label"]}:** {formatted}')
+    if updated_by:
+        lines.append(f'**Last changed by:** {updated_by}')
     if note:
         lines.append(f'\n**Note:**\n\n{note}')
     return _title(tracker_name, label, steps or 'no step'), '  \n'.join(lines)
@@ -334,15 +344,15 @@ class WarRoomTrackerTimelineWriter:
         if not self.enabled or not events:
             return
         if self.mode == 'changes':
-            self._write(row, item, events=events)
+            self._write(row, item, events=events, author_id=self._user_id)
         else:
             self._write(row, item, step_ids=step_ids)
 
-    def row_history(self, row, item, events, changed_at, values):
-        """Write past `events` of a row (`changes` mode): made at
-        `changed_at`, when the row's values were `values`."""
+    def row_history(self, row, item, events, changed_at, values, author_id):
+        """Write past `events` of a row (`changes` mode): made by
+        `author_id` at `changed_at`, when the row's values were `values`."""
         if self.mode == 'changes' and events:
-            self._write(row, item, events=events, values=values, changed_at=changed_at)
+            self._write(row, item, events=events, values=values, changed_at=changed_at, author_id=author_id)
 
     def row_state(self, row, item, step_ids):
         """Write (or refresh) the state event of a row."""
@@ -370,10 +380,13 @@ class WarRoomTrackerTimelineWriter:
 
     # -- internals
 
-    def _user_names(self, values, events):
-        """The names of the users set in the user columns, before and after."""
+    def _user_names(self, values, events, author_id=None):
+        """The names of the users set in the user columns, before and after,
+        and of the author."""
         user_keys = {column['key'] for column in self._tracker.columns or () if column.get('type') == 'user'}
         user_ids = {value for key, value in (values or {}).items() if key in user_keys and _is_int(value)}
+        if _is_int(author_id):
+            user_ids.add(author_id)
         for action, details in events or ():
             if action == 'value_changed' and details.get('column_key') in user_keys:
                 user_ids.update(details.get(key) for key in ('old', 'new') if _is_int(details.get(key)))
@@ -382,7 +395,7 @@ class WarRoomTrackerTimelineWriter:
             self._names.update(war_room_trackers_db_user_names(user_ids))
         return self._names
 
-    def _write(self, row, item, events=None, step_ids=None, values=None, changed_at=None):
+    def _write(self, row, item, events=None, step_ids=None, values=None, changed_at=None, author_id=None):
         if row.item_type is not None and item is None:
             self._restricted_rows += 1
             return
@@ -390,14 +403,17 @@ class WarRoomTrackerTimelineWriter:
         label = row.label if row.item_type is None else item['label']
         if values is None:
             values = row.values
-        names = self._user_names(values, events)
+        if events is None:
+            author_id = getattr(row, 'updated_by_id', None) or getattr(row, 'created_by_id', None)
+        names = self._user_names(values, events, author_id)
+        author = (names.get(author_id) or f'user #{author_id}') if _is_int(author_id) else None
         if events is not None:
             title, content = war_room_tracker_timelines_changes_text(tracker.name, label, events, tracker.columns,
-                                                                     names)
+                                                                     names, author=author)
         else:
             step_labels = [name for step_id, name in self._step_names.items() if step_id in set(step_ids)]
             title, content = war_room_tracker_timelines_state_text(tracker.name, label, step_labels, tracker.columns,
-                                                                   values, row.note, names)
+                                                                   values, row.note, names, updated_by=author)
         event_date = war_room_tracker_timelines_event_date(self._sync, tracker.columns, values,
                                                            changed_at or self._now)
         links = (item or {}).get('timeline') or war_room_tracker_timelines_item_links()

@@ -293,6 +293,12 @@ class TestTexts(TestCase):
         self.assertIn('- **Owner**: — → bob', content)
         self.assertIn('- **Ticket**: T-1 → —', content)
         self.assertIn('> line 1\n> line 2', content)
+        self.assertNotIn('Changed by', content)
+
+    def test_changes_name_their_author(self):
+        _, content = timelines.war_room_tracker_timelines_changes_text(
+            'R', 'x', [('note_changed', {'old': None, 'new': 'y'})], [], {}, author='alice')
+        self.assertTrue(content.endswith('_Changed by alice_'))
 
     def test_state(self):
         title, content = timelines.war_room_tracker_timelines_state_text(
@@ -302,6 +308,10 @@ class TestTexts(TestCase):
         self.assertIn('**Owner:** bob', content)
         self.assertIn('**Ticket:** T-1', content)
         self.assertIn('ok', content)
+        self.assertNotIn('Last changed by', content)
+        _, content = timelines.war_room_tracker_timelines_state_text('R', 'x', [], [], {}, None, {},
+                                                                     updated_by='alice')
+        self.assertIn('**Last changed by:** alice', content)
         self.assertEqual(timelines.war_room_tracker_timelines_state_text('R', 'x', [], [], {}, None, {})[0],
                          'R · x: no step')
 
@@ -449,6 +459,11 @@ class TestCaseTarget(_Db):
                                                'new': 5})], set())
         self.assertIn('User 4 → User 5', self.added_of(CasesEvent)[0].event_content)
 
+    def test_a_live_change_names_the_user_making_it(self):
+        writer = self.writer()
+        writer.row_changed(_row(10), _asset_item(), [('note_changed', {'old': None, 'new': 'x'})], set())
+        self.assertIn('_Changed by User 3_', self.added_of(CasesEvent)[0].event_content)
+
 
 class TestWarRoomTarget(_Db):
 
@@ -526,6 +541,17 @@ class TestStateMode(_Db):
         writer.row_state(_row(10), _asset_item(case_id=2), set())
         self.assertEqual(len(self.added_of(WarRoomTimelineEvent)), 1)
         self.assertEqual(event.visibility_case_ids, [2])
+
+    def test_the_state_names_the_last_user_who_changed_the_row(self):
+        writer = self.writer(_tracker(timeline_sync=_sync(mode='state')))
+        writer.row_state(_row(10, updated_by_id=6, created_by_id=5), _asset_item(), set())
+        writer.row_state(_row(11, created_by_id=5), _asset_item(), set())
+        writer.row_state(_row(12), _asset_item(), set())
+        first, second, third = self.added_of(CasesEvent)
+        self.assertEqual(first.user_id, 3)
+        self.assertIn('**Last changed by:** User 6', first.event_content)
+        self.assertIn('**Last changed by:** User 5', second.event_content)
+        self.assertNotIn('Last changed by', third.event_content)
 
     def test_row_state_only_in_state_mode(self):
         writer = self.writer()
@@ -664,9 +690,9 @@ class TestThroughTheTracker(_Db):
                 self.assertEqual([e.in_timeline for e in recorded], [expected])
 
 
-def _event(event_id, row_id, action, details=None, minute=0):
+def _event(event_id, row_id, action, details=None, minute=0, user_id=5):
     return SimpleNamespace(id=event_id, tracker_id=4, row_id=row_id, action=action, details=details or {},
-                           created_at=datetime.datetime(2026, 10, 1, 9, minute), in_timeline=False)
+                           created_at=datetime.datetime(2026, 10, 1, 9, minute), in_timeline=False, user_id=user_id)
 
 
 class TestBackfill(TestThroughTheTracker):
@@ -677,16 +703,22 @@ class TestBackfill(TestThroughTheTracker):
         self.later = []
         self.rows = [SimpleNamespace(id=10, tracker_id=4, item_type=None, item_id=None, label='Call CERT',
                                      note=None, values={'c_due': '2026-10-20'})]
+        self.biz['war_room_trackers_db_rows'].return_value = self.rows
+
+        def _pending(row_ids):
+            return [e for e in self.events if e.row_id in row_ids and not e.in_timeline]
+
         backfill = {
             'war_room_trackers_db_events_not_in_timeline': MagicMock(
-                side_effect=lambda _tracker_id, limit: self.events[:limit]),
+                side_effect=lambda _tracker_id, row_ids, limit: _pending(row_ids)[:limit]),
+            'war_room_trackers_db_events_not_in_timeline_count': MagicMock(
+                side_effect=lambda _tracker_id, row_ids: len(_pending(row_ids))),
             'war_room_trackers_db_value_events_after': MagicMock(
                 side_effect=lambda row_ids, after_id: [e for e in self.later if e.row_id in row_ids
                                                        and e.id > after_id]),
             'war_room_trackers_db_events_not_in_timeline_counts': MagicMock(
                 side_effect=lambda ids: {4: sum(not e.in_timeline for e in self.events)} if ids else {}),
-            'war_room_trackers_db_rows_by_ids': MagicMock(
-                side_effect=lambda _tracker_id, ids: [r for r in self.rows if r.id in ids]),
+            'war_room_trackers_db_row_counts': MagicMock(return_value={}),
         }
         self.biz.update(backfill)
         for name, mock in backfill.items():
@@ -711,7 +743,7 @@ class TestBackfill(TestThroughTheTracker):
                          ('Remediation · Call CERT: note updated', datetime.datetime(2026, 10, 1, 9, 5)))
         self.assertTrue(all(e.in_timeline for e in self.events))
         self.assertEqual(summary, {'events': 2, 'skipped_case_ids': [], 'restricted_rows': 0, 'war_room_rows': 0,
-                                   'remaining': 0})
+                                   'remaining': 0, 'remaining_restricted': 0})
         self.biz['war_room_trackers_db_commit'].assert_called_once()
 
     def test_the_date_column_is_taken_as_it_was_then(self):
@@ -739,12 +771,39 @@ class TestBackfill(TestThroughTheTracker):
         self.assertEqual([e.in_timeline for e in self.events], [True, False, False])
         self.assertEqual(summary['remaining'], 2)
 
-    def test_rows_gone_from_sight_are_marked_and_counted(self):
-        self.events = [_event(1, 99, 'note_changed', {'old': None, 'new': 'x'})]
-        summary = self.backfill(_sync(), source='assets')
-        self.assertEqual(self.added, [])
-        self.assertTrue(self.events[0].in_timeline)
-        self.assertEqual(summary['restricted_rows'], 1)
+    def test_past_changes_name_their_author_not_the_caller(self):
+        self.events = [_event(1, 10, 'created', {'label': 'Call CERT'}, user_id=6)]
+        self.backfill()
+        event, = self.added_of(WarRoomTimelineEvent)
+        self.assertEqual(event.created_by_id, 3)
+        self.assertIn('_Changed by User 6_', event.content)
+
+    def test_changes_of_rows_out_of_sight_stay_pending_for_others(self):
+        # A free-text row, a stored row of an asset the caller cannot see,
+        # and a mirrored item gone from the war room.
+        self.rows.append(SimpleNamespace(id=11, tracker_id=4, item_type='asset', item_id=99, label=None, note=None,
+                                         values={}))
+        self.events = [_event(1, 10, 'note_changed', {'old': None, 'new': 'x'}),
+                       _event(2, 11, 'note_changed', {'old': None, 'new': 'y'}),
+                       _event(3, 12, 'note_changed', {'old': None, 'new': 'z'})]
+        summary = self.backfill()
+        self.assertEqual(len(self.added_of(WarRoomTimelineEvent)), 1)
+        self.assertEqual([e.in_timeline for e in self.events], [True, False, False])
+        self.assertEqual((summary['remaining'], summary['remaining_restricted'], summary['restricted_rows']),
+                         (0, 2, 0))
+        self.assertEqual(self.biz['war_room_trackers_db_events_not_in_timeline'].call_args.args[1], [10])
+
+    def test_the_backfill_badge_counts_the_rows_the_caller_sees(self):
+        self.rows.append(SimpleNamespace(id=11, tracker_id=4, item_type='asset', item_id=99, label=None, note=None,
+                                         values={}))
+        self.events = [_event(1, 10, 'note_changed', {'old': None, 'new': 'x'}),
+                       _event(2, 11, 'note_changed', {'old': None, 'new': 'y'})]
+        access = trackers.WarRoomTrackerAccess([1, 2], writable_case_ids=[1, 2])
+        out, = trackers.war_room_trackers_serialize_many(7, [_tracker(source='manual')], access)
+        self.assertEqual(out['timeline_backfill'], 1)
+        self.events = [_event(2, 11, 'note_changed', {'old': None, 'new': 'y'})]
+        out, = trackers.war_room_trackers_serialize_many(7, [_tracker(source='manual')], access)
+        self.assertEqual(out['timeline_backfill'], 0)
 
     def test_a_mirrored_row_goes_to_its_case(self):
         self.biz['war_room_trackers_db_rows'].return_value = [
@@ -757,7 +816,7 @@ class TestBackfill(TestThroughTheTracker):
 
     def test_nothing_left(self):
         self.assertEqual(self.backfill(), {'events': 0, 'skipped_case_ids': [], 'restricted_rows': 0,
-                                           'war_room_rows': 0, 'remaining': 0})
+                                           'war_room_rows': 0, 'remaining': 0, 'remaining_restricted': 0})
 
 
 class TestItemLinks(TestCase):
