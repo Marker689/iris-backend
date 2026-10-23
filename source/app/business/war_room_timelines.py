@@ -238,6 +238,12 @@ def _get_event(war_room_id, event_id):
     return row
 
 
+def get_timeline_event(war_room_id, event_id):
+    """The event, if it belongs to the war room (`ObjectNotFoundError`
+    otherwise)."""
+    return _get_event(war_room_id, event_id)
+
+
 def update_timeline_event(war_room_id, event_id, *, title=_UNSET, content=_UNSET,
                           event_date=_UNSET, event_tz=_UNSET, color=_UNSET,
                           category=_UNSET, timeline_id=_UNSET,
@@ -331,6 +337,11 @@ def duplicate_event(war_room_id, event_id, created_by_id=None):
     dup.color = src.color
     dup.category = src.category
     dup.parent_id = src.parent_id
+    # A copy of an event a tracker restricted to some readers keeps the
+    # restriction.
+    dup.tracker_id = src.tracker_id
+    dup.visibility_case_ids = src.visibility_case_ids
+    dup.visibility_managed_asset_id = src.visibility_managed_asset_id
     dup.created_by_id = created_by_id
     db.session.add(dup)
     db.session.flush()

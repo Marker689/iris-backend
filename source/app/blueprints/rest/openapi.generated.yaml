@@ -14571,7 +14571,52 @@ paths:
   /api/v2/war-rooms/{war_room_id}/board:
     get:
       operationId: get_board_get
-      summary: Get the war room board (asset flags, decisions, attention list)
+      summary: Get the war room board (asset flags, decisions, tasks, trackers, attention list)
+      tags:
+      - WarRoomBoard
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/war-rooms/{war_room_id}/board/widgets:
+    get:
+      operationId: get_board_widgets_get
+      summary: Get the widgets of the war room board, without their data
+      tags:
+      - WarRoomBoard
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: put_board_widgets_put
+      summary: Set the widgets of the war room board for everyone (null = back to the default board)
       tags:
       - WarRoomBoard
       security:
@@ -18803,6 +18848,35 @@ paths:
       operationId: update_tracker_rows_state_post
       summary: Bulk update the steps, note, column values or label of tracker rows (one history event
         per change)
+      tags:
+      - WarRoomTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: war_room_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/war-rooms/{war_room_id}/trackers/{tracker_id}/timeline/sync:
+    post:
+      operationId: sync_tracker_timeline_post
+      summary: Write the current state of the rows the caller sees to the timelines (state timeline mode
+        only). Case timelines are only written where the caller has full access
       tags:
       - WarRoomTrackers
       security:

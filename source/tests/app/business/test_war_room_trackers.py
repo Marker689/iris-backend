@@ -38,7 +38,7 @@ _BIZ = 'app.business.war_room_trackers'
 def _tracker(**kwargs):
     fields = {'id': 4, 'war_room_id': 7, 'name': 'Remediation', 'icon': None, 'description': None,
               'source': 'manual', 'step_ids': None, 'columns': [], 'show_asset_flags': False, 'sort_order': 0,
-              'created_by_id': 3, 'created_at': None, 'updated_at': None}
+              'timeline_sync': None, 'created_by_id': 3, 'created_at': None, 'updated_at': None}
     fields.update(kwargs)
     return SimpleNamespace(**fields)
 
@@ -94,6 +94,7 @@ class _Patches(TestCase):
             'war_room_trackers_db_events': MagicMock(return_value=[]),
             'war_room_trackers_db_rows_keys': MagicMock(return_value={}),
             'track_activity': MagicMock(),
+            'war_room_board_widgets_prune': MagicMock(),
             'war_room_scope_list_assets': MagicMock(return_value={'data': [], 'truncated': False}),
             'war_room_scope_list_iocs': MagicMock(return_value={'data': [], 'truncated': False}),
             'war_room_scope_list_customers': MagicMock(return_value={'data': []}),
@@ -306,6 +307,11 @@ class TestSteps(_Patches):
         self.assertIsNone(other.step_ids)
         self.patches['war_room_trackers_db_delete'].assert_called_once()
 
+    def test_delete_prunes_the_board(self):
+        with patch(f'{_BIZ}.war_room_trackers_db_step_get', return_value=_step(1, 'A')):
+            trackers.war_room_trackers_step_delete(7, 1)
+        self.patches['war_room_board_widgets_prune'].assert_called_once_with(7, step_id=1)
+
     def test_unknown_step_is_not_found(self):
         with patch(f'{_BIZ}.war_room_trackers_db_step_get', return_value=None):
             with self.assertRaises(ObjectNotFoundError):
@@ -334,6 +340,16 @@ class TestTrackers(_Patches):
                                                                  {'label': 'Due', 'type': 'date'}]})
         self.assertEqual([c['key'] for c in tracker.columns], ['c_x1', 'c_due'])
 
+    def test_delete_and_column_changes_prune_the_board(self):
+        tracker = _tracker(columns=[{'key': 'c_x1', 'label': 'Owner', 'type': 'user'}])
+        with patch(f'{_BIZ}.war_room_trackers_db_tracker_get', return_value=tracker):
+            trackers.war_room_trackers_update(7, 4, {'name': 'Renamed'})
+            self.patches['war_room_board_widgets_prune'].assert_not_called()
+            trackers.war_room_trackers_update(7, 4, {'columns': []})
+            self.patches['war_room_board_widgets_prune'].assert_called_once_with(7, tracker_columns=(4, []))
+            trackers.war_room_trackers_delete(7, 4)
+        self.patches['war_room_board_widgets_prune'].assert_called_with(7, tracker_id=4)
+
     def test_row_count_of_a_mirror_is_the_visible_items(self):
         self.patches['war_room_scope_list_assets'].return_value = {
             'data': [_asset(1, 'a'), _asset(2, 'b')], 'truncated': False}
@@ -350,6 +366,138 @@ class TestTrackers(_Patches):
                                                         trackers.WarRoomTrackerAccess([]))
         self.assertEqual(out[0]['row_count'], 0)
         self.patches['war_room_scope_list_iocs'].assert_not_called()
+
+
+def _case_item(case_id, name):
+    return trackers._item('case', case_id, name, {'case_id': case_id},
+                          timeline=trackers.war_room_tracker_timelines_item_links(case_links=[(case_id, (), ())]))
+
+
+def _step_rows(*pairs):
+    return [SimpleNamespace(row_id=row_id, step_id=step_id, set_by_id=3, set_at=None) for row_id, step_id in pairs]
+
+
+def _widget(widget_id, widget_type, **config):
+    return {'id': widget_id, 'type': widget_type, 'title': None, 'column': 'main', 'config': config}
+
+
+class TestBoardRowFilter(TestCase):
+
+    def test_single_and_multi_values(self):
+        row_filter = {'column_key': 'c_sector', 'values': ['Bank', 'Health']}
+        self.assertTrue(trackers.war_room_trackers_board_row_matches(_row(1, values={'c_sector': 'Bank'}),
+                                                                     row_filter))
+        self.assertFalse(trackers.war_room_trackers_board_row_matches(_row(1, values={'c_sector': 'Energy'}),
+                                                                      row_filter))
+        self.assertTrue(trackers.war_room_trackers_board_row_matches(
+            _row(1, values={'c_sector': ['Energy', 'Health']}), row_filter))
+        self.assertFalse(trackers.war_room_trackers_board_row_matches(_row(1), row_filter))
+        # A mirrored item never touched has no value.
+        self.assertFalse(trackers.war_room_trackers_board_row_matches(None, row_filter))
+        self.assertTrue(trackers.war_room_trackers_board_row_matches(None, None))
+
+
+class TestBoardData(_Patches):
+    """Entities: a manual tracker of 4 cases (one the caller cannot read)
+    and a free-text row; steps Contacted (1), Ack (2), Action required (3)."""
+
+    def setUp(self):
+        super().setUp()
+        self.patches['war_room_trackers_db_steps'].return_value = [
+            _step(1, 'Contacted'), _step(2, 'Ack'), _step(3, 'Action required')]
+        columns = [{'key': 'c_sector', 'label': 'Sector', 'type': 'select', 'options': ['Bank', 'Health']},
+                   {'key': 'c_ok', 'label': 'OK', 'type': 'checkbox'}]
+        self.patches['war_room_trackers_db_trackers'].return_value = [
+            _tracker(step_ids=[1, 2, 3], columns=columns), _tracker(id=5, name='Other')]
+        self.patches['war_room_trackers_db_rows'].side_effect = lambda tracker_id, **_kwargs: [
+            _row(10, 'case', 1, values={'c_sector': 'Bank', 'c_ok': True}),
+            _row(11, 'case', 2, values={'c_sector': 'Health'}),
+            _row(12, 'case', 9, values={'c_sector': 'Bank'}),
+            _row(13, label='Call CERT'),
+        ] if tracker_id == 4 else []
+        self.patches['war_room_trackers_db_row_steps'].return_value = _step_rows(
+            (10, 1), (10, 2), (11, 1), (11, 3), (12, 1), (12, 3))
+        self.patches['war_room_cases_list'].return_value = [
+            SimpleNamespace(case_id=case_id, case_name=f'Entity {case_id}', customer_id=2, customer_name='C',
+                            state_name='Open', close_date=None) for case_id in (1, 2)]
+
+    def _data(self, *widgets):
+        return trackers.war_room_trackers_board_data(7, trackers.WarRoomTrackerAccess([1, 2]), list(widgets))
+
+    def test_progress_counts_the_rows_per_step(self):
+        out = self._data(_widget('w_p', 'tracker_progress', tracker_id=4, step_ids=None, filter=None))
+        data = out['data']['w_p']
+        self.assertEqual((data['rows_total'], data['rows_without_step'], data['truncated']), (4, 1, False))
+        self.assertEqual(data['steps'], [{'step_id': 1, 'count': 3}, {'step_id': 2, 'count': 1},
+                                         {'step_id': 3, 'count': 2}])
+        self.assertEqual(data['tracker'], {'id': 4, 'name': 'Remediation', 'icon': None, 'source': 'manual'})
+        self.assertEqual([step['id'] for step in out['steps']], [1, 2, 3])
+
+    def test_progress_with_chosen_steps_and_a_filter(self):
+        out = self._data(_widget('w_p', 'tracker_progress', tracker_id=4, step_ids=[3, 1],
+                                 filter={'column_key': 'c_sector', 'values': ['Bank']}))
+        data = out['data']['w_p']
+        self.assertEqual(data['rows_total'], 2)
+        self.assertEqual(data['steps'], [{'step_id': 3, 'count': 1}, {'step_id': 1, 'count': 2}])
+
+    def test_count_of_total_and_of_all_rows(self):
+        out = self._data(_widget('w_c', 'tracker_count', tracker_id=4, step_ids=[2, 3]),
+                         _widget('w_all', 'tracker_count', tracker_id=4, step_ids=[]))
+        self.assertEqual(out['data']['w_c'], {'count': 3, 'total': 4, 'truncated': False,
+                                              'tracker': out['data']['w_c']['tracker']})
+        self.assertEqual(out['data']['w_all']['count'], 4)
+
+    def test_list_rows_carrying_the_steps(self):
+        out = self._data(_widget('w_l', 'tracker_list', tracker_id=4, step_ids=[3]))
+        data = out['data']['w_l']
+        self.assertEqual(data['total'], 2)
+        visible, restricted = data['rows']
+        self.assertEqual((visible['key'], visible['label'], visible['case_ids'], visible['step_ids']),
+                         ('case:2', 'Entity 2', [2], [1, 3]))
+        self.assertTrue(restricted['restricted'])
+        self.assertIsNone(restricted['label'])
+        self.assertEqual(restricted['case_ids'], [])
+
+    def test_list_is_capped(self):
+        rows = [_row(row_id, label=f'Entity {row_id}') for row_id in range(1, 61)]
+        self.patches['war_room_trackers_db_rows'].side_effect = None
+        self.patches['war_room_trackers_db_rows'].return_value = rows
+        self.patches['war_room_trackers_db_row_steps'].return_value = _step_rows(*((row.id, 3) for row in rows))
+        data = self._data(_widget('w_l', 'tracker_list', tracker_id=4, step_ids=[3]))['data']['w_l']
+        self.assertEqual(data['total'], 60)
+        self.assertEqual(len(data['rows']), trackers.WAR_ROOM_BOARD_LIST_ROWS)
+
+    def test_breakdown_per_option_and_step(self):
+        data = self._data(_widget('w_b', 'tracker_breakdown', tracker_id=4, column_key='c_sector',
+                                  step_ids=[1, 3]))['data']['w_b']
+        self.assertEqual((data['column_label'], data['step_ids'], data['rows_total']), ('Sector', [1, 3], 4))
+        self.assertEqual(data['groups'], [{'value': 'Bank', 'rows': 2, 'counts': [2, 1]},
+                                          {'value': 'Health', 'rows': 1, 'counts': [1, 1]},
+                                          {'value': None, 'rows': 1, 'counts': [0, 0]}])
+        checkbox = self._data(_widget('w_b', 'tracker_breakdown', tracker_id=4, column_key='c_ok',
+                                      step_ids=[2]))['data']['w_b']
+        self.assertEqual(checkbox['groups'], [{'value': True, 'rows': 1, 'counts': [1]},
+                                              {'value': False, 'rows': 3, 'counts': [0]}])
+        gone = self._data(_widget('w_b', 'tracker_breakdown', tracker_id=4, column_key='c_gone', step_ids=None))
+        self.assertEqual(gone['data']['w_b']['missing'], 'column')
+
+    def test_deleted_tracker_is_reported_missing(self):
+        out = self._data(_widget('w_p', 'tracker_progress', tracker_id=99, step_ids=None))
+        self.assertEqual(out['data']['w_p'], {'missing': 'tracker'})
+
+    def test_case_highlights_of_the_cases_widget(self):
+        out = self._data(_widget('cases', 'cases', highlight_step_ids=[3, 2], tracker_ids=None))
+        self.assertEqual(out['case_highlights'], {1: [{'step_id': 2, 'count': 1}],
+                                                  2: [{'step_id': 3, 'count': 1}]})
+        self.assertEqual(out['data'], {})
+        only_other = self._data(_widget('cases', 'cases', highlight_step_ids=[3], tracker_ids=[5]))
+        self.assertEqual(only_other['case_highlights'], {})
+
+    def test_nothing_listed_without_tracker_widget(self):
+        out = self._data(_widget('cases', 'cases', highlight_step_ids=[], tracker_ids=None),
+                         _widget('w_n', 'note', text='x'))
+        self.assertEqual((out['data'], out['case_highlights']), ({}, {}))
+        self.patches['war_room_trackers_db_rows'].assert_not_called()
 
 
 class TestRowsList(_Patches):

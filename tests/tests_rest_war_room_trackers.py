@@ -22,8 +22,11 @@
 from unittest import TestCase
 
 from iris import Iris
+from iris import IRIS_CASE_ACCESS_LEVEL_READ_ONLY
+from iris import IRIS_INITIAL_CUSTOMER_IDENTIFIER
 
 _WAR_ROOMS_READ_WRITE = 0x8000 | 0x10000
+_WAR_ROOM_READ_ONLY = 0x2
 
 
 class TestsRestWarRoomTrackers(TestCase):
@@ -61,9 +64,12 @@ class TestsRestWarRoomTrackers(TestCase):
         body.setdefault('name', f'{source} tracker')
         return self._subject.create(f'/api/v2/war-rooms/{room_id}/trackers', {'source': source, **body})
 
-    def _member(self, room_id):
+    def _member(self, room_id, access_level=None):
         member = self._subject.create_dummy_user(permissions=_WAR_ROOMS_READ_WRITE)
-        self._subject.create(f'/api/v2/war-rooms/{room_id}/members', {'user_id': member.get_identifier()})
+        body = {'user_id': member.get_identifier()}
+        if access_level is not None:
+            body['access_level'] = access_level
+        self._subject.create(f'/api/v2/war-rooms/{room_id}/members', body)
         return member
 
     # ------------------------------------------------------------- Steps --
@@ -272,6 +278,220 @@ class TestsRestWarRoomTrackers(TestCase):
         user = self._subject.create_dummy_user(permissions=_WAR_ROOMS_READ_WRITE)
         self.assertEqual(403, user.get(f'/api/v2/war-rooms/{room_id}/trackers').status_code)
         self.assertEqual(403, user.create(f'/api/v2/war-rooms/{room_id}/tracker-steps', {'name': 'x'}).status_code)
+
+    # ------------------------------------------------------------- Board --
+
+    def _set_board(self, room_id, widgets, user=None):
+        return (user or self._subject).update(f'/api/v2/war-rooms/{room_id}/board/widgets', {'widgets': widgets})
+
+    def _widget(self, board, widget_id):
+        return next(widget for widget in board['widgets'] if widget['id'] == widget_id)
+
+    def test_a_room_should_start_with_the_default_board(self):
+        room_id = self._room()
+        response = self._subject.get(f'/api/v2/war-rooms/{room_id}/board/widgets').json()
+        self.assertFalse(response['board_customized'])
+        self.assertIn('cases', [widget['id'] for widget in response['widgets']])
+
+    def test_board_widgets_should_show_the_tracker_rows(self):
+        room_id = self._room()
+        case_id = self._attach_case(room_id)
+        contacted = self._step(room_id, 'Contacted').json()['id']
+        action = self._step(room_id, 'Action required').json()['id']
+        tracker_id = self._tracker(room_id, 'cases', step_ids=[contacted, action]).json()['id']
+        self._state(room_id, tracker_id, rows=[{'item_type': 'case', 'item_id': case_id}],
+                    add_step_ids=[contacted, action])
+        response = self._set_board(room_id, [
+            {'type': 'cases', 'config': {'highlight_step_ids': [action]}},
+            {'type': 'tracker_count', 'id': 'contacted', 'config': {'tracker_id': tracker_id, 'step_ids': [contacted]}},
+            {'type': 'tracker_progress', 'id': 'progress', 'config': {'tracker_id': tracker_id}},
+            {'type': 'tracker_list', 'id': 'actions', 'column': 'side',
+             'config': {'tracker_id': tracker_id, 'step_ids': [action]}}])
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(response.json()['board_customized'])
+        board = self._subject.get(f'/api/v2/war-rooms/{room_id}/board').json()
+        self.assertEqual({'count': 1, 'total': 1},
+                         {k: v for k, v in self._widget(board, 'contacted')['data'].items() if k in ('count', 'total')})
+        progress = self._widget(board, 'progress')['data']
+        self.assertEqual((1, 0), (progress['rows_total'], progress['rows_without_step']))
+        self.assertEqual([{'step_id': contacted, 'count': 1}, {'step_id': action, 'count': 1}], progress['steps'])
+        self.assertEqual([[case_id]], [row['case_ids'] for row in self._widget(board, 'actions')['data']['rows']])
+        card = next(card for card in board['cases'] if card['case_id'] == case_id)
+        self.assertEqual([{'step_id': action, 'count': 1}], card['highlights'])
+
+    def test_board_widgets_should_be_validated_and_pruned(self):
+        room_id = self._room()
+        step_id = self._step(room_id, 'Action required').json()['id']
+        tracker_id = self._tracker(room_id).json()['id']
+        self.assertEqual(400, self._set_board(room_id, [{'type': 'tracker_count', 'config': {
+            'tracker_id': tracker_id, 'step_ids': [step_id + 1000]}}]).status_code)
+        self.assertEqual(400, self._set_board(room_id, [{'type': 'nope'}]).status_code)
+        self._set_board(room_id, [{'type': 'cases', 'config': {'highlight_step_ids': [step_id]}},
+                                  {'type': 'tracker_list', 'id': 'list', 'config': {'tracker_id': tracker_id}}])
+        self._subject.delete(f'/api/v2/war-rooms/{room_id}/tracker-steps/{step_id}')
+        self._subject.delete(f'/api/v2/war-rooms/{room_id}/trackers/{tracker_id}')
+        widgets = self._subject.get(f'/api/v2/war-rooms/{room_id}/board/widgets').json()['widgets']
+        self.assertEqual(['cases'], [widget['id'] for widget in widgets])
+        self.assertEqual([], widgets[0]['config']['highlight_step_ids'])
+        response = self._set_board(room_id, None).json()
+        self.assertFalse(response['board_customized'])
+
+    def test_a_reader_should_not_change_the_board(self):
+        room_id = self._room()
+        member = self._member(room_id, access_level=_WAR_ROOM_READ_ONLY)
+        self.assertEqual(200, member.get(f'/api/v2/war-rooms/{room_id}/board/widgets').status_code)
+        self.assertEqual(403, self._set_board(room_id, None, member).status_code)
+
+    def test_a_member_without_case_access_should_not_see_the_board_rows(self):
+        room_id = self._room()
+        case_id = self._attach_case(room_id)
+        tracker_id = self._tracker(room_id).json()['id']
+        self._subject.create(f'/api/v2/war-rooms/{room_id}/trackers/{tracker_id}/rows',
+                             {'rows': [{'item_type': 'case', 'item_id': case_id}]})
+        self._set_board(room_id, [{'type': 'tracker_list', 'id': 'list', 'config': {'tracker_id': tracker_id}}])
+        member = self._member(room_id)
+        board = member.get(f'/api/v2/war-rooms/{room_id}/board').json()
+        row, = self._widget(board, 'list')['data']['rows']
+        self.assertTrue(row['restricted'])
+        self.assertIsNone(row['label'])
+        self.assertEqual([], row['case_ids'])
+
+    # --------------------------------------------------------- Timelines --
+
+    def _state(self, room_id, tracker_id, user=None, **body):
+        return (user or self._subject).create(f'/api/v2/war-rooms/{room_id}/trackers/{tracker_id}/rows/state', body)
+
+    def _case_events(self, case_id):
+        return self._subject.get(f'/api/v2/cases/{case_id}/events').json()['tim']
+
+    def _room_events(self, room_id, user=None):
+        return (user or self._subject).get(f'/api/v2/war-rooms/{room_id}/timelines/events').json()
+
+    def test_changes_should_be_written_to_the_timeline_of_the_case(self):
+        room_id = self._room()
+        case_id = self._attach_case(room_id)
+        asset_id = self._asset(case_id, 'dc01')
+        step_id = self._step(room_id, 'Isolated').json()['id']
+        tracker = self._tracker(room_id, 'assets', name='Hosts',
+                                timeline_sync={'mode': 'changes', 'target': 'cases'}).json()
+        self.assertEqual({'mode': 'changes', 'target': 'cases', 'date': 'changed_at', 'war_room_timeline_id': None},
+                         tracker['timeline_sync'])
+        rows = [{'item_type': 'asset', 'item_id': asset_id}]
+        response = self._state(room_id, tracker['id'], rows=rows, add_step_ids=[step_id])
+        self.assertEqual({'events': 1, 'skipped_case_ids': [], 'restricted_rows': 0,
+                          'war_room_rows': 0}, response.json()['timeline'])
+        self._state(room_id, tracker['id'], rows=rows, note='Contained')
+        titles = [event['event_title'] for event in self._case_events(case_id)]
+        self.assertEqual(['Hosts · dc01: Isolated set', 'Hosts · dc01: note updated'], titles)
+        timelines = self._subject.get(f'/api/v2/cases/{case_id}/timelines').json()
+        self.assertIn('War-room trackers', [timeline['name'] for timeline in timelines])
+        self.assertEqual([], self._room_events(room_id))
+
+    def test_state_should_be_one_event_per_row_dated_by_the_column(self):
+        room_id = self._room()
+        case_id = self._attach_case(room_id)
+        asset_id = self._asset(case_id, 'dc01')
+        isolated = self._step(room_id, 'Isolated').json()['id']
+        restored = self._step(room_id, 'Restored').json()['id']
+        tracker = self._tracker(room_id, 'assets', name='Hosts', columns=[{'label': 'Done on', 'type': 'date'}],
+                                timeline_sync={'mode': 'state', 'target': 'cases', 'date': 'c_done_on'}).json()
+        rows = [{'item_type': 'asset', 'item_id': asset_id}]
+        self._state(room_id, tracker['id'], rows=rows, add_step_ids=[isolated], values={'c_done_on': '2026-10-21'})
+        self._state(room_id, tracker['id'], rows=rows, add_step_ids=[restored])
+        events = self._case_events(case_id)
+        self.assertEqual(['Hosts · dc01: Isolated, Restored'], [event['event_title'] for event in events])
+        self.assertTrue(events[0]['event_date'].startswith('2026-10-21'))
+
+    def test_the_dating_column_should_not_be_removed(self):
+        room_id = self._room()
+        tracker = self._tracker(room_id, columns=[{'label': 'Done on', 'type': 'date'}],
+                                timeline_sync={'mode': 'state', 'target': 'war_room', 'date': 'c_done_on'}).json()
+        url = f'/api/v2/war-rooms/{room_id}/trackers/{tracker["id"]}'
+        self.assertEqual(400, self._subject.patch(url, {'columns': []}).status_code)
+        self.assertEqual(400, self._tracker(room_id, timeline_sync={'mode': 'state', 'target': 'war_room',
+                                                                    'date': 'c_nope'}).status_code)
+
+    def test_the_war_room_target_should_gate_events_by_their_case(self):
+        room_id = self._room()
+        case_id = self._attach_case(room_id)
+        asset_id = self._asset(case_id, 'dc01')
+        tracker_id = self._tracker(room_id, 'assets', name='Hosts',
+                                   timeline_sync={'mode': 'changes', 'target': 'war_room'}).json()['id']
+        self._state(room_id, tracker_id, rows=[{'item_type': 'asset', 'item_id': asset_id}], note='Contained')
+        events = self._room_events(room_id)
+        self.assertEqual([('Hosts · dc01: note updated', tracker_id)], [(e['title'], e['tracker_id']) for e in events])
+        self.assertEqual([], self._case_events(case_id))
+        member = self._member(room_id)
+        self.assertEqual([], self._room_events(room_id, member))
+        url = f'/api/v2/war-rooms/{room_id}/timelines/events/{events[0]["id"]}'
+        self.assertEqual(404, member.patch(url, {'title': 'x'}).status_code)
+        self.assertEqual(404, member.delete(url).status_code)
+        self._subject.grant_case_access(member, case_id, IRIS_CASE_ACCESS_LEVEL_READ_ONLY)
+        self.assertEqual([events[0]['id']], [event['id'] for event in self._room_events(room_id, member)])
+
+    def test_rows_without_case_should_go_to_the_war_room_timeline(self):
+        room_id = self._room()
+        tracker_id = self._tracker(room_id, name='Actions',
+                                   timeline_sync={'mode': 'changes', 'target': 'cases'}).json()['id']
+        response = self._subject.create(f'/api/v2/war-rooms/{room_id}/trackers/{tracker_id}/rows',
+                                        {'rows': [{'label': 'Call the CERT'}]})
+        self.assertEqual((1, 1), (response.json()['timeline']['events'], response.json()['timeline']['war_room_rows']))
+        member = self._member(room_id)
+        self.assertEqual(['Actions · Call the CERT: added to the tracker'],
+                         [event['title'] for event in self._room_events(room_id, member)])
+
+    def test_a_customer_should_be_written_to_each_of_its_cases(self):
+        room_id = self._room()
+        first_case_id = self._attach_case(room_id)
+        second_case_id = self._attach_case(room_id)
+        tracker_id = self._tracker(room_id, 'customers', name='Customers',
+                                   timeline_sync={'mode': 'changes', 'target': 'cases'}).json()['id']
+        response = self._state(room_id, tracker_id, rows=[{'item_type': 'customer',
+                                                           'item_id': IRIS_INITIAL_CUSTOMER_IDENTIFIER}],
+                               note='Notified')
+        self.assertEqual({'events': 2, 'skipped_case_ids': [], 'restricted_rows': 0, 'war_room_rows': 0},
+                         response.json()['timeline'])
+        for case_id in (first_case_id, second_case_id):
+            self.assertEqual(1, len(self._case_events(case_id)))
+        self.assertEqual([], self._room_events(room_id))
+
+    def test_a_case_without_full_access_should_be_skipped(self):
+        room_id = self._room()
+        case_id = self._attach_case(room_id)
+        asset_id = self._asset(case_id, 'dc01')
+        tracker_id = self._tracker(room_id, 'assets',
+                                   timeline_sync={'mode': 'changes', 'target': 'cases'}).json()['id']
+        member = self._member(room_id)
+        self._subject.grant_case_access(member, case_id, IRIS_CASE_ACCESS_LEVEL_READ_ONLY)
+        response = self._state(room_id, tracker_id, member, rows=[{'item_type': 'asset', 'item_id': asset_id}],
+                               note='x')
+        self.assertEqual(200, response.status_code)
+        self.assertEqual({'events': 0, 'skipped_case_ids': [case_id], 'restricted_rows': 0, 'war_room_rows': 0},
+                         response.json()['timeline'])
+        self.assertEqual([], self._case_events(case_id))
+
+    def test_sync_should_write_the_state_once(self):
+        room_id = self._room()
+        case_id = self._attach_case(room_id)
+        asset_id = self._asset(case_id, 'dc01')
+        step_id = self._step(room_id, 'Isolated').json()['id']
+        tracker_id = self._tracker(room_id, 'assets', name='Hosts').json()['id']
+        self._state(room_id, tracker_id, rows=[{'item_type': 'asset', 'item_id': asset_id}], add_step_ids=[step_id])
+        url = f'/api/v2/war-rooms/{room_id}/trackers/{tracker_id}'
+        self.assertEqual(400, self._subject.create(f'{url}/timeline/sync', {}).status_code)
+        self._subject.patch(url, {'timeline_sync': {'mode': 'state', 'target': 'cases'}})
+        for _ in range(2):
+            response = self._subject.create(f'{url}/timeline/sync', {})
+            self.assertEqual(200, response.status_code)
+            self.assertEqual(1, response.json()['events'])
+        self.assertEqual(['Hosts · dc01: Isolated'], [event['event_title'] for event in self._case_events(case_id)])
+
+    def test_sync_should_need_war_room_write(self):
+        room_id = self._room()
+        tracker_id = self._tracker(room_id, timeline_sync={'mode': 'state', 'target': 'war_room'}).json()['id']
+        user = self._subject.create_dummy_user(permissions=_WAR_ROOMS_READ_WRITE)
+        response = user.create(f'/api/v2/war-rooms/{room_id}/trackers/{tracker_id}/timeline/sync', {})
+        self.assertEqual(403, response.status_code)
 
     # --------------------------------------------------------- Templates --
 

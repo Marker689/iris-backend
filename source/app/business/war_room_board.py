@@ -22,11 +22,21 @@ KPI definitions (over the accessible cases):
                    `done` / `exception`
   * unflagged    — assets with no flag
   * decisions_*  — open = proposed/approved and not implemented
-  * tasks_open   — open war-room tasks (per-case open case tasks are in
-                   each case entry)
+  * tasks_open / tasks_in_progress / tasks_overdue — open war-room
+                   tasks, the ones in progress and the ones past their
+                   due date (per-case open and in progress case tasks are
+                   in each case entry)
 
-`decisions` lists every open decision of the room (they are war-room
-level, not case level, so no case filtering applies).
+`decisions` lists every open decision of the room (war-room level, not
+case level, so no case filtering applies).
+
+`widgets` are the widgets of the room's board (see
+`war_room_board_widgets`), each configurable one with its `data`: the
+tracker widgets are computed with the same `WarRoomTrackerAccess` as the
+trackers tab, so the caller sees the rows it sees there, and `tasks`
+widgets list the open war-room tasks they select, in progress first.
+Each readable case carries in `highlights` the steps highlighted by the
+`cases` widget that its tracker rows carry.
 """
 
 import datetime
@@ -34,6 +44,9 @@ import datetime
 from app.business.vulnerability_findings import vulnerability_findings_attention
 from app.business.vulnerability_findings import vulnerability_findings_summary
 from app.business.asset_flags import asset_flags_serialize
+from app.business.war_room_tasks import war_room_task_teams
+from app.business.war_room_board_widgets import war_room_board_widgets_get
+from app.business.war_room_trackers import war_room_trackers_board_data
 from app.datamgmt.war_rooms.war_room_board_db import war_room_board_db_asset_counts
 from app.datamgmt.war_rooms.war_room_board_db import war_room_board_db_attached_case_ids
 from app.datamgmt.war_rooms.war_room_board_db import war_room_board_db_case_rows
@@ -43,10 +56,13 @@ from app.datamgmt.war_rooms.war_room_board_db import war_room_board_db_flag_coun
 from app.datamgmt.war_rooms.war_room_board_db import war_room_board_db_flags
 from app.datamgmt.war_rooms.war_room_board_db import war_room_board_db_kind_counts
 from app.datamgmt.war_rooms.war_room_board_db import war_room_board_db_open_decisions
-from app.datamgmt.war_rooms.war_room_board_db import war_room_board_db_open_war_room_tasks_count
+from app.datamgmt.war_rooms.war_room_board_db import war_room_board_db_open_war_room_task_counts
+from app.datamgmt.war_rooms.war_room_board_db import war_room_board_db_open_war_room_tasks
 
 
 ATTENTION_LIMIT = 100
+TASKS_LIMIT = 50
+_IN_PROGRESS = 'in progress'
 _DUE_SOON = datetime.timedelta(hours=24)
 _SEVERITY_RANK = {'high': 0, 'medium': 1, 'low': 2}
 
@@ -189,12 +205,64 @@ def _decision_kpis(decision_rows, now):
     return len(decision_rows), overdue, due_soon
 
 
-def war_room_board_build(war_room_id, accessible_case_ids, now=None, include_vulnerabilities=True):
+def _serialize_task(row, teams, now):
+    return {
+        'task_id': row.task_id,
+        'title': row.title,
+        'status': row.status_name,
+        'in_progress': (row.status_name or '').lower() == _IN_PROGRESS,
+        'assignee_name': row.assignee_name,
+        'teams': [team['name'] for team in teams.get(row.task_id, ())],
+        'due_at': row.due_at.isoformat() if row.due_at else None,
+        'overdue': row.due_at is not None and row.due_at < now,
+        'source_case_id': row.source_case_id,
+        'parent_task_id': row.parent_task_id,
+    }
+
+
+def war_room_board_tasks(war_room_id, config, now):
+    """The data of a `tasks` widget: the open war-room tasks it selects,
+    at most `TASKS_LIMIT`, and how many there are."""
+    in_progress_only = bool(config.get('in_progress_only'))
+    team_ids = config.get('team_ids') or None
+    rows = war_room_board_db_open_war_room_tasks(war_room_id, TASKS_LIMIT, in_progress_only, team_ids)
+    teams = war_room_task_teams([row.task_id for row in rows])
+    total, in_progress, overdue = war_room_board_db_open_war_room_task_counts(
+        war_room_id, now, in_progress_only, team_ids)
+    return {
+        'tasks': [_serialize_task(row, teams, now) for row in rows],
+        'total': total,
+        'in_progress': in_progress,
+        'overdue': overdue,
+    }
+
+
+def _widgets(war_room_id, widgets, tracker_data, now):
+    out = []
+    for widget in widgets:
+        entry = dict(widget)
+        if widget['type'] == 'tasks':
+            entry['data'] = war_room_board_tasks(war_room_id, widget['config'], now)
+        elif widget['id'] in tracker_data:
+            entry['data'] = tracker_data[widget['id']]
+        out.append(entry)
+    return out
+
+
+def war_room_board_build(war_room_id, accessible_case_ids, now=None, include_vulnerabilities=True,
+                         tracker_access=None):
     """Return the board payload. `accessible_case_ids` MUST already be
     restricted to attached cases the caller can read. Without
     `include_vulnerabilities` (caller lacks the vulnerability read
-    permission) the vulnerability KPIs and attention items are omitted."""
+    permission) the vulnerability KPIs and attention items are omitted.
+    `tracker_access` (a `WarRoomTrackerAccess` built by the blueprint)
+    is what the tracker widgets are computed with; without it they have
+    no data."""
     now = now or _utcnow()
+    widgets, customized = war_room_board_widgets_get(war_room_id)
+    trackers = {'data': {}, 'steps': [], 'case_highlights': {}}
+    if tracker_access is not None:
+        trackers = war_room_trackers_board_data(war_room_id, tracker_access, widgets)
     attached = war_room_board_db_attached_case_ids(war_room_id)
     allowed = set(accessible_case_ids or ())
     accessible = [c for c in attached if c in allowed]
@@ -234,9 +302,12 @@ def war_room_board_build(war_room_id, accessible_case_ids, now=None, include_vul
             'by_flag': counts['by_flag'],
             'by_kind': counts['by_kind'],
             'tasks_open': int(row.tasks_open or 0),
+            'tasks_in_progress': int(row.tasks_in_progress or 0),
+            'highlights': trackers['case_highlights'].get(case_id, []),
         })
 
     decisions_open, decisions_overdue, decisions_due_24h = _decision_kpis(decision_rows, now)
+    tasks_open, tasks_in_progress, tasks_overdue = war_room_board_db_open_war_room_task_counts(war_room_id, now)
     by_kind = totals['by_kind']
     kpis = {
         'cases': len(attached),
@@ -250,7 +321,9 @@ def war_room_board_build(war_room_id, accessible_case_ids, now=None, include_vul
         'decisions_open': decisions_open,
         'decisions_overdue': decisions_overdue,
         'decisions_due_24h': decisions_due_24h,
-        'tasks_open': war_room_board_db_open_war_room_tasks_count(war_room_id),
+        'tasks_open': tasks_open,
+        'tasks_in_progress': tasks_in_progress,
+        'tasks_overdue': tasks_overdue,
     }
 
     accessible_with_rows = [c['case_id'] for c in cases if c['accessible']]
@@ -280,4 +353,7 @@ def war_room_board_build(war_room_id, accessible_case_ids, now=None, include_vul
         'cases': cases,
         'attention': attention,
         'decisions': [_serialize_decision(r, now) for r in decision_rows],
+        'widgets': _widgets(war_room_id, widgets, trackers['data'], now),
+        'board_customized': customized,
+        'tracker_steps': trackers['steps'],
     }

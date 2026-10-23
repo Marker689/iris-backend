@@ -44,7 +44,9 @@ def _template(**kwargs):
               'steps': [{'name': 'Isolated', 'color': 'red', 'icon': None, 'description': None},
                         {'name': 'Restored', 'color': 'green', 'icon': None, 'description': None}],
               'trackers': [{'name': 'Assets', 'icon': None, 'description': None, 'source': 'assets',
-                            'step_names': ['Restored'], 'columns': [], 'show_asset_flags': True},
+                            'step_names': ['Restored'], 'columns': [], 'show_asset_flags': True,
+                            'board_widgets': [{'type': 'tracker_count', 'title': 'Isolated',
+                                               'config': {'step_names': ['isolated']}}]},
                            {'name': 'Todo', 'icon': None, 'description': None, 'source': 'manual',
                             'step_names': None, 'columns': [], 'show_asset_flags': False}],
               'created_by_id': None, 'created_at': None, 'updated_at': None}
@@ -77,6 +79,8 @@ class _Patches(TestCase):
             'war_room_trackers_db_templates': MagicMock(return_value=[]),
             'war_room_trackers_db_user_names': MagicMock(return_value={}),
             'track_activity': MagicMock(),
+            'war_room_board_widgets_append': MagicMock(return_value=0),
+            'war_room_board_widgets_stored': MagicMock(return_value=None),
         }
         self._patchers = [patch(f'{_BIZ}.{name}', mock) for name, mock in self.patches.items()]
         for patcher in self._patchers:
@@ -97,6 +101,28 @@ class TestContent(TestCase):
         self.assertEqual(steps[0]['color'], 'slate')
         self.assertEqual(trackers[0]['step_names'], ['Isolated'])
         self.assertEqual(trackers[0]['columns'], [])
+        self.assertEqual(trackers[0]['board_widgets'], [])
+
+    def test_board_widgets_resolve_their_steps_by_name(self):
+        _, trackers = templates.tracker_templates_validate_content({
+            'steps': [{'name': 'Action required'}],
+            'trackers': [{'name': 'T', 'source': 'customers',
+                          'columns': [{'label': 'Sector', 'type': 'select', 'options': ['Bank']}],
+                          'board_widgets': [
+                              {'type': 'tracker_count', 'title': ' Action ', 'config': {'step_names': ['ACTION required']}},
+                              {'type': 'tracker_progress', 'column': 'side', 'config': {'display': 'funnel'}},
+                              {'type': 'tracker_breakdown', 'config': {'column_key': 'c_sector'}},
+                              {'type': 'tracker_list', 'config': {
+                                  'filter': {'column_key': 'c_sector', 'values': ['Bank']}}}]}],
+        })
+        count, progress, breakdown, listed = trackers[0]['board_widgets']
+        self.assertEqual(count, {'type': 'tracker_count', 'title': 'Action', 'column': None,
+                                 'config': {'step_names': ['Action required'], 'of_total': True, 'filter': None}})
+        self.assertEqual(progress['config'], {'step_names': None, 'display': 'funnel', 'filter': None})
+        self.assertEqual(progress['column'], 'side')
+        self.assertEqual(breakdown['config'], {'step_names': None, 'column_key': 'c_sector'})
+        self.assertEqual(listed['config']['step_names'], [])
+        self.assertEqual(listed['config']['filter'], {'column_key': 'c_sector', 'values': ['Bank']})
 
     def test_invalid_content_is_refused(self):
         for data in ({'steps': [{'name': 'A'}, {'name': 'a'}]},
@@ -104,6 +130,16 @@ class TestContent(TestCase):
                      {'trackers': [{'name': 'T', 'source': 'assets', 'step_names': ['Missing']}]},
                      {'trackers': [{'name': 'T', 'source': 'nope'}]},
                      {'trackers': [{'name': 'T', 'source': 'manual', 'show_asset_flags': 'yes'}]},
+                     {'trackers': [{'name': 'T', 'source': 'manual', 'board_widgets': True}]},
+                     {'trackers': [{'name': 'T', 'source': 'manual', 'board_widgets': [{'type': 'cases'}]}]},
+                     {'trackers': [{'name': 'T', 'source': 'manual', 'board_widgets': [
+                         {'type': 'tracker_count', 'config': {'step_names': ['Missing']}}]}]},
+                     {'trackers': [{'name': 'T', 'source': 'manual', 'board_widgets': [
+                         {'type': 'tracker_breakdown', 'config': {'column_key': 'c_x'}}]}]},
+                     {'trackers': [{'name': 'T', 'source': 'manual', 'board_widgets': [
+                         {'type': 'tracker_list', 'config': {'filter': {'column_key': 'c_x', 'values': ['a']}}}]}]},
+                     {'trackers': [{'name': 'T', 'source': 'manual', 'board_widgets': [
+                         {'type': 'tracker_progress', 'config': {'display': 'pie'}}]}]},
                      {'steps': 'x'}):
             with self.subTest(data=data):
                 with self.assertRaises(BusinessProcessingError):
@@ -114,6 +150,16 @@ class TestContent(TestCase):
             steps, trackers = templates.tracker_templates_validate_content(preset)
             self.assertEqual(len(steps), 5)
             self.assertEqual(len(trackers), 1)
+
+    def test_customer_notification_preset_comes_with_board_widgets(self):
+        _, trackers = templates.tracker_templates_validate_content(templates._PRESETS['customer-notification'])
+        widgets = trackers[0]['board_widgets']
+        self.assertEqual([(w['type'], w['title']) for w in widgets], [
+            ('tracker_count', 'Contacted'), ('tracker_count', 'Acknowledged'),
+            ('tracker_count', 'Action required'), ('tracker_progress', 'Customer notification'),
+            ('tracker_list', 'Customers with an action required')])
+        self.assertEqual(widgets[0]['config']['step_names'],
+                         ['Email sent', 'Acknowledged', 'Action required', 'Closed'])
 
 
 class TestCrud(_Patches):
@@ -169,6 +215,20 @@ class TestApply(_Patches):
         self.assertIsNone(created[1].step_ids)
         self.assertEqual(steps, [existing, 'new'])
         self.patches['war_room_trackers_db_commit'].assert_called_once()
+        (room_id, widgets), _ = self.patches['war_room_board_widgets_append'].call_args
+        self.assertEqual(room_id, 7)
+        widget, = widgets
+        self.assertTrue(widget['id'].startswith('w_'))
+        self.assertEqual((widget['type'], widget['title'], widget['column']), ('tracker_count', 'Isolated', None))
+        self.assertEqual(widget['config'], {'tracker_id': created[0].id, 'step_ids': [existing.id],
+                                            'of_total': True, 'filter': None})
+
+    def test_an_invalid_board_rolls_back(self):
+        self.patches['war_room_board_widgets_append'].side_effect = BusinessProcessingError('nope')
+        with self.assertRaises(BusinessProcessingError):
+            templates.tracker_templates_apply(7, 1, 3)
+        self.patches['war_room_trackers_db_rollback'].assert_called_once()
+        self.patches['war_room_trackers_db_commit'].assert_not_called()
 
     def test_room_limits_are_enforced(self):
         self.patches['war_room_trackers_db_trackers'].return_value = [SimpleNamespace(sort_order=0)] * 49
@@ -181,11 +241,26 @@ class TestSaveFromRoom(_Patches):
     def test_steps_ids_become_names(self):
         self.patches['war_room_trackers_db_steps'].return_value = [_step(1, 'Isolated'), _step(2, 'Restored')]
         self.patches['war_room_trackers_db_trackers'].return_value = [
-            SimpleNamespace(name='Assets', icon=None, description=None, source='assets', step_ids=[2, 9],
-                            columns=[], show_asset_flags=True)]
+            SimpleNamespace(id=4, name='Assets', icon=None, description=None, source='assets', step_ids=[2, 9],
+                            columns=[], show_asset_flags=True, timeline_sync=None),
+            SimpleNamespace(id=5, name='Todo', icon=None, description=None, source='manual', step_ids=None,
+                            columns=[], show_asset_flags=False, timeline_sync=None)]
+        self.patches['war_room_board_widgets_stored'].return_value = [
+            {'id': 'cases', 'type': 'cases', 'title': None, 'column': 'main',
+             'config': {'highlight_step_ids': [1], 'tracker_ids': None}},
+            {'id': 'w_1', 'type': 'tracker_count', 'title': 'Isolated', 'column': None,
+             'config': {'tracker_id': 4, 'step_ids': [1, 9], 'of_total': False, 'filter': None}},
+            {'id': 'w_2', 'type': 'tracker_progress', 'title': None, 'column': 'side',
+             'config': {'tracker_id': 4, 'step_ids': None, 'display': 'donut', 'filter': None}}]
         result = templates.tracker_templates_save_from_war_room(7, {'name': 'Mine'}, 3)
         self.assertEqual([s['name'] for s in result['steps']], ['Isolated', 'Restored'])
         self.assertEqual(result['trackers'][0]['step_names'], ['Restored'])
+        self.assertEqual(result['trackers'][0]['board_widgets'], [
+            {'type': 'tracker_count', 'title': 'Isolated', 'column': None,
+             'config': {'step_names': ['Isolated'], 'of_total': False, 'filter': None}},
+            {'type': 'tracker_progress', 'title': None, 'column': 'side',
+             'config': {'step_names': None, 'display': 'donut', 'filter': None}}])
+        self.assertEqual(result['trackers'][1]['board_widgets'], [])
 
     def test_unknown_tracker_ids_are_refused(self):
         with self.assertRaises(BusinessProcessingError):

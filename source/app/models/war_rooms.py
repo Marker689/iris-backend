@@ -102,6 +102,9 @@ class WarRoom(db.Model):
     # Filing only, no effect on access. See migration e5b2c8d1f4a7.
     category_id = Column(BigInteger, ForeignKey('object_category.id', ondelete='SET NULL'),
                          nullable=True, index=True)
+    # Widgets of the war-room board, see `business/war_room_board_widgets.py`.
+    # NULL = the default board.
+    board = Column(JSONB, nullable=True)
 
     created_by = relationship('User', foreign_keys=[created_by_id])
     category = relationship(ObjectCategory)
@@ -308,6 +311,14 @@ class WarRoomTimelineEvent(db.Model):
     # as the case-notes / alert-cluster modification history so the
     # existing history dialog can render both without branching.
     modification_history = Column(JSONB, nullable=True)
+    # Events written by a tracker (see `business/war_room_tracker_timelines.py`)
+    # about a case item are only shown to the room members who can read
+    # one of `visibility_case_ids`; about a registry asset, to those whose
+    # Assets Manager scope holds `visibility_managed_asset_id`. NULL = no
+    # restriction beyond the war-room ACL.
+    tracker_id = Column(BigInteger, ForeignKey('war_room_tracker.id', ondelete='SET NULL'), nullable=True)
+    visibility_case_ids = Column(JSONB, nullable=True)
+    visibility_managed_asset_id = Column(BigInteger, nullable=True)
     created_at = Column(DateTime, nullable=False, server_default=text('now()'))
     created_by_id = Column(BigInteger, ForeignKey('user.id'), nullable=True)
 
@@ -1126,7 +1137,9 @@ class WarRoomTracker(db.Model):
     the war room (assets, IOCs, customers, cases, registry assets): its
     rows are computed on read and only their state is stored, lazily, in
     `WarRoomTrackerRow`. `step_ids` restricts the steps offered (NULL =
-    every step of the room), `columns` holds the extra columns."""
+    every step of the room), `columns` holds the extra columns.
+    `timeline_sync` (NULL = off) sends the row changes or states to the
+    timelines, see `business/war_room_tracker_timelines.py`."""
     __tablename__ = 'war_room_tracker'
     __table_args__ = (
         CheckConstraint("source IN ('manual', 'assets', 'iocs', 'customers', 'cases', 'registry_assets')",
@@ -1144,6 +1157,7 @@ class WarRoomTracker(db.Model):
     step_ids = Column(JSONB, nullable=True)
     columns = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
     show_asset_flags = Column(Boolean, nullable=False, default=False, server_default=text('false'))
+    timeline_sync = Column(JSONB, nullable=True)
     sort_order = Column(Integer, nullable=False, server_default=text('0'))
     created_by_id = Column(BigInteger, ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
     created_at = Column(DateTime, nullable=False, server_default=text('now()'))
@@ -1208,6 +1222,25 @@ class WarRoomTrackerRowEvent(db.Model):
     created_at = Column(DateTime, nullable=False, server_default=text('now()'))
     action = Column(String(32), nullable=False)
     details = Column(JSONB, nullable=True)
+
+
+class WarRoomTrackerRowTimelineEvent(db.Model):
+    """The timeline event holding the state of a tracker row (`state`
+    sync mode), one per case timeline (`case_id`, `case_event_id`) or for
+    the war-room timeline (`case_id` NULL, `war_room_event_id`). An event
+    deleted from its timeline leaves its id NULL: the next change writes a
+    new one."""
+    __tablename__ = 'war_room_tracker_row_timeline_event'
+
+    id = Column(BigInteger, primary_key=True)
+    row_id = Column(BigInteger,
+                    ForeignKey('war_room_tracker_row.id', ondelete='CASCADE'),
+                    nullable=False, index=True)
+    case_id = Column(BigInteger, ForeignKey('cases.case_id', ondelete='CASCADE'), nullable=True)
+    case_event_id = Column(BigInteger, ForeignKey('cases_events.event_id', ondelete='SET NULL'), nullable=True)
+    war_room_event_id = Column(BigInteger, ForeignKey('war_room_timeline_event.id', ondelete='SET NULL'),
+                               nullable=True)
+    updated_at = Column(DateTime, nullable=False, server_default=text('now()'))
 
 
 class TrackerTemplate(db.Model):

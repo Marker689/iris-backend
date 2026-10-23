@@ -35,6 +35,7 @@ from app.blueprints.iris_user import iris_current_user
 from app.blueprints.rest.v2.mcp import protocol
 from app.blueprints.rest.v2.mcp.dispatch import MCPError
 from app.blueprints.rest.v2.mcp.registry import mcp_resource
+from app.blueprints.rest.v2.war_rooms.access import WarRoomEventVisibility
 from app.blueprints.rest.v2.war_rooms.access import war_room_readable_attached_case_ids
 from app.blueprints.rest.v2.war_rooms.serializers import (
     serialize_case_attachment,
@@ -548,7 +549,7 @@ def _resource_war_room_timelines(params: dict) -> dict:
     _require_war_room_access(war_room_id)
     return {
         'timelines': list(list_timelines(war_room_id)),
-        'events': list(list_timeline_events(war_room_id)),
+        'events': WarRoomEventVisibility().filter(list_timeline_events(war_room_id)),
     }
 
 

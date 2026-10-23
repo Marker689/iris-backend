@@ -2,7 +2,11 @@
 #  Copyright (C) 2026 - DFIR-IRIS
 #  contact@dfir-iris.org
 
-"""War-room timelines REST routes."""
+"""War-room timelines REST routes.
+
+Events a tracker wrote about a case item or a registry asset are only
+shown to the members who can read that item (see
+`WarRoomEventVisibility`); for the others they do not exist (404)."""
 
 from datetime import datetime
 
@@ -18,6 +22,7 @@ from app.blueprints.rest.endpoints import response_api_not_found
 from app.blueprints.rest.endpoints import response_api_success
 from app.blueprints.rest.v2.war_rooms.access import require_war_room_read
 from app.blueprints.rest.v2.war_rooms.access import require_war_room_write
+from app.blueprints.rest.v2.war_rooms.access import WarRoomEventVisibility
 from app.business.war_room_timelines import (
     create_timeline,
     create_timeline_event,
@@ -28,6 +33,7 @@ from app.business.war_room_timelines import (
     event_children_count,
     event_ioc_ids,
     events_hydration,
+    get_timeline_event,
     list_timeline_events,
     list_timelines,
     set_event_assets,
@@ -97,6 +103,7 @@ def _serialize_event(e, hydration=None):
         'event_tz': e.event_tz,
         'color': e.color,
         'category': getattr(e, 'category', None),
+        'tracker_id': getattr(e, 'tracker_id', None),
         'modification_history': getattr(e, 'modification_history', None),
         # Hydrated read-side extras. Kept as arrays / ints so the
         # frontend's derived-state code can spot changes cheaply.
@@ -106,6 +113,20 @@ def _serialize_event(e, hydration=None):
         'created_at': e.created_at.isoformat() if e.created_at else None,
         'created_by_id': e.created_by_id,
     }
+
+
+def _event_hidden(war_room_id, event_id):
+    """The 404 to return when the event is not in the room or the caller
+    may not read it, else None."""
+    if not isinstance(event_id, int) or isinstance(event_id, bool):
+        return None
+    try:
+        event = get_timeline_event(war_room_id, event_id)
+    except ObjectNotFoundError:
+        return response_api_not_found()
+    if not WarRoomEventVisibility().visible(event):
+        return response_api_not_found()
+    return None
 
 
 @war_rooms_timelines_blueprint.get('')
@@ -193,7 +214,7 @@ def list_events(war_room_id):
             timeline_ids = [int(x) for x in timeline_ids_raw.split(',') if x.strip()]
         except ValueError:
             return response_api_error('Invalid timeline_ids')
-    rows = list_timeline_events(war_room_id, timeline_ids=timeline_ids)
+    rows = WarRoomEventVisibility().filter(list_timeline_events(war_room_id, timeline_ids=timeline_ids))
     hydration = events_hydration(e.id for e in rows)
     return response_api_success(data=[_serialize_event(e, hydration[e.id]) for e in rows])
 
@@ -221,6 +242,9 @@ def add_event(war_room_id, timeline_id):
     raw = request.get_json()
     if not isinstance(raw, dict):
         return response_api_error('Invalid request')
+    hidden = _event_hidden(war_room_id, raw.get('parent_id'))
+    if hidden is not None:
+        return hidden
     try:
         event_date = _parse_event_date(raw.get('event_date'))
         row = create_timeline_event(
@@ -262,9 +286,15 @@ def patch_event(war_room_id, event_id):
     err = require_war_room_write(war_room_id)
     if err is not None:
         return err
+    hidden = _event_hidden(war_room_id, event_id)
+    if hidden is not None:
+        return hidden
     raw = request.get_json()
     if not isinstance(raw, dict):
         return response_api_error('Invalid request')
+    hidden = _event_hidden(war_room_id, raw.get('parent_id'))
+    if hidden is not None:
+        return hidden
     kwargs = {}
     # Only fields the client actually included are forwarded — the
     # business layer's sentinel-based partial-update contract needs
@@ -296,6 +326,9 @@ def remove_event(war_room_id, event_id):
     err = require_war_room_write(war_room_id)
     if err is not None:
         return err
+    hidden = _event_hidden(war_room_id, event_id)
+    if hidden is not None:
+        return hidden
     try:
         delete_timeline_event(war_room_id, event_id)
     except ObjectNotFoundError:
@@ -312,6 +345,9 @@ def flag_event(war_room_id, event_id):
     err = require_war_room_write(war_room_id)
     if err is not None:
         return err
+    hidden = _event_hidden(war_room_id, event_id)
+    if hidden is not None:
+        return hidden
     try:
         row = toggle_event_flag(war_room_id, event_id)
     except ObjectNotFoundError:
@@ -329,6 +365,9 @@ def duplicate_event_route(war_room_id, event_id):
     err = require_war_room_write(war_room_id)
     if err is not None:
         return err
+    hidden = _event_hidden(war_room_id, event_id)
+    if hidden is not None:
+        return hidden
     try:
         row = duplicate_event(war_room_id, event_id,
                               created_by_id=iris_current_user.id)
@@ -346,6 +385,9 @@ def replace_event_assets(war_room_id, event_id):
     err = require_war_room_write(war_room_id)
     if err is not None:
         return err
+    hidden = _event_hidden(war_room_id, event_id)
+    if hidden is not None:
+        return hidden
     raw = request.get_json()
     ids = raw.get('asset_ids') if isinstance(raw, dict) else None
     if not isinstance(ids, list):
@@ -364,6 +406,9 @@ def replace_event_iocs(war_room_id, event_id):
     err = require_war_room_write(war_room_id)
     if err is not None:
         return err
+    hidden = _event_hidden(war_room_id, event_id)
+    if hidden is not None:
+        return hidden
     raw = request.get_json()
     ids = raw.get('ioc_ids') if isinstance(raw, dict) else None
     if not isinstance(ids, list):

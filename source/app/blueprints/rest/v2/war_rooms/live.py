@@ -60,6 +60,7 @@ _WAR_ROOM_SECTIONS = {
     '': TOPIC_ROOM,
     'category': TOPIC_ROOM,
     'archive': TOPIC_ROOM,
+    'board': TOPIC_ROOM,
     'members': TOPIC_MEMBERS,
     'cases': TOPIC_CASES,
     'tasks': TOPIC_TASKS,

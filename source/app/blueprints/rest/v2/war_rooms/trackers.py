@@ -23,7 +23,9 @@ Reads need war-room read access, writes war-room write access. What a
 caller sees of the rows is bounded by the attached cases it can read and
 by its Assets Manager scope (registry assets need asset_manager_read).
 Saving a room as a template needs server administrator, like every
-template change. Live updates go out on the `trackers` topic (see
+template change. A tracker writing to the case timelines only writes in
+the readable cases the caller has full access to; the others are skipped
+and listed in the `timeline` part of the response. Live updates go out on the `trackers` topic (see
 `live.py`); what changed is also posted to the war-room stream as
 `tracker` rows."""
 
@@ -31,8 +33,6 @@ from flask import Blueprint
 from flask import request
 
 from app.blueprints.access_controls import ac_api_requires
-from app.blueprints.access_controls import ac_current_user_has_permission
-from app.blueprints.access_controls import ac_current_user_permissions_mask
 from app.blueprints.iris_user import iris_current_user
 from app.blueprints.rest.api_doc import api_doc
 from app.blueprints.rest.endpoints import response_api_created
@@ -42,12 +42,10 @@ from app.blueprints.rest.endpoints import response_api_not_found
 from app.blueprints.rest.endpoints import response_api_success
 from app.blueprints.rest.v2.war_rooms.access import require_war_room_read
 from app.blueprints.rest.v2.war_rooms.access import require_war_room_write
-from app.blueprints.rest.v2.war_rooms.access import war_room_readable_attached_case_ids
-from app.business.managed_assets import managed_assets_viewer_scope
+from app.blueprints.rest.v2.war_rooms.access import war_room_tracker_access
 from app.business.war_room_chat import emit_system_event
 from app.business.war_room_tracker_templates import tracker_templates_apply
 from app.business.war_room_tracker_templates import tracker_templates_save_from_war_room
-from app.business.war_room_trackers import WarRoomTrackerAccess
 from app.business.war_room_trackers import war_room_trackers_create
 from app.business.war_room_trackers import war_room_trackers_delete
 from app.business.war_room_trackers import war_room_trackers_describe_changes
@@ -67,6 +65,7 @@ from app.business.war_room_trackers import war_room_trackers_step_delete
 from app.business.war_room_trackers import war_room_trackers_step_update
 from app.business.war_room_trackers import war_room_trackers_steps_list
 from app.business.war_room_trackers import war_room_trackers_steps_reorder
+from app.business.war_room_trackers import war_room_trackers_timeline_sync
 from app.business.war_room_trackers import war_room_trackers_trackers_reorder
 from app.business.war_room_trackers import war_room_trackers_update
 from app.models.authorization import Permissions
@@ -112,17 +111,8 @@ def _handle_deleted(operation):
     return response_api_deleted()
 
 
-def _access(war_room_id):
-    """What the caller sees of the room: its readable attached cases and,
-    with asset_manager_read, its Assets Manager scope."""
-    registry_scope = None
-    if ac_current_user_has_permission(Permissions.asset_manager_read):
-        registry_scope = managed_assets_viewer_scope(iris_current_user, ac_current_user_permissions_mask())
-    return WarRoomTrackerAccess(war_room_readable_attached_case_ids(war_room_id), registry_scope)
-
-
 def _serialize_trackers(war_room_id, trackers):
-    return war_room_trackers_serialize_many(war_room_id, trackers, _access(war_room_id))
+    return war_room_trackers_serialize_many(war_room_id, trackers, war_room_tracker_access(war_room_id))
 
 
 def _serialize_tracker(war_room_id, tracker):
@@ -349,7 +339,7 @@ def list_tracker_rows(war_room_id, tracker_id):
     if err is not None:
         return err
     return _handle(lambda: war_room_trackers_rows_list(war_room_id, war_room_trackers_get(war_room_id, tracker_id),
-                                                       _access(war_room_id)))
+                                                       war_room_tracker_access(war_room_id)))
 
 
 @war_rooms_trackers_blueprint.post('/<int:tracker_id>/rows')
@@ -364,7 +354,8 @@ def add_tracker_rows(war_room_id, tracker_id):
 
     def _add():
         tracker = war_room_trackers_get(war_room_id, tracker_id)
-        result = war_room_trackers_rows_add(war_room_id, tracker, body, _access(war_room_id), iris_current_user.id)
+        result = war_room_trackers_rows_add(war_room_id, tracker, body, war_room_tracker_access(war_room_id, writing=True),
+                                            iris_current_user.id)
         if result['data']:
             rows = war_room_trackers_describe_rows((row['item_type'], row['label']) for row in result['data'])
             _emit_tracker_event(war_room_id, f'{tracker.name}: added {rows}', tracker.id)
@@ -384,13 +375,33 @@ def update_tracker_rows_state(war_room_id, tracker_id):
 
     def _update():
         tracker = war_room_trackers_get(war_room_id, tracker_id)
-        result, changes = war_room_trackers_rows_update_state(war_room_id, tracker, body, _access(war_room_id),
-                                                              iris_current_user.id)
+        result, changes = war_room_trackers_rows_update_state(war_room_id, tracker, body,
+                                                              war_room_tracker_access(war_room_id, writing=True), iris_current_user.id)
         summary = war_room_trackers_describe_changes(changes)
         if summary is not None:
             _emit_tracker_event(war_room_id, f'{tracker.name}: {summary}', tracker.id)
         return result
     return _handle(_update)
+
+
+@war_rooms_trackers_blueprint.post('/<int:tracker_id>/timeline/sync')
+@ac_api_requires()
+@api_doc(tags=['WarRoomTrackers'],
+         summary='Write the current state of the rows the caller sees to the timelines (state timeline mode only). '
+                 'Case timelines are only written where the caller has full access')
+def sync_tracker_timeline(war_room_id, tracker_id):
+    err = require_war_room_write(war_room_id)
+    if err is not None:
+        return err
+
+    def _sync():
+        tracker = war_room_trackers_get(war_room_id, tracker_id)
+        summary = war_room_trackers_timeline_sync(war_room_id, tracker, war_room_tracker_access(war_room_id, writing=True),
+                                                  iris_current_user.id)
+        if summary['events']:
+            _emit_tracker_event(war_room_id, f'{tracker.name}: wrote its state to the timelines', tracker.id)
+        return summary
+    return _handle(_sync)
 
 
 @war_rooms_trackers_blueprint.post('/<int:tracker_id>/rows/reorder')
@@ -420,7 +431,7 @@ def tracker_rows_history(war_room_id, tracker_id):
 
     def _history():
         return war_room_trackers_history(
-            war_room_id, war_room_trackers_get(war_room_id, tracker_id), _access(war_room_id),
+            war_room_id, war_room_trackers_get(war_room_id, tracker_id), war_room_tracker_access(war_room_id),
             row_id=_query_int('row_id'), item_type=request.args.get('item_type') or None,
             item_id=_query_int('item_id'),
         )

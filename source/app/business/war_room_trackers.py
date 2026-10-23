@@ -33,6 +33,10 @@ and its Assets Manager scope (None without asset_manager_read). Items
 outside it are never listed; a manual row pointing at one is returned as
 `restricted`, without the item.
 
+A tracker can write its rows to the case or war-room timelines, see
+`war_room_tracker_timelines`. The access then also holds the cases the
+caller has full access to: only those get events.
+
 IOCs are per case: the mirror groups the IOCs with the same value (as
 the scope listing does, by `group_key`) into one row. The row is keyed
 by the IOC holding the stored state, or by the lowest IOC id when none
@@ -43,7 +47,14 @@ import datetime
 import math
 import re
 
+from app.business.war_room_board_widgets import TRACKER_WIDGET_TYPES
+from app.business.war_room_board_widgets import WAR_ROOM_BOARD_LIST_ROWS
+from app.business.war_room_board_widgets import war_room_board_widgets_prune
 from app.business.war_room_managed_assets import war_room_managed_assets_list
+from app.business.war_room_tracker_timelines import WarRoomTrackerTimelineWriter
+from app.business.war_room_tracker_timelines import war_room_tracker_timelines_check_columns
+from app.business.war_room_tracker_timelines import war_room_tracker_timelines_item_links
+from app.business.war_room_tracker_timelines import war_room_tracker_timelines_validate
 from app.business.war_room_scope import war_room_scope_list_assets
 from app.business.war_room_scope import war_room_scope_list_customers
 from app.business.war_room_scope import war_room_scope_list_iocs
@@ -120,12 +131,14 @@ _ITEM_NOT_IN_ROOM = 'is not in this war room'
 
 class WarRoomTrackerAccess:
     """What the caller may see of the war room, decided by the blueprint:
-    the attached cases it can read and its Assets Manager scope (None
-    when it lacks asset_manager_read)."""
+    the attached cases it can read, its Assets Manager scope (None when it
+    lacks asset_manager_read) and the readable cases it has full access to
+    (where the timeline events go)."""
 
-    def __init__(self, readable_case_ids, registry_scope=None):
+    def __init__(self, readable_case_ids, registry_scope=None, writable_case_ids=None):
         self.readable_case_ids = list(readable_case_ids or ())
         self.registry_scope = registry_scope
+        self.writable_case_ids = set(writable_case_ids or ())
 
 
 def _utcnow():
@@ -502,11 +515,12 @@ def war_room_trackers_step_update(war_room_id, step_id, data):
 
 def war_room_trackers_step_delete(war_room_id, step_id):
     """Delete a step: the rows lose it (FK cascade) and it is pruned from
-    the steps offered by the trackers."""
+    the steps offered by the trackers and from the board widgets."""
     step = _step_get(war_room_id, step_id)
     for tracker in war_room_trackers_db_trackers(war_room_id):
         if tracker.step_ids and step.id in tracker.step_ids:
             tracker.step_ids = [sid for sid in tracker.step_ids if sid != step.id]
+    war_room_board_widgets_prune(war_room_id, step_id=step.id)
     name = step.name
     war_room_trackers_db_delete(step)
     war_room_trackers_db_commit()
@@ -545,9 +559,12 @@ def _asset_flag_entries(flags, flag_meta):
     return out
 
 
-def _item(item_type, item_id, label, summary, member_ids=None):
+def _item(item_type, item_id, label, summary, member_ids=None, timeline=None):
+    """A source item. `timeline` is what it brings to the timelines (see
+    `war_room_tracker_timelines_item_links`); never sent to the client."""
     return {'item_type': item_type, 'item_id': item_id, 'label': label, 'item': summary,
-            'member_ids': tuple(member_ids or (item_id,))}
+            'member_ids': tuple(member_ids or (item_id,)),
+            'timeline': timeline or war_room_tracker_timelines_item_links()}
 
 
 def _source_assets(war_room_id, access):
@@ -568,7 +585,8 @@ def _source_assets(war_room_id, access):
             'compromise_status_id': asset.get('asset_compromise_status_id'),
             'analysis_status_id': asset.get('analysis_status_id'),
             'flags': _asset_flag_entries(asset.get('flags'), flag_meta),
-        }))
+        }, timeline=war_room_tracker_timelines_item_links(
+            case_links=[(asset['case_id'], (asset['asset_id'],), ())], visibility_case_ids=[asset['case_id']])))
     return items, bool(result.get('truncated'))
 
 
@@ -580,9 +598,10 @@ def war_room_trackers_group_iocs(rows):
         group = groups.get(row['group_key'])
         if group is None:
             group = {'ioc_ids': [], 'ioc_value': row['ioc_value'], 'ioc_type': row.get('ioc_type_name'),
-                     'case_ids': [], 'case_names': []}
+                     'case_ids': [], 'case_names': [], 'case_iocs': {}}
             groups[row['group_key']] = group
         group['ioc_ids'].append(row['ioc_id'])
+        group['case_iocs'].setdefault(row['case_id'], []).append(row['ioc_id'])
         if row['case_id'] not in group['case_ids']:
             group['case_ids'].append(row['case_id'])
             group['case_names'].append(row['case_name'])
@@ -596,7 +615,9 @@ def war_room_trackers_group_iocs(rows):
             'ioc_type': group['ioc_type'],
             'case_ids': group['case_ids'],
             'case_names': group['case_names'],
-        }, member_ids=ioc_ids))
+        }, member_ids=ioc_ids, timeline=war_room_tracker_timelines_item_links(
+            case_links=[(case_id, (), sorted(ids)) for case_id, ids in group['case_iocs'].items()],
+            visibility_case_ids=group['case_ids'])))
     return items
 
 
@@ -619,7 +640,9 @@ def _source_customers(war_room_id, access):
             'customer_id': customer['customer_id'],
             'customer_name': customer['customer_name'],
             'case_count': len(customer.get('cases') or ()),
-        }))
+        }, timeline=war_room_tracker_timelines_item_links(
+            case_links=[(case['case_id'], (), ()) for case in customer.get('cases') or ()],
+            visibility_case_ids=[case['case_id'] for case in customer.get('cases') or ()])))
     return items, False
 
 
@@ -638,7 +661,8 @@ def _source_cases(war_room_id, access):
             'customer_name': getattr(row, 'customer_name', None),
             'state': getattr(row, 'state_name', None),
             'closed': getattr(row, 'close_date', None) is not None,
-        }))
+        }, timeline=war_room_tracker_timelines_item_links(case_links=[(row.case_id, (), ())],
+                                                          visibility_case_ids=[row.case_id])))
     return items, False
 
 
@@ -669,7 +693,10 @@ def _source_registry_assets(war_room_id, access):
         if attachment.get('case_id') is not None and attachment['case_id'] not in entry['case_ids']:
             entry['case_ids'].append(attachment['case_id'])
             entry['case_names'].append(attachment.get('case_name'))
-    items = [_item('managed_asset', entry['managed_asset_id'], entry['name'], entry)
+    items = [_item('managed_asset', entry['managed_asset_id'], entry['name'], entry,
+                   timeline=war_room_tracker_timelines_item_links(
+                       case_links=[(case_id, (), ()) for case_id in entry['case_ids']],
+                       managed_asset_id=entry['managed_asset_id']))
              for entry in sorted(by_id.values(), key=lambda e: ((e['name'] or '').lower(), e['managed_asset_id']))]
     return items, bool(result.get('truncated'))
 
@@ -725,6 +752,7 @@ def war_room_trackers_build_tracker(war_room_id, data, room_step_ids, sort_order
     if not isinstance(data, dict):
         raise BusinessProcessingError('Invalid request')
     show_asset_flags = data.get('show_asset_flags')
+    columns = war_room_trackers_validate_columns(data.get('columns'))
     now = _utcnow()
     return WarRoomTracker(
         war_room_id=war_room_id,
@@ -733,9 +761,10 @@ def war_room_trackers_build_tracker(war_room_id, data, room_step_ids, sort_order
         icon=war_room_trackers_validate_icon(data.get('icon')),
         description=_validate_description(data.get('description')),
         step_ids=_validate_step_ids(data.get('step_ids'), room_step_ids),
-        columns=war_room_trackers_validate_columns(data.get('columns')),
+        columns=columns,
         show_asset_flags=_validate_bool(show_asset_flags, 'show_asset_flags') if show_asset_flags is not None
         else False,
+        timeline_sync=war_room_tracker_timelines_validate(data.get('timeline_sync'), columns, war_room_id),
         sort_order=sort_order,
         created_by_id=user_id,
         created_at=now,
@@ -754,6 +783,7 @@ def war_room_trackers_serialize(tracker, row_count, names):
         'step_ids': tracker.step_ids,
         'columns': tracker.columns or [],
         'show_asset_flags': bool(tracker.show_asset_flags),
+        'timeline_sync': tracker.timeline_sync,
         'sort_order': tracker.sort_order,
         'row_count': row_count,
         'created_by': _user_ref(tracker.created_by_id, names),
@@ -838,6 +868,13 @@ def war_room_trackers_update(war_room_id, tracker_id, data):
         tracker.columns = war_room_trackers_validate_columns(columns)
     if 'show_asset_flags' in data:
         tracker.show_asset_flags = _validate_bool(data['show_asset_flags'], 'show_asset_flags')
+    if 'timeline_sync' in data:
+        tracker.timeline_sync = war_room_tracker_timelines_validate(data['timeline_sync'], tracker.columns,
+                                                                    war_room_id)
+    elif 'columns' in data:
+        war_room_tracker_timelines_check_columns(tracker.timeline_sync, tracker.columns)
+    if 'columns' in data:
+        war_room_board_widgets_prune(war_room_id, tracker_columns=(tracker.id, tracker.columns))
     tracker.updated_at = _utcnow()
     war_room_trackers_db_commit()
     return tracker
@@ -846,6 +883,7 @@ def war_room_trackers_update(war_room_id, tracker_id, data):
 def war_room_trackers_delete(war_room_id, tracker_id):
     tracker = war_room_trackers_get(war_room_id, tracker_id)
     name = tracker.name
+    war_room_board_widgets_prune(war_room_id, tracker_id=tracker.id)
     war_room_trackers_db_delete(tracker)
     war_room_trackers_db_commit()
     track_activity(f'deleted tracker "{name}"', war_room_id=war_room_id)
@@ -935,20 +973,22 @@ def _manual_pairs(stored_rows, cache):
             for row in stored_rows]
 
 
-def war_room_trackers_rows_list(war_room_id, tracker, access):
-    """`{data, truncated, limit}`: a mirror lists every current source
-    item merged with its stored state, a manual tracker its stored rows."""
-    cache = _SourceCache(war_room_id, access)
+def _tracker_pairs(tracker, cache):
+    """`(pairs, truncated)`: the `(stored, item)` rows of a tracker, at
+    most `WAR_ROOM_TRACKERS_ROWS_LIMIT`."""
     limit = WAR_ROOM_TRACKERS_ROWS_LIMIT
     if tracker.source == 'manual':
         stored = war_room_trackers_db_rows(tracker.id, limit=limit)
-        truncated = len(stored) > limit
-        pairs = _manual_pairs(stored[:limit], cache)
-    else:
-        pairs, truncated = _mirror_pairs(tracker, cache)
-        truncated = truncated or len(pairs) > limit
-        pairs = pairs[:limit]
-    return {'data': _rows_payload(pairs), 'truncated': truncated, 'limit': limit}
+        return _manual_pairs(stored[:limit], cache), len(stored) > limit
+    pairs, truncated = _mirror_pairs(tracker, cache)
+    return pairs[:limit], truncated or len(pairs) > limit
+
+
+def war_room_trackers_rows_list(war_room_id, tracker, access):
+    """`{data, truncated, limit}`: a mirror lists every current source
+    item merged with its stored state, a manual tracker its stored rows."""
+    pairs, truncated = _tracker_pairs(tracker, _SourceCache(war_room_id, access))
+    return {'data': _rows_payload(pairs), 'truncated': truncated, 'limit': WAR_ROOM_TRACKERS_ROWS_LIMIT}
 
 
 def _parse_steps_for_write(value, field, offered_step_ids):
@@ -1112,7 +1152,9 @@ def war_room_trackers_rows_update_state(war_room_id, tracker, body, access, user
     items get their stored row on their first actual change. One event
     per actual change. Returns `({data: [Row]}, changes)` (the targeted
     rows, and the `(item_type, label, events)` of the rows actually
-    changed, see `war_room_trackers_describe_changes`)."""
+    changed, see `war_room_trackers_describe_changes`). With a timeline
+    sync, the result also holds the `timeline` summary of
+    `WarRoomTrackerTimelineWriter.summary`."""
     if not isinstance(body, dict):
         raise BusinessProcessingError('Invalid request')
     refs = _parse_row_refs(body.get('rows'))
@@ -1131,6 +1173,8 @@ def war_room_trackers_rows_update_state(war_room_id, tracker, body, access, user
     for step in war_room_trackers_db_row_steps([stored.id for stored, _ in targets if stored is not None]):
         current_steps.setdefault(step.row_id, set()).add(step.step_id)
     now = _utcnow()
+    writer = WarRoomTrackerTimelineWriter(war_room_id, tracker, access.writable_case_ids, user_id, now, step_names)
+    writer.prefetch([stored.id for stored, _ in targets if stored is not None])
     result = []
     applied = []
     for stored, item in targets:
@@ -1152,10 +1196,13 @@ def war_room_trackers_rows_update_state(war_room_id, tracker, body, access, user
                                                                set_at=now))
             _record(tracker.id, row.id, user_id, now, events)
             applied.append((row.item_type, row.label, events))
+            step_ids = (set(current_steps.get(row.id, ())) - set(to_remove)) | set(to_add)
+            writer.row_changed(row, item, events, step_ids)
         result.append((row if row.id is not None else None, item))
     if not war_room_trackers_db_commit():
         raise BusinessProcessingError('These rows were changed meanwhile, reload and retry')
-    return {'data': _rows_payload(result)}, applied
+    writer.finish()
+    return _with_timeline({'data': _rows_payload(result)}, writer), applied
 
 
 def _parse_new_rows(value):
@@ -1212,6 +1259,7 @@ def war_room_trackers_rows_add(war_room_id, tracker, body, access, user_id):
     step_names = {step.id: step.name for step in room_steps}
     sort_order = war_room_trackers_db_rows_max_sort(tracker.id) + 1
     now = _utcnow()
+    writer = WarRoomTrackerTimelineWriter(war_room_id, tracker, access.writable_case_ids, user_id, now, step_names)
     created = []
     for item_type, item_id, label in entries:
         if item_type is not None:
@@ -1229,10 +1277,46 @@ def war_room_trackers_rows_add(war_room_id, tracker, body, access, user_id):
                                                            set_at=now))
             events.append(('step_added', {'step_id': step_id, 'step_name': step_names.get(step_id)}))
         _record(tracker.id, row.id, user_id, now, events)
-        created.append((row, indexes[item_type].get(item_id) if item_type is not None else None))
+        item = indexes[item_type].get(item_id) if item_type is not None else None
+        writer.row_changed(row, item, events, set(step_ids))
+        created.append((row, item))
     if not war_room_trackers_db_commit():
         raise BusinessProcessingError('Some of these items were added meanwhile, reload and retry')
-    return {'data': _rows_payload(created)}
+    writer.finish()
+    return _with_timeline({'data': _rows_payload(created)}, writer)
+
+
+def _with_timeline(result, writer):
+    summary = writer.summary()
+    if summary is not None:
+        result['timeline'] = summary
+    return result
+
+
+def war_room_trackers_timeline_sync(war_room_id, tracker, access, user_id):
+    """Write the current state of every stored row the caller can see to
+    the timelines (`state` mode only). Returns the timeline summary."""
+    if tracker.timeline_sync is None or tracker.timeline_sync.get('mode') != 'state':
+        raise BusinessProcessingError('Only a tracker writing its state to the timelines can be synced')
+    cache = _SourceCache(war_room_id, access)
+    if tracker.source == 'manual':
+        pairs = _manual_pairs(war_room_trackers_db_rows(tracker.id), cache)
+    else:
+        pairs, _ = _mirror_pairs(tracker, cache)
+        pairs = [(stored, item) for stored, item in pairs if stored is not None]
+    step_names = {step.id: step.name for step in war_room_trackers_db_steps(war_room_id)}
+    steps = {}
+    for step in war_room_trackers_db_row_steps([stored.id for stored, _ in pairs]):
+        steps.setdefault(step.row_id, set()).add(step.step_id)
+    writer = WarRoomTrackerTimelineWriter(war_room_id, tracker, access.writable_case_ids, user_id, _utcnow(),
+                                          step_names)
+    writer.prefetch([stored.id for stored, _ in pairs])
+    for stored, item in pairs:
+        writer.row_state(stored, item, steps.get(stored.id, set()))
+    if not war_room_trackers_db_commit():
+        raise BusinessProcessingError('The timelines were changed meanwhile, retry')
+    writer.finish()
+    return writer.summary()
 
 
 def _manual_row(tracker, row_id):
@@ -1382,3 +1466,229 @@ def war_room_trackers_history(war_room_id, tracker, access, row_id=None, item_ty
     if row_ids is None and visible is not None:
         events = [event for event in events if event.row_id in visible][:WAR_ROOM_TRACKERS_HISTORY_LIMIT]
     return _serialize_events(events)
+
+
+# ---------------------------------------------------------------- Board --
+
+def _board_case_ids(item, readable_case_ids):
+    """The readable cases a row belongs to (none for free text or a row
+    the caller cannot see)."""
+    if item is None:
+        return []
+    out = []
+    for case_id, _, _ in item['timeline']['case_links']:
+        if case_id in readable_case_ids and case_id not in out:
+            out.append(case_id)
+    return out
+
+
+def _row_value(stored, column_key):
+    return (stored.values or {}).get(column_key) if stored is not None else None
+
+
+def war_room_trackers_board_row_matches(stored, row_filter):
+    """Whether a row passes a board widget `filter` (`{column_key,
+    values}`, None = every row): its value is one of `values`, or one of
+    its values is for a multiselect."""
+    if row_filter is None:
+        return True
+    value = _row_value(stored, row_filter['column_key'])
+    if isinstance(value, list):
+        return any(entry in row_filter['values'] for entry in value)
+    return value is not None and value in row_filter['values']
+
+
+def _board_rows(pairs, row_steps, step_order, row_filter):
+    """`[(stored, item, step ids in the room's step order)]` of the rows
+    passing `row_filter`."""
+    rows = []
+    for stored, item in pairs:
+        if not war_room_trackers_board_row_matches(stored, row_filter):
+            continue
+        step_ids = row_steps.get(stored.id, ()) if stored is not None else ()
+        rows.append((stored, item, sorted((sid for sid in step_ids if sid in step_order), key=step_order.get)))
+    return rows
+
+
+def _board_row(stored, item, step_ids, readable_case_ids):
+    if stored is None:
+        return {
+            'row_id': None, 'key': _row_key(item['item_type'], item['item_id'], None),
+            'item_type': item['item_type'], 'item_id': item['item_id'], 'label': item['label'],
+            'restricted': False, 'step_ids': [], 'case_ids': _board_case_ids(item, readable_case_ids),
+            'updated_at': None,
+        }
+    if stored.item_type is None:
+        label = stored.label
+    else:
+        label = item['label'] if item is not None else None
+    return {
+        'row_id': stored.id,
+        'key': _row_key(stored.item_type, stored.item_id, stored.id),
+        'item_type': stored.item_type,
+        'item_id': stored.item_id,
+        'label': label,
+        'restricted': stored.item_type is not None and item is None,
+        'step_ids': step_ids,
+        'case_ids': _board_case_ids(item, readable_case_ids),
+        'updated_at': _isoformat(stored.updated_at),
+    }
+
+
+def _shown_step_ids(config_step_ids, tracker, room_steps, rows):
+    """The steps a widget shows: the configured ones, or the steps the
+    tracker offers (plus the ones its rows still carry)."""
+    room_step_ids = [step.id for step in room_steps]
+    if config_step_ids is not None:
+        return [sid for sid in config_step_ids if sid in room_step_ids]
+    offered = _offered_step_ids(tracker, room_steps)
+    carried = {sid for _, _, step_ids in rows for sid in step_ids}
+    return [sid for sid in room_step_ids if sid in offered or sid in carried]
+
+
+def _board_progress(tracker, rows, config, room_steps):
+    step_ids = _shown_step_ids(config.get('step_ids'), tracker, room_steps, rows)
+    counts = dict.fromkeys(step_ids, 0)
+    without_step = 0
+    for _, _, row_step_ids in rows:
+        if not row_step_ids:
+            without_step += 1
+        for sid in row_step_ids:
+            if sid in counts:
+                counts[sid] += 1
+    return {
+        'rows_total': len(rows),
+        'rows_without_step': without_step,
+        'steps': [{'step_id': sid, 'count': counts[sid]} for sid in step_ids],
+    }
+
+
+def _carrying(rows, step_ids):
+    """The rows carrying one of `step_ids`, every row when empty."""
+    wanted = set(step_ids or ())
+    if not wanted:
+        return rows
+    return [row for row in rows if wanted.intersection(row[2])]
+
+
+def _board_count(rows, config):
+    return {'count': len(_carrying(rows, config.get('step_ids'))), 'total': len(rows)}
+
+
+def _board_list(rows, config, readable_case_ids):
+    listed = _carrying(rows, config.get('step_ids'))
+    return {
+        'rows': [_board_row(stored, item, step_ids, readable_case_ids)
+                 for stored, item, step_ids in listed[:WAR_ROOM_BOARD_LIST_ROWS]],
+        'total': len(listed),
+    }
+
+
+def _breakdown_keys(column, value):
+    if column['type'] == 'checkbox':
+        return [value is True]
+    if column['type'] == 'multiselect':
+        keys = [entry for entry in value if entry in column['options']] if isinstance(value, list) else []
+        return keys or [None]
+    return [value] if value in column['options'] else [None]
+
+
+def _board_breakdown(tracker, rows, config, room_steps):
+    column = next((c for c in tracker.columns or () if c['key'] == config.get('column_key')), None)
+    if column is None or column['type'] not in ('select', 'multiselect', 'checkbox'):
+        return {'missing': 'column'}
+    step_ids = _shown_step_ids(config.get('step_ids'), tracker, room_steps, rows)
+    values = [True, False] if column['type'] == 'checkbox' else [*column['options'], None]
+    groups = {value: {'value': value, 'rows': 0, 'counts': [0] * len(step_ids)} for value in values}
+    for stored, _, row_step_ids in rows:
+        for key in _breakdown_keys(column, _row_value(stored, column['key'])):
+            group = groups[key]
+            group['rows'] += 1
+            for index, sid in enumerate(step_ids):
+                if sid in row_step_ids:
+                    group['counts'][index] += 1
+    return {
+        'column_label': column['label'],
+        'column_type': column['type'],
+        'step_ids': step_ids,
+        'rows_total': len(rows),
+        'groups': [group for value, group in groups.items() if value is not None or group['rows']],
+    }
+
+
+def _board_case_highlights(rows_by_tracker, highlight_step_ids, step_order, readable_case_ids):
+    """`{case_id: [{step_id, count}]}`: per readable case, how many of its
+    rows carry each highlighted step, in the room's step order."""
+    highlight = set(highlight_step_ids)
+    per_case = {}
+    for rows in rows_by_tracker:
+        for _, item, step_ids in rows:
+            hits = [sid for sid in step_ids if sid in highlight]
+            if not hits:
+                continue
+            for case_id in _board_case_ids(item, readable_case_ids):
+                counts = per_case.setdefault(case_id, {})
+                for sid in hits:
+                    counts[sid] = counts.get(sid, 0) + 1
+    return {case_id: [{'step_id': sid, 'count': count}
+                      for sid, count in sorted(counts.items(), key=lambda entry: step_order[entry[0]])]
+            for case_id, counts in per_case.items()}
+
+
+def _board_widget_data(widget, tracker, pairs, truncated, ctx):
+    room_steps, row_steps, step_order, readable = ctx
+    config = widget['config']
+    rows = _board_rows(pairs, row_steps, step_order, config.get('filter'))
+    if widget['type'] == 'tracker_progress':
+        data = _board_progress(tracker, rows, config, room_steps)
+    elif widget['type'] == 'tracker_count':
+        data = _board_count(rows, config)
+    elif widget['type'] == 'tracker_list':
+        data = _board_list(rows, config, readable)
+    else:
+        data = _board_breakdown(tracker, rows, config, room_steps)
+    data['truncated'] = truncated
+    return data
+
+
+def war_room_trackers_board_data(war_room_id, access, widgets):
+    """What the board shows of the trackers, as the caller sees them (same
+    rows as in the trackers tab): `{data, steps, case_highlights}`, with
+    `data` the data of each tracker widget by widget id (`{missing:
+    'tracker'}` when its tracker is gone), `steps` the room's steps and
+    `case_highlights` the highlighted steps of the `cases` widget per
+    readable case (see `_board_case_highlights`)."""
+    tracker_widgets = [widget for widget in widgets if widget['type'] in TRACKER_WIDGET_TYPES]
+    cases = next((widget for widget in widgets if widget['type'] == 'cases'), None)
+    highlight = (cases or {}).get('config', {}).get('highlight_step_ids') or []
+    room_steps = war_room_trackers_db_steps(war_room_id)
+    result = {'data': {}, 'steps': [war_room_trackers_serialize_step(step) for step in room_steps],
+              'case_highlights': {}}
+    trackers = {tracker.id: tracker for tracker in war_room_trackers_db_trackers(war_room_id)}
+    needed = {widget['config'].get('tracker_id') for widget in tracker_widgets} & trackers.keys()
+    highlighted = []
+    if highlight:
+        tracker_ids = cases['config'].get('tracker_ids')
+        highlighted = [tracker_id for tracker_id in trackers if tracker_ids is None or tracker_id in tracker_ids]
+        needed.update(highlighted)
+    cache = _SourceCache(war_room_id, access)
+    listed = {tracker_id: _tracker_pairs(trackers[tracker_id], cache) for tracker_id in sorted(needed)}
+    row_steps = {}
+    stored_ids = [stored.id for pairs, _ in listed.values() for stored, _ in pairs if stored is not None]
+    for step in war_room_trackers_db_row_steps(stored_ids):
+        row_steps.setdefault(step.row_id, set()).add(step.step_id)
+    step_order = {step.id: index for index, step in enumerate(room_steps)}
+    readable = set(access.readable_case_ids)
+    ctx = (room_steps, row_steps, step_order, readable)
+    for widget in tracker_widgets:
+        tracker = trackers.get(widget['config'].get('tracker_id'))
+        if tracker is None:
+            result['data'][widget['id']] = {'missing': 'tracker'}
+            continue
+        data = _board_widget_data(widget, tracker, *listed[tracker.id], ctx)
+        data['tracker'] = {'id': tracker.id, 'name': tracker.name, 'icon': tracker.icon, 'source': tracker.source}
+        result['data'][widget['id']] = data
+    result['case_highlights'] = _board_case_highlights(
+        [_board_rows(listed[tracker_id][0], row_steps, step_order, None) for tracker_id in highlighted],
+        highlight, step_order, readable)
+    return result

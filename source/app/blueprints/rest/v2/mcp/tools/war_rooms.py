@@ -42,6 +42,7 @@ from app.blueprints.iris_user import iris_current_user
 from app.blueprints.rest.v2.mcp import protocol
 from app.blueprints.rest.v2.mcp.dispatch import MCPError
 from app.blueprints.rest.v2.mcp.registry import mcp_tool
+from app.blueprints.rest.v2.war_rooms.access import WarRoomEventVisibility
 from app.blueprints.rest.v2.war_rooms.access import war_room_readable_attached_case_ids
 from app.blueprints.rest.v2.war_rooms.serializers import serialize_case_attachment
 from app.blueprints.rest.v2.war_rooms.serializers import serialize_member
@@ -456,8 +457,8 @@ def iris_war_room_timelines_list(args: dict) -> dict:
     mvp=True,
 )
 def iris_war_room_timeline_events_list(args: dict) -> dict:
-    rows = war_room_timelines_biz.list_timeline_events(
-        args['war_room_id'], timeline_ids=args.get('timeline_ids') or None)
+    rows = WarRoomEventVisibility().filter(war_room_timelines_biz.list_timeline_events(
+        args['war_room_id'], timeline_ids=args.get('timeline_ids') or None))
     return {'events': [_timeline_event(e) for e in rows]}
 
 
@@ -547,6 +548,11 @@ def iris_war_room_timeline_events_update(args: dict) -> dict:
     if 'event_date' in fields:
         fields['event_date'] = _parse_iso_datetime(fields['event_date'], 'event_date')
     try:
+        # An event a tracker restricted to other readers does not exist
+        # for this caller.
+        if not WarRoomEventVisibility().visible(
+                war_room_timelines_biz.get_timeline_event(args['war_room_id'], args['event_id'])):
+            raise ObjectNotFoundError()
         row = war_room_timelines_biz.update_timeline_event(
             args['war_room_id'], args['event_id'], **fields)
     except ObjectNotFoundError as exc:

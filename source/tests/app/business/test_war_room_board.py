@@ -24,6 +24,7 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from app.business import war_room_board as board
+from app.business.war_room_board_widgets import war_room_board_widgets_default
 
 
 _BIZ = 'app.business.war_room_board'
@@ -56,7 +57,12 @@ def _decision_row(decision_id, number, status='proposed', target_at=None, pendin
 def _case_row(case_id, name):
     return SimpleNamespace(case_id=case_id, case_name=name, customer_id=1, customer_name='ACME',
                            state_id=1, state_name='Open', owner_id=1, owner_name='admin',
-                           severity_name='High', tasks_open=2)
+                           severity_name='High', tasks_open=2, tasks_in_progress=1)
+
+
+def _task_row(task_id, status_name, due_at=None, assignee_name=None, source_case_id=None):
+    return SimpleNamespace(task_id=task_id, title=f'Task {task_id}', status_name=status_name, due_at=due_at,
+                           assignee_name=assignee_name, source_case_id=source_case_id, parent_task_id=None)
 
 
 _FLAGS = [_flag(1, 'status', 0, 'Isolated'), _flag(2, 'status', 1, 'Patched'),
@@ -141,7 +147,8 @@ class TestAttention(TestCase):
 class TestBuild(TestCase):
 
     def _build(self, attached, accessible, asset_rows, case_rows, decision_rows=(), compromised=(),
-               exceptions=(), vulnerabilities=None, include_vulnerabilities=True, flag_rows=(), kind_rows=()):
+               exceptions=(), vulnerabilities=None, include_vulnerabilities=True, flag_rows=(), kind_rows=(),
+               task_rows=(), task_teams=None, tracker_access=None, trackers=None, widgets=None):
         vulnerabilities = vulnerabilities or {'exploited_open': [], 'overdue': []}
         calls = {}
 
@@ -167,6 +174,16 @@ class TestBuild(TestCase):
             calls['vuln_summary'] = list(case_ids)
             return {'open': 3, 'exploited_open': 1, 'overdue': 2, 'kev_open': 0, 'assets_open': 2}
 
+        def _trackers(war_room_id, access, room_widgets):
+            calls['trackers'] = (access, room_widgets)
+            return trackers or {'data': {}, 'steps': [], 'case_highlights': {}}
+
+        def _tasks(war_room_id, limit, in_progress_only, team_ids):
+            calls.setdefault('tasks', []).append((in_progress_only, team_ids))
+            return list(task_rows)
+
+        board_widgets = (widgets, True) if widgets is not None else (war_room_board_widgets_default(), False)
+
         def _vuln_attention(case_ids, limit):
             calls['vuln_attention'] = list(case_ids)
             return vulnerabilities
@@ -180,11 +197,16 @@ class TestBuild(TestCase):
                 patch(f'{_BIZ}.war_room_board_db_open_decisions', return_value=list(decision_rows)), \
                 patch(f'{_BIZ}.war_room_board_db_compromised_unflagged', side_effect=_compromised), \
                 patch(f'{_BIZ}.war_room_board_db_exceptions_without_decision', side_effect=_exceptions), \
-                patch(f'{_BIZ}.war_room_board_db_open_war_room_tasks_count', return_value=4), \
+                patch(f'{_BIZ}.war_room_board_db_open_war_room_task_counts', return_value=(4, 1, 2)), \
+                patch(f'{_BIZ}.war_room_board_db_open_war_room_tasks', side_effect=_tasks), \
+                patch(f'{_BIZ}.war_room_task_teams', return_value=task_teams or {}), \
+                patch(f'{_BIZ}.war_room_board_widgets_get', return_value=board_widgets), \
+                patch(f'{_BIZ}.war_room_trackers_board_data', side_effect=_trackers), \
                 patch(f'{_BIZ}.vulnerability_findings_summary', side_effect=_vuln_summary), \
                 patch(f'{_BIZ}.vulnerability_findings_attention', side_effect=_vuln_attention):
             return board.war_room_board_build(7, accessible, now=_NOW,
-                                              include_vulnerabilities=include_vulnerabilities), calls
+                                              include_vulnerabilities=include_vulnerabilities,
+                                              tracker_access=tracker_access), calls
 
     def test_kpis_over_accessible_cases_only(self):
         out, calls = self._build(
@@ -218,6 +240,8 @@ class TestBuild(TestCase):
         self.assertEqual(k['decisions_overdue'], 1)
         self.assertEqual(k['decisions_due_24h'], 1)
         self.assertEqual(k['tasks_open'], 4)
+        self.assertEqual(k['tasks_in_progress'], 1)
+        self.assertEqual(k['tasks_overdue'], 2)
         self.assertEqual(out['generated_at'], _NOW.isoformat())
         self.assertEqual([f['name'] for f in out['flags']], ['Isolated', 'Patched', 'Restored', 'Accepted risk'])
         self.assertEqual(out['cases'][0]['by_flag'], {'none': 2, '2': 3, '3': 1, '4': 1})
@@ -246,6 +270,8 @@ class TestBuild(TestCase):
         self.assertEqual(out['cases'][0]['by_flag'], {})
         self.assertEqual(out['cases'][0]['by_kind'], {'none': 0, 'status': 0, 'done': 0, 'exception': 0})
         self.assertEqual(out['cases'][0]['tasks_open'], 2)
+        self.assertEqual(out['cases'][0]['tasks_in_progress'], 1)
+        self.assertEqual(out['cases'][0]['highlights'], [])
 
     def test_no_access_at_all(self):
         out, calls = self._build(attached=[10], accessible=[], asset_rows=[_assets(10, 5)],
@@ -281,3 +307,68 @@ class TestBuild(TestCase):
         self.assertEqual(out['kpis']['vulnerable_assets'], 2)
         self.assertEqual([(i['type'], i['severity'], i['finding_id']) for i in out['attention']],
                          [('vulnerability_exploited_open', 'high', 5), ('vulnerability_overdue', 'medium', 6)])
+
+    def test_default_board_lists_the_open_tasks_with_their_teams(self):
+        out, calls = self._build(attached=[], accessible=[], asset_rows=[], case_rows=[],
+                                 task_rows=[_task_row(1, 'In progress', due_at=_NOW - datetime.timedelta(hours=1),
+                                                      assignee_name='alice'),
+                                            _task_row(2, 'To do', due_at=_NOW + datetime.timedelta(hours=1)),
+                                            _task_row(3, None, source_case_id=10)],
+                                 task_teams={1: [{'team_id': 4, 'name': 'Comms', 'color': 'sky'}]})
+        self.assertFalse(out['board_customized'])
+        self.assertEqual([w['id'] for w in out['widgets']], [w['id'] for w in war_room_board_widgets_default()])
+        data = next(w for w in out['widgets'] if w['type'] == 'tasks')['data']
+        self.assertEqual(calls['tasks'], [(False, None)])
+        self.assertEqual((data['total'], data['in_progress'], data['overdue']), (4, 1, 2))
+        tasks = data['tasks']
+        self.assertEqual([t['task_id'] for t in tasks], [1, 2, 3])
+        self.assertEqual([t['in_progress'] for t in tasks], [True, False, False])
+        self.assertEqual([t['overdue'] for t in tasks], [True, False, False])
+        self.assertEqual(tasks[0]['teams'], ['Comms'])
+        self.assertEqual(tasks[0]['assignee_name'], 'alice')
+        self.assertEqual(tasks[1]['teams'], [])
+        self.assertIsNone(tasks[2]['due_at'])
+        self.assertEqual(tasks[2]['source_case_id'], 10)
+
+    def test_each_tasks_widget_selects_its_tasks(self):
+        widgets = [
+            {'id': 'w_a', 'type': 'tasks', 'title': None, 'column': 'side',
+             'config': {'in_progress_only': True, 'team_ids': [4]}},
+            {'id': 'w_b', 'type': 'tasks', 'title': None, 'column': 'main',
+             'config': {'in_progress_only': False, 'team_ids': []}},
+            {'id': 'w_n', 'type': 'note', 'title': 'Read me', 'column': 'side', 'config': {'text': 'hi'}},
+        ]
+        out, calls = self._build(attached=[], accessible=[], asset_rows=[], case_rows=[], widgets=widgets)
+        self.assertTrue(out['board_customized'])
+        self.assertEqual(calls['tasks'], [(True, [4]), (False, None)])
+        self.assertEqual([w['id'] for w in out['widgets']], ['w_a', 'w_b', 'w_n'])
+        self.assertNotIn('data', out['widgets'][2])
+        self.assertEqual(out['widgets'][2]['config'], {'text': 'hi'})
+
+    def test_no_tracker_data_without_tracker_access(self):
+        out, calls = self._build(attached=[10], accessible=[10], asset_rows=[], case_rows=[_case_row(10, 'V')])
+        self.assertNotIn('trackers', calls)
+        self.assertEqual(out['tracker_steps'], [])
+        self.assertEqual(out['cases'][0]['highlights'], [])
+
+    def test_tracker_widgets_and_case_highlights(self):
+        access = object()
+        widgets = [{'id': 'w_p', 'type': 'tracker_progress', 'title': None, 'column': 'main',
+                    'config': {'tracker_id': 3}},
+                   {'id': 'cases', 'type': 'cases', 'title': None, 'column': 'main',
+                    'config': {'highlight_step_ids': [9], 'tracker_ids': None}}]
+        data = {'rows_total': 2, 'steps': []}
+        step = {'id': 9, 'name': 'Action required'}
+        out, calls = self._build(attached=[10, 20], accessible=[10], asset_rows=[],
+                                 case_rows=[_case_row(10, 'V'), _case_row(20, 'Secret')], tracker_access=access,
+                                 widgets=widgets,
+                                 trackers={'data': {'w_p': data}, 'steps': [step],
+                                           'case_highlights': {10: [{'step_id': 9, 'count': 2}],
+                                                               20: [{'step_id': 9, 'count': 1}]}})
+        self.assertEqual(calls['trackers'], (access, widgets))
+        self.assertEqual(out['widgets'][0]['data'], data)
+        self.assertNotIn('data', out['widgets'][1])
+        self.assertEqual(out['tracker_steps'], [step])
+        self.assertEqual(out['cases'][0]['highlights'], [{'step_id': 9, 'count': 2}])
+        # A case the caller cannot read keeps only its id.
+        self.assertEqual(out['cases'][1], {'case_id': 20, 'accessible': False})

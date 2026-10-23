@@ -17,6 +17,7 @@ name uniqueness, membership add/remove, and cascade delete all key off
 
 import re
 
+from app.business.war_room_board_widgets import war_room_board_widgets_prune
 from app.datamgmt.manage.manage_groups_db import get_group
 from app.datamgmt.manage.manage_groups_db import get_group_active_member_identifiers
 from app.datamgmt.manage.manage_groups_db import get_groups_with_active_member_identifiers
@@ -148,6 +149,7 @@ def war_room_team_update(war_room_id, team_id, name=None, description=None,
 def war_room_team_delete(war_room_id, team_id):
     team = war_room_team_get(war_room_id, team_id)
     deleted = {'war_room_id': war_room_id, 'team_id': team.team_id, 'name': team.name}
+    war_room_board_widgets_prune(war_room_id, team_id=team.team_id)
     db.session.delete(team)
     db.session.commit()
     track_activity(f'deleted war-room team "{deleted["name"]}"', war_room_id=war_room_id)

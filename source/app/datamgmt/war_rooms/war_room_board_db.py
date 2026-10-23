@@ -30,13 +30,17 @@ from app.models.cases import CaseState
 from app.models.customers import Client
 from app.models.models import CaseTasks
 from app.models.models import TaskStatus
+from app.models.war_rooms import WarRoom
 from app.models.war_rooms import WarRoomCase
 from app.models.war_rooms import WarRoomDecision
 from app.models.war_rooms import WarRoomDecisionApprover
 from app.models.war_rooms import WarRoomTask
+from app.models.war_rooms import WarRoomTaskTeam
+from app.models.war_rooms import WarRoomTeam
 
 
 _CLOSED_TASK_STATUSES = ('done', 'closed', 'canceled', 'cancelled')
+_IN_PROGRESS_TASK_STATUS = 'in progress'
 _OPEN_DECISION_STATUSES = ('proposed', 'approved')
 
 
@@ -55,13 +59,16 @@ def war_room_board_db_flags():
 
 
 def war_room_board_db_case_rows(case_ids):
-    """Case header rows (customer, state, owner, severity, open tasks)."""
+    """Case header rows (customer, state, owner, severity, open and in
+    progress tasks)."""
     if not case_ids:
         return []
     open_tasks_sq = (
         db.session.query(
             CaseTasks.task_case_id.label('case_id'),
             func.count(CaseTasks.id).label('tasks_open'),
+            func.count(sa_case((func.lower(TaskStatus.status_name) == _IN_PROGRESS_TASK_STATUS, 1)))
+            .label('tasks_in_progress'),
         )
         .outerjoin(TaskStatus, TaskStatus.id == CaseTasks.task_status_id)
         .filter(CaseTasks.task_case_id.in_(list(case_ids)))
@@ -81,6 +88,7 @@ def war_room_board_db_case_rows(case_ids):
             User.name.label('owner_name'),
             Severity.severity_name,
             func.coalesce(open_tasks_sq.c.tasks_open, 0).label('tasks_open'),
+            func.coalesce(open_tasks_sq.c.tasks_in_progress, 0).label('tasks_in_progress'),
         )
         .outerjoin(Client, Client.client_id == Cases.client_id)
         .outerjoin(CaseState, CaseState.state_id == Cases.state_id)
@@ -230,9 +238,78 @@ def war_room_board_db_open_decisions(war_room_id):
     )
 
 
-def war_room_board_db_open_war_room_tasks_count(war_room_id):
-    return (
-        db.session.query(func.count(WarRoomTask.task_id))
+def war_room_board_db_get_board(war_room_id):
+    """The stored widgets of the room's board (None = the default board)."""
+    row = db.session.query(WarRoom.board).filter(WarRoom.war_room_id == war_room_id).one_or_none()
+    return row.board if row is not None else None
+
+
+def war_room_board_db_set_board(war_room_id, board, commit=True):
+    room = db.session.get(WarRoom, war_room_id)
+    if room is None:
+        return False
+    room.board = board
+    if commit:
+        db.session.commit()
+    return True
+
+
+def war_room_board_db_team_ids(war_room_id):
+    return {row.team_id for row in db.session.query(WarRoomTeam.team_id)
+            .filter(WarRoomTeam.war_room_id == war_room_id).all()}
+
+
+def _in_progress():
+    return func.lower(TaskStatus.status_name) == _IN_PROGRESS_TASK_STATUS
+
+
+def _open_war_room_tasks(query, war_room_id, in_progress_only=False, team_ids=None):
+    """Open tasks of the room; only the ones in progress with
+    `in_progress_only`, only the ones assigned to one of `team_ids` when
+    given."""
+    query = (
+        query
+        .outerjoin(TaskStatus, TaskStatus.id == WarRoomTask.status_id)
         .filter(WarRoomTask.war_room_id == war_room_id, WarRoomTask.closed_at.is_(None))
-        .scalar()
-    ) or 0
+    )
+    if in_progress_only:
+        query = query.filter(_in_progress())
+    if team_ids:
+        query = query.filter(WarRoomTask.task_id.in_(
+            db.session.query(WarRoomTaskTeam.task_id).filter(WarRoomTaskTeam.team_id.in_(list(team_ids)))
+        ))
+    return query
+
+
+def war_room_board_db_open_war_room_task_counts(war_room_id, now, in_progress_only=False, team_ids=None):
+    """`(open, in_progress, overdue)` war-room tasks."""
+    row = _open_war_room_tasks(db.session.query(
+        func.count(WarRoomTask.task_id).label('open'),
+        func.count(sa_case((_in_progress(), 1))).label('in_progress'),
+        func.count(sa_case((WarRoomTask.due_at < now, 1))).label('overdue'),
+    ), war_room_id, in_progress_only, team_ids).one()
+    return int(row.open or 0), int(row.in_progress or 0), int(row.overdue or 0)
+
+
+def war_room_board_db_open_war_room_tasks(war_room_id, limit, in_progress_only=False, team_ids=None):
+    """Open war-room tasks: in progress first, then by due date (none
+    last), newest first."""
+    return (
+        _open_war_room_tasks(db.session.query(
+            WarRoomTask.task_id,
+            WarRoomTask.title,
+            WarRoomTask.due_at,
+            WarRoomTask.source_case_id,
+            WarRoomTask.parent_task_id,
+            TaskStatus.status_name,
+            User.name.label('assignee_name'),
+        ), war_room_id, in_progress_only, team_ids)
+        .outerjoin(User, User.id == WarRoomTask.assignee_id)
+        .order_by(
+            sa_case((_in_progress(), 0), else_=1),
+            WarRoomTask.due_at.asc().nullslast(),
+            WarRoomTask.created_at.desc(),
+        )
+        .limit(limit)
+        .all()
+    )

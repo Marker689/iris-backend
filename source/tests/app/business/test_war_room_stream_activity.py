@@ -363,7 +363,8 @@ class TestsTeamTexts(TestCase):
         self.team = SimpleNamespace(team_id=4, name='Blue', description=None, color=None)
         for target, value in (('war_room_team_get', lambda _war_room_id, _team_id: self.team),
                               ('db', MagicMock()), ('call_modules_hook', lambda _name, obj, **_kwargs: obj),
-                              ('_user_label', lambda _user_id: 'Bob')):
+                              ('_user_label', lambda _user_id: 'Bob'),
+                              ('war_room_board_widgets_prune', MagicMock())):
             patcher = patch(f'app.business.war_room_teams.{target}', value)
             patcher.start()
             self.addCleanup(patcher.stop)
