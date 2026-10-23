@@ -190,6 +190,9 @@ class ManagedAsset(db.Model):
         Index('idx_managed_asset_client', 'client_id'),
         Index('idx_managed_asset_client_updated', 'client_id', 'updated_at'),
         Index('idx_managed_asset_client_criticality', 'client_id', 'criticality'),
+        # The listing's default order (`name`, then the id tiebreak): a
+        # page is read off the index instead of sorting the whole registry.
+        Index('idx_managed_asset_name_id', 'name', 'managed_asset_id'),
     )
 
 

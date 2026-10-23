@@ -392,6 +392,12 @@ def managed_assets_db_sighting_summary(assets, scope):
         return summary
 
     normalized = _normalized_case_asset_name()
+    # The identity IN spans two tables (the customer is on the case or
+    # the alert), so the planner has to derive an index condition from it
+    # to use `idx_case_assets_name_normalized_type`, or it reads, and
+    # normalises the name of, every asset in the base to aggregate one
+    # page. A plain IN on the indexed expression leaves it no choice.
+    page_names = normalized.in_(sorted({a.normalized_name for a in assets}))
     is_compromised = CaseAssets.asset_compromise_status_id == _COMPROMISED
     compromised_flag = func.bool_or(is_compromised)
     not_compromised_flag = func.bool_or(CaseAssets.asset_compromise_status_id == _NOT_COMPROMISED)
@@ -422,6 +428,7 @@ def managed_assets_db_sighting_summary(assets, scope):
     ).select_from(CaseAssets).join(
         Cases, Cases.case_id == CaseAssets.case_id
     ).where(
+        page_names,
         tuple_(Cases.client_id, normalized, CaseAssets.asset_type_id).in_(keys)
     ).group_by(Cases.client_id, normalized, CaseAssets.asset_type_id)
 
@@ -442,6 +449,7 @@ def managed_assets_db_sighting_summary(assets, scope):
     ).select_from(CaseAssets).join(
         alert_assets_association, alert_assets_association.c.asset_id == CaseAssets.asset_id
     ).join(Alert, Alert.alert_id == alert_assets_association.c.alert_id).where(
+        page_names,
         tuple_(Alert.alert_customer_id, normalized, CaseAssets.asset_type_id).in_(keys)
     ).group_by(Alert.alert_customer_id, normalized, CaseAssets.asset_type_id)
 
