@@ -1208,7 +1208,8 @@ class WarRoomTrackerRowStep(db.Model):
 class WarRoomTrackerRowEvent(db.Model):
     """One change of a tracker row (who, when, what). `action` is one of
     created, step_added, step_removed, note_changed, value_changed,
-    label_changed."""
+    label_changed. `in_timeline`: handled by a `changes` timeline sync,
+    live or by the backfill (`war_room_trackers_timeline_sync`)."""
     __tablename__ = 'war_room_tracker_row_event'
 
     id = Column(BigInteger, primary_key=True)
@@ -1222,6 +1223,7 @@ class WarRoomTrackerRowEvent(db.Model):
     created_at = Column(DateTime, nullable=False, server_default=text('now()'))
     action = Column(String(32), nullable=False)
     details = Column(JSONB, nullable=True)
+    in_timeline = Column(Boolean, nullable=False, default=False, server_default=text('false'))
 
 
 class WarRoomTrackerRowTimelineEvent(db.Model):

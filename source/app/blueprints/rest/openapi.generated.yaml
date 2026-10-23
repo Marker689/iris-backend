@@ -18875,8 +18875,10 @@ paths:
   /api/v2/war-rooms/{war_room_id}/trackers/{tracker_id}/timeline/sync:
     post:
       operationId: sync_tracker_timeline_post
-      summary: Write the current state of the rows the caller sees to the timelines (state timeline mode
-        only). Case timelines are only written where the caller has full access
+      summary: 'Catch the timelines up with a tracker whose timeline sync was turned on after the fact:
+        the current state of the rows the caller sees (state mode), or the past changes not in the timelines
+        yet, oldest first and at most 2000 per call, `remaining` telling what is left (changes mode).
+        Case timelines are only written where the caller has full access'
       tags:
       - WarRoomTrackers
       security:

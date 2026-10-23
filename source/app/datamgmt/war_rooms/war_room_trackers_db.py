@@ -202,6 +202,45 @@ def war_room_trackers_db_events(tracker_id, row_ids=None, limit=200):
     )
 
 
+def war_room_trackers_db_events_not_in_timeline(tracker_id, limit):
+    """The oldest changes not written to the timelines, oldest first."""
+    return (
+        WarRoomTrackerRowEvent.query
+        .filter(WarRoomTrackerRowEvent.tracker_id == tracker_id, WarRoomTrackerRowEvent.in_timeline.is_(False))
+        .order_by(WarRoomTrackerRowEvent.id)
+        .limit(limit)
+        .all()
+    )
+
+
+def war_room_trackers_db_value_events_after(row_ids, after_id):
+    """The value changes of these rows after the event `after_id`, oldest
+    first."""
+    if not row_ids:
+        return []
+    return (
+        WarRoomTrackerRowEvent.query
+        .filter(WarRoomTrackerRowEvent.row_id.in_(list(row_ids)), WarRoomTrackerRowEvent.id > after_id,
+                WarRoomTrackerRowEvent.action == 'value_changed')
+        .order_by(WarRoomTrackerRowEvent.id)
+        .all()
+    )
+
+
+def war_room_trackers_db_events_not_in_timeline_counts(tracker_ids):
+    """`{tracker_id: changes not written to the timelines}`."""
+    if not tracker_ids:
+        return {}
+    rows = (
+        db.session.query(WarRoomTrackerRowEvent.tracker_id, func.count(WarRoomTrackerRowEvent.id).label('events'))
+        .filter(WarRoomTrackerRowEvent.tracker_id.in_(list(tracker_ids)),
+                WarRoomTrackerRowEvent.in_timeline.is_(False))
+        .group_by(WarRoomTrackerRowEvent.tracker_id)
+        .all()
+    )
+    return {row.tracker_id: int(row.events or 0) for row in rows}
+
+
 def war_room_trackers_db_rows_keys(row_ids):
     """`{row_id: (item_type, item_id)}`."""
     if not row_ids:

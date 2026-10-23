@@ -486,6 +486,25 @@ class TestsRestWarRoomTrackers(TestCase):
             self.assertEqual(1, response.json()['events'])
         self.assertEqual(['Hosts · dc01: Isolated'], [event['event_title'] for event in self._case_events(case_id)])
 
+    def test_sync_should_write_the_past_changes_once(self):
+        room_id = self._room()
+        case_id = self._attach_case(room_id)
+        asset_id = self._asset(case_id, 'dc01')
+        step_id = self._step(room_id, 'Isolated').json()['id']
+        tracker_id = self._tracker(room_id, 'assets', name='Hosts').json()['id']
+        self._state(room_id, tracker_id, rows=[{'item_type': 'asset', 'item_id': asset_id}], add_step_ids=[step_id])
+        self._state(room_id, tracker_id, rows=[{'item_type': 'asset', 'item_id': asset_id}], note='done')
+        url = f'/api/v2/war-rooms/{room_id}/trackers/{tracker_id}'
+        self._subject.patch(url, {'timeline_sync': {'mode': 'changes', 'target': 'cases'}})
+        listed = self._subject.get(f'/api/v2/war-rooms/{room_id}/trackers').json()
+        self.assertEqual(2, next(t for t in listed if t['id'] == tracker_id)['timeline_backfill'])
+        response = self._subject.create(f'{url}/timeline/sync', {})
+        self.assertEqual(200, response.status_code)
+        self.assertEqual((2, 0), (response.json()['events'], response.json()['remaining']))
+        self.assertEqual(0, self._subject.create(f'{url}/timeline/sync', {}).json()['events'])
+        self.assertEqual(['Hosts · dc01: Isolated set', 'Hosts · dc01: note updated'],
+                         sorted(event['event_title'] for event in self._case_events(case_id)))
+
     def test_sync_should_need_war_room_write(self):
         room_id = self._room()
         tracker_id = self._tracker(room_id, timeline_sync={'mode': 'state', 'target': 'war_room'}).json()['id']

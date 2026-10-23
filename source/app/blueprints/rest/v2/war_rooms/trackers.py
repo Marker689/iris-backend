@@ -387,7 +387,9 @@ def update_tracker_rows_state(war_room_id, tracker_id):
 @war_rooms_trackers_blueprint.post('/<int:tracker_id>/timeline/sync')
 @ac_api_requires()
 @api_doc(tags=['WarRoomTrackers'],
-         summary='Write the current state of the rows the caller sees to the timelines (state timeline mode only). '
+         summary='Catch the timelines up with a tracker whose timeline sync was turned on after the fact: the '
+                 'current state of the rows the caller sees (state mode), or the past changes not in the timelines '
+                 'yet, oldest first and at most 2000 per call, `remaining` telling what is left (changes mode). '
                  'Case timelines are only written where the caller has full access')
 def sync_tracker_timeline(war_room_id, tracker_id):
     err = require_war_room_write(war_room_id)
@@ -399,7 +401,8 @@ def sync_tracker_timeline(war_room_id, tracker_id):
         summary = war_room_trackers_timeline_sync(war_room_id, tracker, war_room_tracker_access(war_room_id, writing=True),
                                                   iris_current_user.id)
         if summary['events']:
-            _emit_tracker_event(war_room_id, f'{tracker.name}: wrote its state to the timelines', tracker.id)
+            what = 'its past changes' if 'remaining' in summary else 'its state'
+            _emit_tracker_event(war_room_id, f'{tracker.name}: wrote {what} to the timelines', tracker.id)
         return summary
     return _handle(_sync)
 

@@ -64,6 +64,8 @@ from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_ass
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_commit
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_delete
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_events
+from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_events_not_in_timeline
+from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_events_not_in_timeline_counts
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_existing_user_ids
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_row_counts
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_row_step_remove
@@ -78,6 +80,7 @@ from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_ste
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_tracker_get
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_trackers
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_user_names
+from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_value_events_after
 from app.iris_engine.utils.tracker import track_activity
 from app.models.assets import ASSET_FLAG_COLORS
 from app.models.errors import BusinessProcessingError
@@ -97,6 +100,8 @@ WAR_ROOM_TRACKERS_MAX_TRACKERS = 50
 WAR_ROOM_TRACKERS_MAX_COLUMNS = 20
 WAR_ROOM_TRACKERS_MAX_BATCH = 500
 WAR_ROOM_TRACKERS_HISTORY_LIMIT = 200
+# Past changes written to the timelines per backfill call.
+WAR_ROOM_TRACKERS_TIMELINE_BACKFILL_LIMIT = 2000
 
 WAR_ROOM_TRACKER_COLUMN_TYPES = ('text', 'longtext', 'number', 'date', 'datetime', 'select', 'multiselect',
                                  'checkbox', 'user', 'url')
@@ -772,7 +777,9 @@ def war_room_trackers_build_tracker(war_room_id, data, room_step_ids, sort_order
     )
 
 
-def war_room_trackers_serialize(tracker, row_count, names):
+def war_room_trackers_serialize(tracker, row_count, names, timeline_backfill=0):
+    """`timeline_backfill`: with a `changes` timeline sync, the past
+    changes not in the timelines yet (made before the sync was on)."""
     return {
         'id': tracker.id,
         'war_room_id': tracker.war_room_id,
@@ -784,6 +791,7 @@ def war_room_trackers_serialize(tracker, row_count, names):
         'columns': tracker.columns or [],
         'show_asset_flags': bool(tracker.show_asset_flags),
         'timeline_sync': tracker.timeline_sync,
+        'timeline_backfill': timeline_backfill,
         'sort_order': tracker.sort_order,
         'row_count': row_count,
         'created_by': _user_ref(tracker.created_by_id, names),
@@ -792,18 +800,24 @@ def war_room_trackers_serialize(tracker, row_count, names):
     }
 
 
+def _writes_changes(tracker):
+    return (tracker.timeline_sync or {}).get('mode') == 'changes'
+
+
 def war_room_trackers_serialize_many(war_room_id, trackers, access):
     """Trackers with the number of rows the caller sees."""
     cache = _SourceCache(war_room_id, access)
     stored = war_room_trackers_db_row_counts([t.id for t in trackers if t.source == 'manual'])
     names = war_room_trackers_db_user_names([t.created_by_id for t in trackers])
+    backfill = war_room_trackers_db_events_not_in_timeline_counts([t.id for t in trackers if _writes_changes(t)])
     out = []
     for tracker in trackers:
         if tracker.source == 'manual':
             count = stored.get(tracker.id, 0)
         else:
             count = len(cache.items(tracker.source)[0])
-        out.append(war_room_trackers_serialize(tracker, min(count, WAR_ROOM_TRACKERS_ROWS_LIMIT), names))
+        out.append(war_room_trackers_serialize(tracker, min(count, WAR_ROOM_TRACKERS_ROWS_LIMIT), names,
+                                               backfill.get(tracker.id, 0)))
     return out
 
 
@@ -1141,10 +1155,11 @@ def _resolve_manual_targets(tracker, refs, cache):
     return _manual_pairs(rows, cache)
 
 
-def _record(tracker_id, row_id, user_id, now, events):
+def _record(tracker_id, row_id, user_id, now, events, in_timeline):
     for action, details in events:
         war_room_trackers_db_add(WarRoomTrackerRowEvent(tracker_id=tracker_id, row_id=row_id, user_id=user_id,
-                                                        created_at=now, action=action, details=details))
+                                                        created_at=now, action=action, details=details,
+                                                        in_timeline=in_timeline))
 
 
 def war_room_trackers_rows_update_state(war_room_id, tracker, body, access, user_id):
@@ -1194,7 +1209,7 @@ def war_room_trackers_rows_update_state(war_room_id, tracker, body, access, user
             for step_id in to_add:
                 war_room_trackers_db_add(WarRoomTrackerRowStep(row_id=row.id, step_id=step_id, set_by_id=user_id,
                                                                set_at=now))
-            _record(tracker.id, row.id, user_id, now, events)
+            _record(tracker.id, row.id, user_id, now, events, writer.mode == 'changes')
             applied.append((row.item_type, row.label, events))
             step_ids = (set(current_steps.get(row.id, ())) - set(to_remove)) | set(to_add)
             writer.row_changed(row, item, events, step_ids)
@@ -1276,7 +1291,7 @@ def war_room_trackers_rows_add(war_room_id, tracker, body, access, user_id):
             war_room_trackers_db_add(WarRoomTrackerRowStep(row_id=row.id, step_id=step_id, set_by_id=user_id,
                                                            set_at=now))
             events.append(('step_added', {'step_id': step_id, 'step_name': step_names.get(step_id)}))
-        _record(tracker.id, row.id, user_id, now, events)
+        _record(tracker.id, row.id, user_id, now, events, writer.mode == 'changes')
         item = indexes[item_type].get(item_id) if item_type is not None else None
         writer.row_changed(row, item, events, set(step_ids))
         created.append((row, item))
@@ -1294,10 +1309,14 @@ def _with_timeline(result, writer):
 
 
 def war_room_trackers_timeline_sync(war_room_id, tracker, access, user_id):
-    """Write the current state of every stored row the caller can see to
-    the timelines (`state` mode only). Returns the timeline summary."""
-    if tracker.timeline_sync is None or tracker.timeline_sync.get('mode') != 'state':
-        raise BusinessProcessingError('Only a tracker writing its state to the timelines can be synced')
+    """Catch the timelines up with a tracker whose sync was turned on
+    after the fact: `state` mode writes the current state of every stored
+    row the caller can see, `changes` mode the past changes not in the
+    timelines yet (`_timeline_backfill`). Returns the timeline summary."""
+    if tracker.timeline_sync is None:
+        raise BusinessProcessingError('This tracker does not write to the timelines')
+    if _writes_changes(tracker):
+        return _timeline_backfill(war_room_id, tracker, access, user_id)
     cache = _SourceCache(war_room_id, access)
     if tracker.source == 'manual':
         pairs = _manual_pairs(war_room_trackers_db_rows(tracker.id), cache)
@@ -1317,6 +1336,80 @@ def war_room_trackers_timeline_sync(war_room_id, tracker, access, user_id):
         raise BusinessProcessingError('The timelines were changed meanwhile, retry')
     writer.finish()
     return writer.summary()
+
+
+def _history_groups(events):
+    """Past changes grouped as they were made: one group per row and per
+    update, oldest first. A batch cut by the limit leaves its last group
+    for the next call (unless it is the only one)."""
+    groups = {}
+    for event in events:
+        groups.setdefault((event.row_id, event.created_at), []).append(event)
+    groups = list(groups.values())
+    if len(events) >= WAR_ROOM_TRACKERS_TIMELINE_BACKFILL_LIMIT and len(groups) > 1:
+        groups.pop()
+    return groups
+
+
+def war_room_trackers_values_before(values, later_value_events):
+    """The values of a row before the `value_changed` events
+    `later_value_events` (oldest first) were made."""
+    out = dict(values or {})
+    for event in reversed(later_value_events):
+        details = event.details or {}
+        key = details.get('column_key')
+        if key is None:
+            continue
+        if details.get('old') is None:
+            out.pop(key, None)
+        else:
+            out[key] = details['old']
+    return out
+
+
+def _timeline_backfill(war_room_id, tracker, access, user_id):
+    """Write the past changes of a `changes` sync, oldest first, at most
+    `WAR_ROOM_TRACKERS_TIMELINE_BACKFILL_LIMIT` per call (the summary's
+    `remaining` tells what is left). Every change handled is marked
+    `in_timeline`, including those of rows the caller cannot see or of
+    cases it cannot write, as live changes are: nothing is written twice."""
+    groups = _history_groups(war_room_trackers_db_events_not_in_timeline(
+        tracker.id, WAR_ROOM_TRACKERS_TIMELINE_BACKFILL_LIMIT))
+    row_ids = sorted({group[0].row_id for group in groups})
+    cache = _SourceCache(war_room_id, access)
+    if tracker.source == 'manual':
+        pairs = _manual_pairs(war_room_trackers_db_rows_by_ids(tracker.id, row_ids), cache)
+    else:
+        pairs, _ = _mirror_pairs(tracker, cache)
+        wanted = set(row_ids)
+        pairs = [(stored, item) for stored, item in pairs if stored is not None and stored.id in wanted]
+    by_row = {stored.id: (stored, item) for stored, item in pairs}
+    later = {}
+    if groups:
+        for event in war_room_trackers_db_value_events_after(row_ids, groups[0][0].id):
+            later.setdefault(event.row_id, []).append(event)
+    writer = WarRoomTrackerTimelineWriter(war_room_id, tracker, access.writable_case_ids, user_id, _utcnow(), {})
+    gone = 0
+    for group in groups:
+        for event in group:
+            event.in_timeline = True
+        stored, item = by_row.get(group[0].row_id, (None, None))
+        if stored is None:
+            # A mirrored item that left the war room (or the caller's sight).
+            gone += 1
+            continue
+        last_id = group[-1].id
+        values = war_room_trackers_values_before(
+            stored.values, [event for event in later.get(stored.id, ()) if event.id > last_id])
+        writer.row_history(stored, item, [(event.action, event.details or {}) for event in group],
+                           group[0].created_at, values)
+    if not war_room_trackers_db_commit():
+        raise BusinessProcessingError('The timelines were changed meanwhile, retry')
+    writer.finish()
+    summary = writer.summary()
+    summary['restricted_rows'] += gone
+    summary['remaining'] = war_room_trackers_db_events_not_in_timeline_counts([tracker.id]).get(tracker.id, 0)
+    return summary
 
 
 def _manual_row(tracker, row_id):

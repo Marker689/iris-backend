@@ -26,6 +26,11 @@ A tracker with a `timeline_sync` setting writes its rows to timelines:
 - `date`: `changed_at` dates the event at the change, otherwise it is the
   key of a `date` / `datetime` column of the tracker, whose value dates
   the event (the change time when the row has none).
+
+Turned on after the fact, a `changes` sync can write the changes made
+before (the tracker history entries not `in_timeline`, see
+`war_room_trackers_timeline_sync`): each is dated at its own time, or by
+the date column as it was right after it (`row_history`).
 - `target`: `cases` writes to the "War-room trackers" timeline of the case
   of each item (every case of an IOC, registry asset or customer),
   `war_room` to a war-room timeline (`war_room_timeline_id`, or a
@@ -333,6 +338,12 @@ class WarRoomTrackerTimelineWriter:
         else:
             self._write(row, item, step_ids=step_ids)
 
+    def row_history(self, row, item, events, changed_at, values):
+        """Write past `events` of a row (`changes` mode): made at
+        `changed_at`, when the row's values were `values`."""
+        if self.mode == 'changes' and events:
+            self._write(row, item, events=events, values=values, changed_at=changed_at)
+
     def row_state(self, row, item, step_ids):
         """Write (or refresh) the state event of a row."""
         if self.mode == 'state':
@@ -371,21 +382,24 @@ class WarRoomTrackerTimelineWriter:
             self._names.update(war_room_trackers_db_user_names(user_ids))
         return self._names
 
-    def _write(self, row, item, events=None, step_ids=None):
+    def _write(self, row, item, events=None, step_ids=None, values=None, changed_at=None):
         if row.item_type is not None and item is None:
             self._restricted_rows += 1
             return
         tracker = self._tracker
         label = row.label if row.item_type is None else item['label']
-        names = self._user_names(row.values, events)
+        if values is None:
+            values = row.values
+        names = self._user_names(values, events)
         if events is not None:
             title, content = war_room_tracker_timelines_changes_text(tracker.name, label, events, tracker.columns,
                                                                      names)
         else:
             step_labels = [name for step_id, name in self._step_names.items() if step_id in set(step_ids)]
             title, content = war_room_tracker_timelines_state_text(tracker.name, label, step_labels, tracker.columns,
-                                                                   row.values, row.note, names)
-        event_date = war_room_tracker_timelines_event_date(self._sync, tracker.columns, row.values, self._now)
+                                                                   values, row.note, names)
+        event_date = war_room_tracker_timelines_event_date(self._sync, tracker.columns, values,
+                                                           changed_at or self._now)
         links = (item or {}).get('timeline') or war_room_tracker_timelines_item_links()
         if self._sync['target'] == 'cases' and links['case_links']:
             for case_id, asset_ids, ioc_ids in links['case_links']:
