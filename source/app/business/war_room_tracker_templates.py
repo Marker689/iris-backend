@@ -29,12 +29,19 @@ and with step names): applying the template adds them to the room's
 board, saving a room as a template takes the widgets of its board that
 show the saved trackers.
 
+Templates are shared with the case trackers: a template tracker's source
+is a war-room or a case source. Applying a template to a war room or a
+case creates the trackers whose source it supports and skips the others.
+
 Built-in presets are not seeded: an administrator creates a template
 from one through `tracker_templates_create_from_preset`.
 """
 
 import datetime
 
+from app.business.case_trackers import CASE_TRACKERS_MAX_STEPS
+from app.business.case_trackers import CASE_TRACKERS_MAX_TRACKERS
+from app.business.case_trackers import case_trackers_build_tracker
 from app.business.war_room_board_widgets import BREAKDOWN_COLUMN_TYPES
 from app.business.war_room_board_widgets import COLUMNS
 from app.business.war_room_board_widgets import PROGRESS_DISPLAYS
@@ -49,7 +56,8 @@ from app.business.war_room_trackers import war_room_trackers_build_tracker
 from app.business.war_room_trackers import war_room_trackers_validate_color
 from app.business.war_room_trackers import war_room_trackers_validate_columns
 from app.business.war_room_trackers import war_room_trackers_validate_icon
-from app.business.war_room_trackers import war_room_trackers_validate_source
+from app.datamgmt.case.case_trackers_db import case_trackers_db_steps
+from app.datamgmt.case.case_trackers_db import case_trackers_db_trackers
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_add
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_commit
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_delete
@@ -62,8 +70,11 @@ from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_tra
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_trackers_by_ids
 from app.datamgmt.war_rooms.war_room_trackers_db import war_room_trackers_db_user_names
 from app.iris_engine.utils.tracker import track_activity
+from app.models.case_trackers import CASE_TRACKER_SOURCES
+from app.models.case_trackers import CaseTrackerStep
 from app.models.errors import BusinessProcessingError
 from app.models.errors import ObjectNotFoundError
+from app.models.war_rooms import WAR_ROOM_TRACKER_SOURCES
 from app.models.war_rooms import TrackerTemplate
 from app.models.war_rooms import WarRoomTrackerStep
 
@@ -128,6 +139,8 @@ _PRESETS = {
 
 TRACKER_TEMPLATE_PRESETS = tuple(_PRESETS)
 
+_SOURCES = tuple(dict.fromkeys((*WAR_ROOM_TRACKER_SOURCES, *CASE_TRACKER_SOURCES)))
+
 
 def _utcnow():
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
@@ -147,6 +160,13 @@ def _text(value, field, max_len, required=False):
     value = value.strip()
     if len(value) > max_len:
         raise BusinessProcessingError(f'{field} must be at most {max_len} characters')
+    return value
+
+
+def _validate_source(value):
+    """A war-room or a case tracker source."""
+    if not isinstance(value, str) or value not in _SOURCES:
+        raise BusinessProcessingError(f'source must be one of: {", ".join(_SOURCES)}')
     return value
 
 
@@ -199,7 +219,7 @@ def _validate_trackers(value, step_names):
             'name': _text(tracker.get('name'), 'Tracker name', _NAME_MAX, required=True),
             'icon': war_room_trackers_validate_icon(tracker.get('icon')),
             'description': _text(tracker.get('description'), 'description', _DESCRIPTION_MAX),
-            'source': war_room_trackers_validate_source(tracker.get('source')),
+            'source': _validate_source(tracker.get('source')),
             'step_names': names,
             'columns': columns,
             'show_asset_flags': show_asset_flags,
@@ -461,9 +481,11 @@ def tracker_templates_create_from_preset(preset, user_id):
 def tracker_templates_apply(war_room_id, template_id, user_id):
     """Merge the template steps into the room (by name), create its
     trackers and add their widgets to the room's board (as many as fit),
-    in one transaction. Returns `(room steps, new trackers)`."""
+    in one transaction. Trackers of a case source are skipped. Returns
+    `(room steps, new trackers)`."""
     template = _get(template_id)
     steps, trackers = tracker_templates_validate_content({'steps': template.steps, 'trackers': template.trackers})
+    trackers = [tracker for tracker in trackers if tracker['source'] in WAR_ROOM_TRACKER_SOURCES]
     room_steps = war_room_trackers_db_steps(war_room_id)
     room_trackers = war_room_trackers_db_trackers(war_room_id)
     by_name = {step.name.lower(): step for step in room_steps}
@@ -544,6 +566,95 @@ def tracker_templates_save_from_war_room(war_room_id, data, user_id):
         'board_widgets': [_template_widget(widget, step_names) for widget in room_widgets
                           if widget.get('type') in TRACKER_WIDGET_TYPES
                           and (widget.get('config') or {}).get('tracker_id') == tracker.id][:_MAX_TRACKER_WIDGETS],
+    } for tracker in trackers]
+    steps, definitions = tracker_templates_validate_content({'steps': steps, 'trackers': definitions})
+    return tracker_templates_serialize(_save_new(name, description, steps, definitions, user_id))
+
+
+def tracker_templates_apply_to_case(case_id, template_id, user_id):
+    """Merge the template steps into the case (by name) and create its
+    trackers, in one transaction. Trackers of a war-room source and the
+    board widgets are skipped. Returns `(case steps, new trackers, names of
+    the skipped trackers)`."""
+    template = _get(template_id)
+    steps, definitions = tracker_templates_validate_content({'steps': template.steps,
+                                                             'trackers': template.trackers})
+    trackers = [tracker for tracker in definitions if tracker['source'] in CASE_TRACKER_SOURCES]
+    skipped = [tracker['name'] for tracker in definitions if tracker['source'] not in CASE_TRACKER_SOURCES]
+    case_steps = case_trackers_db_steps(case_id)
+    case_trackers = case_trackers_db_trackers(case_id)
+    by_name = {step.name.lower(): step for step in case_steps}
+    new_steps = [step for step in steps if step['name'].lower() not in by_name]
+    if len(case_steps) + len(new_steps) > CASE_TRACKERS_MAX_STEPS:
+        raise BusinessProcessingError(f'A case has at most {CASE_TRACKERS_MAX_STEPS} steps')
+    if len(case_trackers) + len(trackers) > CASE_TRACKERS_MAX_TRACKERS:
+        raise BusinessProcessingError(f'A case has at most {CASE_TRACKERS_MAX_TRACKERS} trackers')
+
+    sort_order = max((step.sort_order for step in case_steps), default=-1) + 1
+    for step in new_steps:
+        by_name[step['name'].lower()] = war_room_trackers_db_add(CaseTrackerStep(
+            case_id=case_id, name=step['name'], description=step['description'], color=step['color'],
+            icon=step['icon'], sort_order=sort_order,
+        ))
+        sort_order += 1
+
+    case_step_ids = {step.id for step in by_name.values()}
+    sort_order = max((tracker.sort_order for tracker in case_trackers), default=-1) + 1
+    created = []
+    try:
+        for definition in trackers:
+            step_ids = None
+            if definition['step_names'] is not None:
+                step_ids = [by_name[name.lower()].id for name in definition['step_names']]
+            tracker = case_trackers_build_tracker(case_id, {
+                'name': definition['name'], 'icon': definition['icon'], 'description': definition['description'],
+                'source': definition['source'], 'step_ids': step_ids, 'columns': definition['columns'],
+                'show_asset_flags': definition['show_asset_flags'],
+                'timeline_sync': definition['timeline_sync'],
+            }, case_step_ids, sort_order, user_id)
+            created.append(war_room_trackers_db_add(tracker))
+            sort_order += 1
+    except BusinessProcessingError:
+        war_room_trackers_db_rollback()
+        raise
+    if not war_room_trackers_db_commit():
+        raise BusinessProcessingError('The steps of this case changed meanwhile, retry')
+    track_activity(f'applied tracker template "{template.name}"', caseid=case_id)
+    return case_trackers_db_steps(case_id), created, skipped
+
+
+def tracker_templates_save_from_case(case_id, data, user_id):
+    """A new template from the case's steps and trackers (all of them, or
+    `tracker_ids`)."""
+    if not isinstance(data, dict):
+        raise BusinessProcessingError('Invalid request')
+    name = _validate_name(data.get('name'))
+    description = _text(data.get('description'), 'description', _DESCRIPTION_MAX)
+    trackers = case_trackers_db_trackers(case_id)
+    tracker_ids = data.get('tracker_ids')
+    if tracker_ids is not None:
+        if not isinstance(tracker_ids, list) or not all(isinstance(i, int) and not isinstance(i, bool)
+                                                        for i in tracker_ids):
+            raise BusinessProcessingError('tracker_ids must be a list of integers')
+        trackers = [tracker for tracker in trackers if tracker.id in set(tracker_ids)]
+        if len(trackers) != len(set(tracker_ids)):
+            raise BusinessProcessingError('Unknown tracker in tracker_ids')
+    case_steps = case_trackers_db_steps(case_id)
+    step_names = {step.id: step.name for step in case_steps}
+    steps = [{'name': step.name, 'color': step.color, 'icon': step.icon, 'description': step.description}
+             for step in case_steps]
+    definitions = [{
+        'name': tracker.name,
+        'icon': tracker.icon,
+        'description': tracker.description,
+        'source': tracker.source,
+        'step_names': [step_names[step_id] for step_id in tracker.step_ids if step_id in step_names]
+        if tracker.step_ids is not None else None,
+        'columns': tracker.columns or [],
+        'show_asset_flags': bool(tracker.show_asset_flags),
+        'timeline_sync': {'mode': tracker.timeline_sync['mode'], 'date': tracker.timeline_sync['date'],
+                          'target': 'cases'} if tracker.timeline_sync else None,
+        'board_widgets': [],
     } for tracker in trackers]
     steps, definitions = tracker_templates_validate_content({'steps': steps, 'trackers': definitions})
     return tracker_templates_serialize(_save_new(name, description, steps, definitions, user_id))

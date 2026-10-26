@@ -5787,6 +5787,549 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/v2/cases/{case_identifier}/tracker-steps:
+    get:
+      operationId: list_tracker_steps_get
+      summary: List the tracker steps of a case, ordered
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: create_tracker_step_post
+      summary: Create a tracker step (name unique in the case, case-insensitively)
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/cases/{case_identifier}/tracker-steps/{step_id}:
+    delete:
+      operationId: delete_tracker_step_delete
+      summary: 'Delete a tracker step: removed from every row and from the trackers offering it'
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: step_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '204':
+          $ref: '#/components/responses/Deleted'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: update_tracker_step_patch
+      summary: Update a tracker step (fields left out keep their value)
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: step_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/cases/{case_identifier}/tracker-steps/reorder:
+    post:
+      operationId: reorder_tracker_steps_post
+      summary: Reorder the tracker steps (listed ids first, the others after)
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/cases/{case_identifier}/trackers:
+    get:
+      operationId: list_trackers_get
+      summary: List the trackers of a case, with their number of rows
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: create_tracker_post
+      summary: Create a tracker (manual, or mirroring the assets / iocs / tasks / evidences of the case)
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/cases/{case_identifier}/trackers/{tracker_id}:
+    delete:
+      operationId: delete_tracker_delete
+      summary: Delete a tracker with its rows and their history
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '204':
+          $ref: '#/components/responses/Deleted'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    get:
+      operationId: get_tracker_get
+      summary: Get a tracker
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: update_tracker_patch
+      summary: Update a tracker (fields left out keep their value, the source cannot change)
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/cases/{case_identifier}/trackers/{tracker_id}/rows:
+    get:
+      operationId: list_tracker_rows_get
+      summary: 'List the rows of a tracker: every current item of the case merged with its state for a
+        mirror, the stored rows for a manual tracker (capped)'
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: add_tracker_rows_post
+      summary: Add rows to a manual tracker (free text or case items; items already present are skipped)
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/cases/{case_identifier}/trackers/{tracker_id}/rows/{row_id}:
+    delete:
+      operationId: delete_tracker_row_delete
+      summary: Delete a row of a manual tracker with its history
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: row_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '204':
+          $ref: '#/components/responses/Deleted'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/cases/{case_identifier}/trackers/{tracker_id}/rows/history:
+    get:
+      operationId: tracker_rows_history_get
+      summary: History of one row (row_id, or item_type and item_id) or the latest events of the tracker
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: row_id
+        in: query
+        required: false
+        schema:
+          type: integer
+        description: Events of this row
+      - name: item_type
+        in: query
+        required: false
+        schema:
+          type: string
+        description: Events of the row of this item (with item_id)
+      - name: item_id
+        in: query
+        required: false
+        schema:
+          type: integer
+        description: Events of the row of this item (with item_type)
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/cases/{case_identifier}/trackers/{tracker_id}/rows/reorder:
+    post:
+      operationId: reorder_tracker_rows_post
+      summary: Reorder the rows of a manual tracker (listed ids first, the others after)
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '204':
+          $ref: '#/components/responses/Deleted'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/cases/{case_identifier}/trackers/{tracker_id}/rows/state:
+    post:
+      operationId: update_tracker_rows_state_post
+      summary: Bulk update the steps, note, column values or label of tracker rows (one history event
+        per change)
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/cases/{case_identifier}/trackers/{tracker_id}/timeline/sync:
+    post:
+      operationId: sync_tracker_timeline_post
+      summary: 'Catch the timeline up with a tracker whose timeline sync was turned on after the fact:
+        the current state of the rows (state mode), or the past changes not in the timeline yet, oldest
+        first and at most 2000 per call, `remaining` telling what is left (changes mode)'
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/cases/{case_identifier}/trackers/apply-template:
+    post:
+      operationId: apply_tracker_template_post
+      summary: 'Apply a tracker template: merge its steps by name and create its trackers (those of a
+        war-room source are skipped and named in `skipped`). Returns every step of the case and the created
+        trackers'
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/cases/{case_identifier}/trackers/reorder:
+    post:
+      operationId: reorder_trackers_post
+      summary: Reorder the trackers (listed ids first, the others after)
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/v2/cases/{case_identifier}/trackers/save-as-template:
+    post:
+      operationId: save_trackers_as_template_post
+      summary: Save the steps and trackers (all, or tracker_ids) of the case as a new tracker template
+      tags:
+      - CaseTrackers
+      security:
+      - ApiKey: []
+      parameters:
+      - name: case_identifier
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v2/cases/{case_identifier}/vulnerabilities:
     get:
       operationId: list_case_vulnerabilities_route_get
